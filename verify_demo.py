@@ -13,10 +13,10 @@ def test_imports():
     print("Testing imports...")
 
     try:
-        import gymnasium as gym
-        print("  ✓ gymnasium")
+        from gym_biart.envs.biart import BiArtEnv
+        print("  ✓ BiArtEnv")
     except ImportError as e:
-        print(f"  ✗ gymnasium: {e}")
+        print(f"  ✗ BiArtEnv: {e}")
         return False
 
     try:

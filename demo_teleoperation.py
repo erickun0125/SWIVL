@@ -33,9 +33,9 @@ Display Information:
 import argparse
 import numpy as np
 import pygame
-import gymnasium as gym
 import sys
 
+from gym_biart.envs.biart import BiArtEnv
 from gym_biart.envs.linkage_manager import LinkageObject, JointType, create_two_link_object
 from gym_biart.envs.pd_controller import MultiGripperController, PDGains
 from gym_biart.envs.keyboard_planner import MultiEEPlanner
@@ -57,7 +57,11 @@ class TeleoperationDemo:
 
         # Create environment
         print(f"Creating BiArt environment with {joint_type} joint...")
-        self.env = gym.make('BiArt-v0', joint_type=joint_type, render_mode=render_mode)
+        self.env = BiArtEnv(
+            obs_type='state',
+            render_mode=render_mode,
+            joint_type=joint_type
+        )
 
         # Map joint type string to enum
         joint_type_map = {
@@ -370,13 +374,26 @@ class TeleoperationDemo:
 
             # Render base environment
             if self.render_mode == 'human':
-                # Get the pygame screen from environment
-                screen = self.env.window
+                # Initialize pygame window if needed
+                if self.env.window is None:
+                    pygame.init()
+                    pygame.display.init()
+                    self.env.window = pygame.display.set_mode((512, 512))
+                if self.env.clock is None:
+                    self.env.clock = pygame.time.Clock()
+
+                # Draw base scene
+                screen_surface = self.env._draw()
+
+                # Blit to window
+                self.env.window.blit(screen_surface, screen_surface.get_rect())
 
                 # Draw info overlay on top
-                if screen is not None:
-                    self.draw_info_overlay(screen)
-                    pygame.display.update()
+                self.draw_info_overlay(self.env.window)
+
+                # Update display
+                pygame.event.pump()
+                pygame.display.update()
 
             # Print periodic status
             if self.step_count % 50 == 0:
