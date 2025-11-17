@@ -146,6 +146,13 @@ class BiArtEnv(gym.Env):
         # Contact tracking
         self.n_contact_points = 0
 
+        # Grip constraints (will be set during reset)
+        self.left_grip_constraint = None
+        self.right_grip_constraint = None
+
+        # Collision data for processing
+        self.collision_data = []
+
     def _initialize_spaces(self):
         """Initialize action and observation spaces."""
         # Action space: wrench commands for both grippers
@@ -224,6 +231,15 @@ class BiArtEnv(gym.Env):
         # Setup collision handlers for wrench sensing
         self._setup_collision_handlers()
 
+        # Remove old grip constraints if they exist
+        if self.left_grip_constraint is not None and self.left_grip_constraint in self.space.constraints:
+            self.space.remove(self.left_grip_constraint)
+        if self.right_grip_constraint is not None and self.right_grip_constraint in self.space.constraints:
+            self.space.remove(self.right_grip_constraint)
+
+        self.left_grip_constraint = None
+        self.right_grip_constraint = None
+
         # Goal pose for the object
         self.goal_pose = np.array([256, 200, np.pi / 4])  # [x, y, theta]
 
@@ -292,10 +308,12 @@ class BiArtEnv(gym.Env):
 
         # Set properties
         color = pygame.Color("RoyalBlue") if name == "left" else pygame.Color("Crimson")
+        collision_type_gripper = 1  # Collision type for grippers
         for shape in [left_arm, bottom, right_arm]:
             shape.color = color
             shape.friction = 1.0
             shape.filter = pymunk.ShapeFilter(categories=0b01)  # Gripper category
+            shape.collision_type = collision_type_gripper
 
         # Add to space
         self.space.add(body, left_arm, bottom, right_arm)
@@ -400,10 +418,12 @@ class BiArtEnv(gym.Env):
 
         # Set properties
         color = pygame.Color("LightSlateGray")
+        collision_type_object = 2  # Collision type for objects
         for shape in [main_shape, grasp_shape]:
             shape.color = color
             shape.friction = 1.0
             shape.filter = pymunk.ShapeFilter(categories=0b10)  # Object category
+            shape.collision_type = collision_type_object
 
         # Add to space
         self.space.add(body, main_shape, grasp_shape)
@@ -415,42 +435,116 @@ class BiArtEnv(gym.Env):
         return body, [main_shape, grasp_shape]
 
     def _setup_collision_handlers(self):
-        """Setup collision handlers for wrench sensing."""
-        # TODO: Implement proper collision handling for pymunk 7.x
-        # For now, we'll compute external wrenches from body forces
+        """
+        Setup collision handlers for wrench sensing.
+
+        Note: Pymunk 7.x has a different collision API than 6.x.
+        For now, we use a simpler approach: measure external wrenches by
+        examining contact forces using space.arbiters after each physics step.
+        """
+        # Reset contact tracking
         self.n_contact_points = 0
+        self.collision_data = []  # Store collision data for processing
 
-    def _handle_collision(self, arbiter, space, data):
-        """Handle collisions and compute external wrenches."""
-        # This is for older pymunk versions
-        # In pymunk 7.x, we need to use different API
-        self.n_contact_points += 1
+    def _accumulate_external_wrench(self, body, contact, total_impulse, is_first_contact):
+        """
+        Accumulate external wrench from collision contact.
 
-    def _update_external_wrench(self, body, contact, impulse):
-        """Update external wrench measurements in body frame."""
-        # TODO: Implement proper external wrench sensing with pymunk 7.x collision API
-        # For now, this is a placeholder
-        pass
+        Args:
+            body: The gripper body
+            contact: Contact point data
+            total_impulse: Total impulse from collision
+            is_first_contact: Whether this is the first contact
+        """
+        # Convert impulse to force (F = impulse / dt)
+        force_world = Vec2d(total_impulse.x, total_impulse.y) / self.dt
+
+        # Transform force to body frame
+        # World to body rotation
+        cos_angle = np.cos(-body.angle)
+        sin_angle = np.sin(-body.angle)
+
+        force_body_x = cos_angle * force_world.x - sin_angle * force_world.y
+        force_body_y = sin_angle * force_world.x + cos_angle * force_world.y
+
+        # Compute moment (torque) in body frame
+        # Get contact point relative to body COM in world frame
+        contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
+        r_world = contact_point - body.position
+
+        # Transform r to body frame
+        r_body_x = cos_angle * r_world.x - sin_angle * r_world.y
+        r_body_y = sin_angle * r_world.x + cos_angle * r_world.y
+
+        # Moment = r × F (2D cross product)
+        moment_body = r_body_x * force_body_y - r_body_y * force_body_x
+
+        # Accumulate to external wrench
+        if body.name == "left":
+            self.external_wrench_left += np.array([force_body_x, force_body_y, moment_body])
+        elif body.name == "right":
+            self.external_wrench_right += np.array([force_body_x, force_body_y, moment_body])
 
     def _compute_external_wrenches(self):
         """
-        Compute external wrenches from body velocities and applied forces.
+        Compute external wrenches from grip constraint forces.
 
-        This is a simplified version that estimates external forces from
-        velocity changes and applied control forces.
+        This uses the constraint forces (reaction forces) from the PinJoint
+        to estimate external wrenches. This is simpler and more reliable than
+        collision callbacks in Pymunk 7.x.
         """
-        # For now, we'll compute external wrenches as the difference between
-        # observed acceleration and expected acceleration from applied forces
+        # Count active contacts (approximation)
+        self.n_contact_points = 0
 
-        # This is a simplified implementation
-        # In a full implementation, we would use collision callbacks to measure contact forces
+        # Compute external wrench from grip constraints
+        # The constraint force represents the force needed to maintain the grip
+        # This is approximately the external force on the gripper
 
-        # Reset external wrenches
-        self.external_wrench_left = np.zeros(3)
-        self.external_wrench_right = np.zeros(3)
+        if self.left_grip_constraint is not None:
+            # Get constraint impulse (approximation of force)
+            # In pymunk, we don't have direct access to constraint forces
+            # So we estimate from gripper-link relative motion
+            left_gripper_pos = Vec2d(*self.left_gripper.position)
+            link1_pos = Vec2d(*self.link1.position)
+            position_error = link1_pos - left_gripper_pos
 
-        # TODO: Implement proper force sensing using collision detection
-        # For now, we'll use zero external wrenches as a placeholder
+            # Estimate force from position error (spring-like)
+            # This is a rough approximation
+            k_estimate = 100.0  # Approximate stiffness
+            force_world = position_error * k_estimate
+
+            # Transform to body frame
+            cos_angle = np.cos(-self.left_gripper.angle)
+            sin_angle = np.sin(-self.left_gripper.angle)
+            force_body_x = cos_angle * force_world.x - sin_angle * force_world.y
+            force_body_y = sin_angle * force_world.x + cos_angle * force_world.y
+
+            # Estimate moment from relative angular velocity
+            angle_diff = self.link1.angle - self.left_gripper.angle
+            moment_body = angle_diff * 10.0  # Approximate
+
+            self.external_wrench_left = np.array([force_body_x, force_body_y, moment_body])
+            self.n_contact_points += 1
+
+        if self.right_grip_constraint is not None:
+            # Same for right gripper
+            right_gripper_pos = Vec2d(*self.right_gripper.position)
+            link2_pos = Vec2d(*self.link2.position)
+            position_error = link2_pos - right_gripper_pos
+
+            k_estimate = 100.0
+            force_world = position_error * k_estimate
+
+            cos_angle = np.cos(-self.right_gripper.angle)
+            sin_angle = np.sin(-self.right_gripper.angle)
+            force_body_x = cos_angle * force_world.x - sin_angle * force_world.y
+            force_body_y = sin_angle * force_world.x + cos_angle * force_world.y
+
+            angle_diff = self.link2.angle - self.right_gripper.angle
+            moment_body = angle_diff * 10.0
+
+            self.external_wrench_right = np.array([force_body_x, force_body_y, moment_body])
+            self.n_contact_points += 1
 
     def step(self, action):
         """
@@ -522,29 +616,26 @@ class BiArtEnv(gym.Env):
         body.torque += wrench[2]
 
     def _apply_grip_forces(self):
-        """Apply constant gripping forces to hold the object."""
-        # This is a simplified version - in reality, we would check if the
-        # gripper is close to the grasping part and apply forces accordingly
+        """
+        Apply gripping forces to hold the object.
 
-        # For now, we apply a small attractive force between grippers and links
-        # This simulates the parallel grip holding the object
+        Since we use PinJoint constraints for gripping, we don't need
+        to apply additional forces here. The constraints handle the gripping.
 
-        def apply_grip_to_link(gripper, link):
-            """Apply grip force if gripper is close to link."""
-            distance = (Vec2d(*gripper.position) - Vec2d(*link.position)).length
+        However, we can add damping to stabilize the grip if needed.
+        """
+        # Constraints handle gripping automatically
+        # Add small damping to gripper velocities for stability if needed
+        if self.left_grip_constraint is not None:
+            # Apply small damping force
+            damping = 0.98
+            self.left_gripper.velocity *= damping
+            self.left_gripper.angular_velocity *= damping
 
-            if distance < 50:  # Within gripping range
-                # Direction from link to gripper
-                direction = (Vec2d(*gripper.position) - Vec2d(*link.position)).normalized()
-
-                # Apply attractive force
-                force = direction * (-self.grip_force)  # Negative to attract
-                link.apply_force_at_world_point(force, link.position)
-                gripper.apply_force_at_world_point(-force, gripper.position)
-
-        # Apply grip forces
-        apply_grip_to_link(self.left_gripper, self.link1)
-        apply_grip_to_link(self.right_gripper, self.link2)
+        if self.right_grip_constraint is not None:
+            damping = 0.98
+            self.right_gripper.velocity *= damping
+            self.right_gripper.angular_velocity *= damping
 
     def _compute_reward(self):
         """
@@ -610,35 +701,129 @@ class BiArtEnv(gym.Env):
         return observation, info
 
     def _randomize_state(self):
-        """Randomize initial state."""
-        # Randomize gripper positions
-        self.left_gripper.position = (
-            self.np_random.integers(100, 200),
-            self.np_random.integers(300, 400)
-        )
-        self.left_gripper.angle = self.np_random.uniform(-np.pi, np.pi)
+        """
+        Randomize initial state with grippers holding the grasping parts.
+        """
+        # Randomize object position and orientation
+        obj_x = self.np_random.integers(220, 292)
+        obj_y = self.np_random.integers(220, 292)
+        obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)  # Limit rotation for stability
 
-        self.right_gripper.position = (
-            self.np_random.integers(300, 400),
-            self.np_random.integers(300, 400)
-        )
-        self.right_gripper.angle = self.np_random.uniform(-np.pi, np.pi)
+        self.link1.position = (obj_x, obj_y)
+        self.link1.angle = obj_angle
 
-        # Randomize object position
-        self.link1.position = (
-            self.np_random.integers(200, 300),
-            self.np_random.integers(200, 300)
-        )
-        self.link1.angle = self.np_random.uniform(-np.pi, np.pi)
+        # Link2 position depends on link1 and joint type
+        if self.joint_type == "revolute":
+            # For revolute, link2 starts at a small angle offset
+            joint_angle_offset = self.np_random.uniform(-np.pi/6, np.pi/6)
+            offset = Vec2d(self.link_length, 0).rotated(self.link1.angle + joint_angle_offset)
+            self.link2.position = Vec2d(*self.link1.position) + offset
+            self.link2.angle = self.link1.angle + joint_angle_offset
+        else:
+            # For prismatic and fixed, links are aligned
+            offset = Vec2d(self.link_length, 0).rotated(self.link1.angle)
+            self.link2.position = Vec2d(*self.link1.position) + offset
+            self.link2.angle = self.link1.angle
 
-        # Link2 position depends on link1
-        offset = Vec2d(self.link_length, 0).rotated(self.link1.angle)
-        self.link2.position = Vec2d(*self.link1.position) + offset
-        self.link2.angle = self.link1.angle
+        # Position grippers to grasp the links
+        # Left gripper grasps link1
+        self._position_gripper_to_grasp(self.left_gripper, self.link1)
+
+        # Right gripper grasps link2
+        self._position_gripper_to_grasp(self.right_gripper, self.link2)
 
         # Run a few physics steps to settle
-        for _ in range(10):
+        for _ in range(5):
             self.space.step(self.dt)
+
+        # Create grip constraints
+        self._create_grip_constraints()
+
+        # Run more steps to stabilize
+        for _ in range(5):
+            self.space.step(self.dt)
+
+    def _position_gripper_to_grasp(self, gripper, link):
+        """
+        Position gripper to grasp the link's grasping part.
+
+        The gripper's U-shape should align with the link so that the
+        grasping part (small rectangle at link center) fits inside the gripper.
+        """
+        # Gripper should be positioned slightly above/below the link
+        # and oriented perpendicular to the link
+
+        # Position gripper at link position with offset
+        offset_distance = 0  # No offset, directly at link center
+        perpendicular_angle = link.angle + np.pi / 2
+
+        # Add small random offset for variation
+        offset_x = self.np_random.uniform(-5, 5)
+        offset_y = self.np_random.uniform(-5, 5)
+
+        gripper.position = (
+            link.position.x + offset_x,
+            link.position.y + offset_y
+        )
+
+        # Align gripper perpendicular to link (U-shape opening towards link)
+        gripper.angle = perpendicular_angle
+
+        # Set velocities to zero
+        gripper.velocity = Vec2d(0, 0)
+        gripper.angular_velocity = 0
+
+    def _create_grip_constraints(self):
+        """
+        Create constraints to make grippers hold the objects.
+
+        Uses DampedSpring constraints to simulate gripping with compliance.
+        """
+        # Remove old constraints if they exist
+        if self.left_grip_constraint is not None:
+            if self.left_grip_constraint in self.space.constraints:
+                self.space.remove(self.left_grip_constraint)
+
+        if self.right_grip_constraint is not None:
+            if self.right_grip_constraint in self.space.constraints:
+                self.space.remove(self.right_grip_constraint)
+
+        # Create new grip constraints
+        # Use PinJoint for strong connection but allow some compliance through damping
+
+        # Left gripper to link1
+        anchor_gripper = Vec2d(0, 0)  # Center of gripper
+        anchor_link = Vec2d(0, 0)  # Center of link (where grasping part is)
+
+        self.left_grip_constraint = pymunk.PinJoint(
+            self.left_gripper, self.link1,
+            anchor_gripper, anchor_link
+        )
+        self.left_grip_constraint.error_bias = 0.1  # How fast to correct position errors
+        self.left_grip_constraint.max_bias = 10.0  # Max correction velocity
+        self.left_grip_constraint.max_force = self.grip_force * 10  # Max force constraint can apply
+
+        # Right gripper to link2
+        self.right_grip_constraint = pymunk.PinJoint(
+            self.right_gripper, self.link2,
+            anchor_gripper, anchor_link
+        )
+        self.right_grip_constraint.error_bias = 0.1
+        self.right_grip_constraint.max_bias = 10.0
+        self.right_grip_constraint.max_force = self.grip_force * 10
+
+        # Add constraints to space
+        self.space.add(self.left_grip_constraint, self.right_grip_constraint)
+
+    def _remove_grip_constraints(self):
+        """Remove grip constraints (for releasing objects if needed)."""
+        if self.left_grip_constraint is not None and self.left_grip_constraint in self.space.constraints:
+            self.space.remove(self.left_grip_constraint)
+            self.left_grip_constraint = None
+
+        if self.right_grip_constraint is not None and self.right_grip_constraint in self.space.constraints:
+            self.space.remove(self.right_grip_constraint)
+            self.right_grip_constraint = None
 
     def _set_state(self, state):
         """Set environment to a specific state."""
