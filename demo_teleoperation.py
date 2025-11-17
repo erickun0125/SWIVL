@@ -122,7 +122,12 @@ class TeleoperationDemo:
         self.linkage.set_link_body(0, self.env.link1)
         self.linkage.set_link_body(1, self.env.link2)
 
-        # Initialize planner
+        # Register pymunk joint with linkage manager
+        if len(self.linkage.joints) > 0 and self.env.joint is not None:
+            self.linkage.joints[0].pymunk_joint = self.env.joint
+
+        # Initialize planner with current state as desired poses
+        # This ensures grippers hold their initial positions when no input is given
         self.planner.initialize_from_current_state(initial_ee_poses)
 
         # Reset controller

@@ -124,7 +124,7 @@ class BiArtEnv(gym.Env):
         self.gripper_jaw_length = 20.0  # Length of each jaw
         self.gripper_jaw_thickness = 4.0  # Thickness of jaw
         self.gripper_max_opening = 20.0  # Maximum opening between jaws
-        self.grip_force = 25.0  # Constant closing force for each jaw (reduced for stability)
+        self.grip_force = 15.0  # Constant closing force for each jaw (reduced for stability)
 
         # Object parameters
         self.link_length = 40.0
@@ -219,7 +219,7 @@ class BiArtEnv(gym.Env):
         """Setup the physics simulation."""
         self.space = pymunk.Space()
         self.space.gravity = 0, 0  # No gravity in SE(2)
-        self.space.damping = 0.98  # Higher damping for better stability
+        self.space.damping = 0.99  # Higher damping for better stability
 
         # Add walls
         walls = [
@@ -409,44 +409,98 @@ class BiArtEnv(gym.Env):
         Add an articulated object with two links connected by a joint.
 
         Args:
-            position: Initial position of the first link
+            position: Initial position of the first link's CENTER
             angle: Initial angle of the first link
             joint_type: "revolute", "prismatic", or "fixed"
 
         Returns:
             link1, link2, joint
+
+        Joint connection:
+        - Link1 right end (+length/2, 0) connects to Link2 left end (-length/2, 0)
+        - For revolute: allows rotation around connection point
+        - For prismatic: allows sliding along link1's axis
+        - For fixed: rigid connection
         """
-        # Link 1 (base link)
+        # Link 1 (base link) - centered at position
         link1_body, link1_shapes = self._add_link(position, angle, "link1")
 
-        # Link 2 position depends on link 1
-        link2_pos = Vec2d(position[0] + self.link_length * np.cos(angle),
-                          position[1] + self.link_length * np.sin(angle))
-        link2_body, link2_shapes = self._add_link(link2_pos, angle, "link2")
+        # Calculate connection point (link1's right end in world frame)
+        link1_end_local = Vec2d(self.link_length / 2, 0)
+        connection_point_world = link1_body.local_to_world(link1_end_local)
 
-        # Create joint based on type
+        # Link 2 position and angle depend on joint type
         if joint_type == "revolute":
-            # Revolute joint at the connection point
-            joint_pos = link2_pos
-            joint = pymunk.PivotJoint(link1_body, link2_body, joint_pos)
-            joint.collide_bodies = False
+            # For revolute, link2 can be at an angle
+            # Position link2's center so its left end is at connection point
+            # Initial angle offset for V-shape (will be constrained by joint)
+            link2_angle = angle  # Start aligned, joint will control relative angle
+            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
+            link2_center = connection_point_world + link2_start_to_center
 
         elif joint_type == "prismatic":
-            # Prismatic joint (sliding)
-            groove_start = Vec2d(-self.link_length/2, 0)
-            groove_end = Vec2d(self.link_length/2, 0)
-            anchor = Vec2d(0, 0)
-            joint = pymunk.GrooveJoint(link1_body, link2_body, groove_start, groove_end, anchor)
-            joint.collide_bodies = False
+            # For prismatic, links stay aligned
+            link2_angle = angle
+            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
+            link2_center = connection_point_world + link2_start_to_center
 
         elif joint_type == "fixed":
-            # Fixed joint (no relative motion)
-            joint = pymunk.DampedRotarySpring(link1_body, link2_body, 0, 1e6, 1e6)
-            pos_joint = pymunk.PivotJoint(link1_body, link2_body, link2_pos)
-            self.space.add(pos_joint)
+            # For fixed, links are rigidly aligned
+            link2_angle = angle
+            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
+            link2_center = connection_point_world + link2_start_to_center
 
         else:
             raise ValueError(f"Unknown joint type: {joint_type}")
+
+        # Create link 2
+        link2_body, link2_shapes = self._add_link(link2_center, link2_angle, "link2")
+
+        # Create joint using WORLD coordinates (simpler and more reliable)
+        # Use the connection point calculated earlier
+        if joint_type == "revolute":
+            # PivotJoint: allows rotation around connection point
+            # Use single-argument form with world coordinates
+            joint = pymunk.PivotJoint(link1_body, link2_body, connection_point_world)
+            joint.collide_bodies = False
+
+            # Add rotary limit joint to enforce V-shape angle range
+            # This constrains the relative angle between link1 and link2
+            # Angle range: -120° to -60° (V-shape opening downward)
+            angle_limit = pymunk.RotaryLimitJoint(
+                link1_body, link2_body,
+                -2*np.pi/3,  # min: -120°
+                -np.pi/3     # max: -60°
+            )
+            angle_limit.collide_bodies = False
+            self.space.add(angle_limit)
+
+        elif joint_type == "prismatic":
+            # PrismaticJoint: allows sliding along link1's x-axis
+            # GrooveJoint: one body slides in a groove on the other
+            # Groove is on link1, along its x-axis (in link1's local frame)
+            groove_start = Vec2d(0, 0)  # Center of link1
+            groove_end = Vec2d(self.link_length, 0)  # Along link1's length
+            anchor = Vec2d(-self.link_length / 2, 0)  # Link2's left end in link2's local frame
+
+            joint = pymunk.GrooveJoint(link1_body, link2_body, groove_start, groove_end, anchor)
+            joint.collide_bodies = False
+
+            # Add a PinJoint to keep link2 aligned with link1 (no rotation)
+            # Use world coordinate form
+            pin_joint = pymunk.PinJoint(link1_body, link2_body, connection_point_world, connection_point_world)
+            pin_joint.distance = 0  # Keep at fixed distance
+            pin_joint.collide_bodies = False
+            self.space.add(pin_joint)
+
+        elif joint_type == "fixed":
+            # Fixed joint: no relative motion
+            # Use both rotary and linear springs with very high stiffness
+            joint = pymunk.DampedRotarySpring(link1_body, link2_body, 0, 1e8, 1e6)
+            # Use world coordinate form for PivotJoint
+            pos_joint = pymunk.PivotJoint(link1_body, link2_body, connection_point_world)
+            pos_joint.collide_bodies = False
+            self.space.add(pos_joint)
 
         self.space.add(joint)
 
@@ -884,47 +938,78 @@ class BiArtEnv(gym.Env):
     def _randomize_state(self):
         """
         Randomize initial state with grippers holding the grasping parts.
+
+        CRITICAL: Since links are connected by joints, we must be careful not to violate constraints!
+        Strategy: Set link1 position, compute desired link2 state, then let physics resolve constraints.
         """
-        # Randomize object position and orientation
+        # Randomize link1 position and orientation
         obj_x = self.np_random.integers(220, 292)
         obj_y = self.np_random.integers(220, 292)
         obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)  # Limit rotation for stability
 
         self.link1.position = (obj_x, obj_y)
         self.link1.angle = obj_angle
+        self.link1.velocity = Vec2d(0, 0)
+        self.link1.angular_velocity = 0
 
-        # Link2 position depends on link1 and joint type
+        # Calculate connection point (link1's right end in world coords)
+        connection_point = self.link1.local_to_world(Vec2d(self.link_length / 2, 0))
+
+        # Compute DESIRED link2 state based on joint type
+        # We'll set link2 close to this, then let the joint constraint pull it exact
         if self.joint_type == "revolute":
             # For revolute, create V-shape with link2 at angle
-            # Joint angle: -120 to -60 degrees (opening downward like V)
             joint_angle_offset = self.np_random.uniform(-2*np.pi/3, -np.pi/3)  # -120° to -60°
-            # Link2 connects at the end of link1
-            connection_point = Vec2d(*self.link1.position) + Vec2d(self.link_length/2, 0).rotated(self.link1.angle)
-            # Link2 extends from connection point
-            offset = Vec2d(self.link_length/2, 0).rotated(self.link1.angle + joint_angle_offset)
-            self.link2.position = connection_point + offset
-            self.link2.angle = self.link1.angle + joint_angle_offset
-        else:
-            # For prismatic and fixed, links are aligned
-            offset = Vec2d(self.link_length, 0).rotated(self.link1.angle)
-            self.link2.position = Vec2d(*self.link1.position) + offset
-            self.link2.angle = self.link1.angle
+            desired_link2_angle = self.link1.angle + joint_angle_offset
 
-        # Position grippers to grasp the links
+            # Link2's center should be: connection_point + (link_length/2) in link2's direction
+            link2_center_offset = Vec2d(self.link_length / 2, 0).rotated(desired_link2_angle)
+            desired_link2_position = connection_point + link2_center_offset
+
+        elif self.joint_type == "prismatic":
+            # For prismatic, links stay aligned in angle
+            desired_link2_angle = self.link1.angle
+            # Link2 can slide along link1's axis - start at extended position
+            link2_center_offset = Vec2d(self.link_length / 2, 0).rotated(desired_link2_angle)
+            desired_link2_position = connection_point + link2_center_offset
+
+        else:  # fixed
+            # For fixed, links are rigidly connected
+            desired_link2_angle = self.link1.angle
+            link2_center_offset = Vec2d(self.link_length / 2, 0).rotated(desired_link2_angle)
+            desired_link2_position = connection_point + link2_center_offset
+
+        # Set link2 state (joint will adjust it if needed)
+        self.link2.position = desired_link2_position
+        self.link2.angle = desired_link2_angle
+        self.link2.velocity = Vec2d(0, 0)
+        self.link2.angular_velocity = 0
+
+        # IMPORTANT: Let joint constraints resolve for a few steps BEFORE adding grippers
+        # This prevents constraint fighting
+        for _ in range(20):
+            self.space.step(self.dt)
+            # Damp any velocities from constraint resolution
+            self.link1.velocity *= 0.9
+            self.link1.angular_velocity *= 0.9
+            self.link2.velocity *= 0.9
+            self.link2.angular_velocity *= 0.9
+
+        # NOW position grippers to grasp the links (after joint is settled)
         # Left gripper grasps link1
         self._position_gripper_to_grasp(self.left_gripper, self.link1)
 
         # Right gripper grasps link2
         self._position_gripper_to_grasp(self.right_gripper, self.link2)
 
-        # Run physics steps to let jaws settle and grasp objects
+        # Run physics steps to let grippers settle and grasp objects
         # The constant closing forces will automatically grasp the objects
         for _ in range(50):
             # Apply grip forces during settling
             self._apply_grip_forces()
             self.space.step(self.dt)
 
-            # Apply small damping to reduce oscillations
+            # Apply damping to reduce oscillations
             self.left_gripper.velocity *= 0.95
             self.left_gripper.angular_velocity *= 0.95
             self.right_gripper.velocity *= 0.95

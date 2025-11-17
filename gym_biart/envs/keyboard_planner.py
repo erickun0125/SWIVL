@@ -265,31 +265,38 @@ class MultiEEPlanner:
         """
         Update desired pose for controlled end-effector from velocity command.
 
+        IMPORTANT: Velocity is integrated from DESIRED pose, not current pose!
+        This ensures that when velocity is zero, desired pose stays fixed.
+
         Args:
             velocity_command: Velocity command [vx, vy, omega] in body frame
-            current_pose: Current pose [x, y, theta] of controlled EE
+            current_pose: Current pose [x, y, theta] of controlled EE (for reference frame)
         """
-        # Integrate velocity to get desired pose
-        x, y, theta = current_pose
+        # Get PREVIOUS desired pose (not current pose!)
+        prev_desired = self.desired_poses[self.controlled_ee_idx]
+        x_des, y_des, theta_des = prev_desired
+
         vx_body, vy_body, omega = velocity_command
 
         # Transform body frame velocity to world frame
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
+        # Use desired orientation, not current orientation
+        cos_theta = np.cos(theta_des)
+        sin_theta = np.sin(theta_des)
 
         vx_world = cos_theta * vx_body - sin_theta * vy_body
         vy_world = sin_theta * vx_body + cos_theta * vy_body
 
-        # Update desired pose
-        x_desired = x + vx_world * self.control_dt
-        y_desired = y + vy_world * self.control_dt
-        theta_desired = theta + omega * self.control_dt
+        # Integrate from DESIRED pose
+        x_new = x_des + vx_world * self.control_dt
+        y_new = y_des + vy_world * self.control_dt
+        theta_new = theta_des + omega * self.control_dt
 
         # Normalize angle
-        theta_desired = np.arctan2(np.sin(theta_desired), np.cos(theta_desired))
+        theta_new = np.arctan2(np.sin(theta_new), np.cos(theta_new))
 
+        # Update desired pose
         self.desired_poses[self.controlled_ee_idx] = np.array([
-            x_desired, y_desired, theta_desired
+            x_new, y_new, theta_new
         ])
 
     def _compute_grasp_maintaining_poses(self, current_ee_poses: np.ndarray):

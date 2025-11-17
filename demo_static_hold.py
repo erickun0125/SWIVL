@@ -100,6 +100,10 @@ class StaticHoldDemo:
         self.linkage.set_link_body(0, self.env.link1)
         self.linkage.set_link_body(1, self.env.link2)
 
+        # Register pymunk joint with linkage manager
+        if len(self.linkage.joints) > 0 and self.env.joint is not None:
+            self.linkage.joints[0].pymunk_joint = self.env.joint
+
         # Set desired poses to initial poses (hold position)
         self.desired_poses = initial_ee_poses.copy()
 
