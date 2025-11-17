@@ -116,12 +116,15 @@ class BiArtEnv(gym.Env):
         self.dt = 0.01  # 100 Hz simulation
         self.control_hz = self.metadata["render_fps"]
 
-        # Gripper parameters
-        self.gripper_mass = 1.0
-        self.gripper_width = 20.0  # Width of U-shape
-        self.gripper_height = 30.0  # Height of U-shape
-        self.gripper_thickness = 5.0  # Thickness of gripper arms
-        self.grip_force = 50.0  # Constant gripping force
+        # Gripper parameters (parallel gripper)
+        self.gripper_base_mass = 0.8
+        self.gripper_jaw_mass = 0.1
+        self.gripper_base_width = 25.0  # Width of base
+        self.gripper_base_height = 8.0  # Height of base
+        self.gripper_jaw_length = 20.0  # Length of each jaw
+        self.gripper_jaw_thickness = 4.0  # Thickness of jaw
+        self.gripper_max_opening = 18.0  # Maximum opening between jaws
+        self.grip_force = 30.0  # Constant closing force for each jaw
 
         # Object parameters
         self.link_length = 40.0
@@ -146,9 +149,17 @@ class BiArtEnv(gym.Env):
         # Contact tracking
         self.n_contact_points = 0
 
-        # Grip constraints (will be set during reset)
-        self.left_grip_constraint = None
-        self.right_grip_constraint = None
+        # Gripper jaw references (for parallel gripper)
+        self.left_jaw_left = None   # Left gripper's left jaw
+        self.left_jaw_right = None  # Left gripper's right jaw
+        self.right_jaw_left = None  # Right gripper's left jaw
+        self.right_jaw_right = None # Right gripper's right jaw
+
+        # Jaw constraints (prismatic joints)
+        self.left_jaw_left_joint = None
+        self.left_jaw_right_joint = None
+        self.right_jaw_left_joint = None
+        self.right_jaw_right_joint = None
 
         # Collision data for processing
         self.collision_data = []
@@ -231,15 +242,6 @@ class BiArtEnv(gym.Env):
         # Setup collision handlers for wrench sensing
         self._setup_collision_handlers()
 
-        # Remove old grip constraints if they exist
-        if self.left_grip_constraint is not None and self.left_grip_constraint in self.space.constraints:
-            self.space.remove(self.left_grip_constraint)
-        if self.right_grip_constraint is not None and self.right_grip_constraint in self.space.constraints:
-            self.space.remove(self.right_grip_constraint)
-
-        self.left_grip_constraint = None
-        self.right_grip_constraint = None
-
         # Goal pose for the object
         self.goal_pose = np.array([256, 200, np.pi / 4])  # [x, y, theta]
 
@@ -252,77 +254,155 @@ class BiArtEnv(gym.Env):
 
     def _add_gripper(self, position, angle, name):
         """
-        Add a U-shaped (ㄷ) gripper as a dynamic body.
+        Add a 1-DOF parallel gripper with two jaws.
 
-        The gripper is composed of three rectangles forming a U-shape:
-        - Left arm
-        - Bottom
-        - Right arm
+        The gripper consists of:
+        - Base body: Main gripper body (control target)
+        - Left jaw: Movable jaw on the left (prismatic joint)
+        - Right jaw: Movable jaw on the right (prismatic joint)
+
+        Each jaw applies a constant closing force to grasp objects.
+
+        Returns:
+            base_body: The main gripper body
         """
-        mass = self.gripper_mass
-
-        # Define vertices for U-shape (three rectangles)
-        # Bottom rectangle
-        w, h, t = self.gripper_width, self.gripper_height, self.gripper_thickness
-
-        # Left arm
-        left_arm_verts = [
-            (-w/2, -h/2),
-            (-w/2 + t, -h/2),
-            (-w/2 + t, h/2),
-            (-w/2, h/2),
-        ]
-
-        # Bottom
-        bottom_verts = [
-            (-w/2, -h/2),
-            (w/2, -h/2),
-            (w/2, -h/2 + t),
-            (-w/2, -h/2 + t),
-        ]
-
-        # Right arm
-        right_arm_verts = [
-            (w/2 - t, -h/2),
-            (w/2, -h/2),
-            (w/2, h/2),
-            (w/2 - t, h/2),
-        ]
-
-        # Calculate moment of inertia for all three shapes
-        inertia = (
-            pymunk.moment_for_poly(mass/3, left_arm_verts) +
-            pymunk.moment_for_poly(mass/3, bottom_verts) +
-            pymunk.moment_for_poly(mass/3, right_arm_verts)
-        )
-
-        # Create dynamic body
-        body = pymunk.Body(mass, inertia, body_type=pymunk.Body.DYNAMIC)
-        body.position = position
-        body.angle = angle
-
-        # Create shapes
-        left_arm = pymunk.Poly(body, left_arm_verts)
-        bottom = pymunk.Poly(body, bottom_verts)
-        right_arm = pymunk.Poly(body, right_arm_verts)
-
-        # Set properties
         color = pygame.Color("RoyalBlue") if name == "left" else pygame.Color("Crimson")
-        collision_type_gripper = 1  # Collision type for grippers
-        for shape in [left_arm, bottom, right_arm]:
-            shape.color = color
-            shape.friction = 1.0
-            shape.filter = pymunk.ShapeFilter(categories=0b01)  # Gripper category
-            shape.collision_type = collision_type_gripper
+        collision_type_gripper = 1
 
-        # Add to space
-        self.space.add(body, left_arm, bottom, right_arm)
+        # === BASE BODY ===
+        base_mass = self.gripper_base_mass
+        base_w = self.gripper_base_width
+        base_h = self.gripper_base_height
 
-        # Store shapes for later reference (use custom attribute, not 'shapes' which is read-only)
-        body.custom_shapes = [left_arm, bottom, right_arm]
-        body.name = name
+        base_verts = [
+            (-base_w/2, -base_h/2),
+            (base_w/2, -base_h/2),
+            (base_w/2, base_h/2),
+            (-base_w/2, base_h/2),
+        ]
 
-        return body
+        base_inertia = pymunk.moment_for_poly(base_mass, base_verts)
+        base_body = pymunk.Body(base_mass, base_inertia, body_type=pymunk.Body.DYNAMIC)
+        base_body.position = position
+        base_body.angle = angle
+
+        base_shape = pymunk.Poly(base_body, base_verts)
+        base_shape.color = color
+        base_shape.friction = 0.5
+        base_shape.filter = pymunk.ShapeFilter(categories=0b01)
+        base_shape.collision_type = collision_type_gripper
+
+        self.space.add(base_body, base_shape)
+
+        # === LEFT JAW ===
+        jaw_mass = self.gripper_jaw_mass
+        jaw_length = self.gripper_jaw_length
+        jaw_thickness = self.gripper_jaw_thickness
+
+        # Left jaw vertices (extends downward from base)
+        left_jaw_verts = [
+            (-jaw_thickness/2, 0),
+            (jaw_thickness/2, 0),
+            (jaw_thickness/2, jaw_length),
+            (-jaw_thickness/2, jaw_length),
+        ]
+
+        left_jaw_inertia = pymunk.moment_for_poly(jaw_mass, left_jaw_verts)
+        left_jaw_body = pymunk.Body(jaw_mass, left_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
+
+        # Position left jaw to the left of base
+        initial_jaw_offset = self.gripper_max_opening / 4  # Start partially open
+        left_jaw_local_pos = Vec2d(-initial_jaw_offset, base_h/2)
+        left_jaw_body.position = base_body.local_to_world(left_jaw_local_pos)
+        left_jaw_body.angle = angle
+
+        left_jaw_shape = pymunk.Poly(left_jaw_body, left_jaw_verts)
+        left_jaw_shape.color = color
+        left_jaw_shape.friction = 1.5  # High friction for grasping
+        left_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
+        left_jaw_shape.collision_type = collision_type_gripper
+
+        self.space.add(left_jaw_body, left_jaw_shape)
+
+        # === RIGHT JAW ===
+        right_jaw_verts = [
+            (-jaw_thickness/2, 0),
+            (jaw_thickness/2, 0),
+            (jaw_thickness/2, jaw_length),
+            (-jaw_thickness/2, jaw_length),
+        ]
+
+        right_jaw_inertia = pymunk.moment_for_poly(jaw_mass, right_jaw_verts)
+        right_jaw_body = pymunk.Body(jaw_mass, right_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
+
+        # Position right jaw to the right of base
+        right_jaw_local_pos = Vec2d(initial_jaw_offset, base_h/2)
+        right_jaw_body.position = base_body.local_to_world(right_jaw_local_pos)
+        right_jaw_body.angle = angle
+
+        right_jaw_shape = pymunk.Poly(right_jaw_body, right_jaw_verts)
+        right_jaw_shape.color = color
+        right_jaw_shape.friction = 1.5  # High friction for grasping
+        right_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
+        right_jaw_shape.collision_type = collision_type_gripper
+
+        self.space.add(right_jaw_body, right_jaw_shape)
+
+        # === JAW CONSTRAINTS (Prismatic Joints) ===
+        # Left jaw: can slide along base's x-axis
+        groove_length = self.gripper_max_opening / 2
+        left_groove_start = Vec2d(-groove_length, base_h/2)
+        left_groove_end = Vec2d(0, base_h/2)
+        left_anchor = Vec2d(0, 0)  # Anchor point on jaw
+
+        left_jaw_joint = pymunk.GrooveJoint(
+            base_body, left_jaw_body,
+            left_groove_start, left_groove_end, left_anchor
+        )
+        left_jaw_joint.collide_bodies = False
+
+        # Right jaw: can slide along base's x-axis
+        right_groove_start = Vec2d(0, base_h/2)
+        right_groove_end = Vec2d(groove_length, base_h/2)
+        right_anchor = Vec2d(0, 0)
+
+        right_jaw_joint = pymunk.GrooveJoint(
+            base_body, right_jaw_body,
+            right_groove_start, right_groove_end, right_anchor
+        )
+        right_jaw_joint.collide_bodies = False
+
+        self.space.add(left_jaw_joint, right_jaw_joint)
+
+        # Pin joint to constrain rotation (jaws stay parallel to base)
+        left_pin = pymunk.PinJoint(base_body, left_jaw_body, left_jaw_local_pos, left_anchor)
+        right_pin = pymunk.PinJoint(base_body, right_jaw_body, right_jaw_local_pos, right_anchor)
+        left_pin.collide_bodies = False
+        right_pin.collide_bodies = False
+        self.space.add(left_pin, right_pin)
+
+        # Rotary limit to keep jaws aligned
+        left_rot_limit = pymunk.RotaryLimitJoint(base_body, left_jaw_body, 0, 0)
+        right_rot_limit = pymunk.RotaryLimitJoint(base_body, right_jaw_body, 0, 0)
+        self.space.add(left_rot_limit, right_rot_limit)
+
+        # Store references
+        base_body.name = name
+        base_body.custom_shapes = [base_shape]
+
+        # Store jaw references for force application
+        if name == "left":
+            self.left_jaw_left = left_jaw_body
+            self.left_jaw_right = right_jaw_body
+            self.left_jaw_left_joint = left_jaw_joint
+            self.left_jaw_right_joint = right_jaw_joint
+        else:  # "right"
+            self.right_jaw_left = left_jaw_body
+            self.right_jaw_right = right_jaw_body
+            self.right_jaw_left_joint = left_jaw_joint
+            self.right_jaw_right_joint = right_jaw_joint
+
+        return base_body
 
     def _add_articulated_object(self, position, angle, joint_type):
         """
@@ -392,8 +472,9 @@ class BiArtEnv(gym.Env):
         ]
 
         # Grasping part (small rectangle at the center)
-        grasp_size = self.gripper_width * 0.6  # Slightly smaller than gripper opening
-        grasp_thickness = self.gripper_thickness * 0.8
+        # Should fit between gripper jaws
+        grasp_size = self.gripper_max_opening * 0.4  # Smaller than max jaw opening
+        grasp_thickness = self.gripper_jaw_thickness * 0.8
         grasp_verts = [
             (-grasp_size/2, -grasp_thickness/2),
             (grasp_size/2, -grasp_thickness/2),
@@ -487,64 +568,128 @@ class BiArtEnv(gym.Env):
 
     def _compute_external_wrenches(self):
         """
-        Compute external wrenches from grip constraint forces.
+        Compute external wrenches from jaw-object contact forces.
 
-        This uses the constraint forces (reaction forces) from the PinJoint
-        to estimate external wrenches. This is simpler and more reliable than
-        collision callbacks in Pymunk 7.x.
+        For parallel grippers, the external wrench comes from:
+        - Closing forces applied by jaws onto grasped object
+        - Reaction forces from object onto gripper base
         """
-        # Count active contacts (approximation)
+        # Reset contact tracking
         self.n_contact_points = 0
 
-        # Compute external wrench from grip constraints
-        # The constraint force represents the force needed to maintain the grip
-        # This is approximately the external force on the gripper
+        # === Left Gripper ===
+        if self.left_jaw_left is not None and self.left_jaw_right is not None:
+            # Estimate force from jaw positions relative to link
+            gripper_pos = Vec2d(*self.left_gripper.position)
+            link_pos = Vec2d(*self.link1.position)
 
-        if self.left_grip_constraint is not None:
-            # Get constraint impulse (approximation of force)
-            # In pymunk, we don't have direct access to constraint forces
-            # So we estimate from gripper-link relative motion
-            left_gripper_pos = Vec2d(*self.left_gripper.position)
-            link1_pos = Vec2d(*self.link1.position)
-            position_error = link1_pos - left_gripper_pos
+            # Check if jaws are in contact (link is between jaws)
+            jaw_left_pos = Vec2d(*self.left_jaw_left.position)
+            jaw_right_pos = Vec2d(*self.left_jaw_right.position)
 
-            # Estimate force from position error (spring-like)
-            # This is a rough approximation
-            k_estimate = 100.0  # Approximate stiffness
-            force_world = position_error * k_estimate
-
-            # Transform to body frame
+            # Distance from each jaw to link (in gripper frame)
             cos_angle = np.cos(-self.left_gripper.angle)
             sin_angle = np.sin(-self.left_gripper.angle)
-            force_body_x = cos_angle * force_world.x - sin_angle * force_world.y
-            force_body_y = sin_angle * force_world.x + cos_angle * force_world.y
 
-            # Estimate moment from relative angular velocity
+            # Link position in gripper frame
+            rel_pos_world = link_pos - gripper_pos
+            link_local_x = cos_angle * rel_pos_world.x - sin_angle * rel_pos_world.y
+            link_local_y = sin_angle * rel_pos_world.x + cos_angle * rel_pos_world.y
+
+            # Jaw positions in gripper frame
+            rel_jaw_left = jaw_left_pos - gripper_pos
+            jaw_left_x = cos_angle * rel_jaw_left.x - sin_angle * rel_jaw_left.y
+
+            rel_jaw_right = jaw_right_pos - gripper_pos
+            jaw_right_x = cos_angle * rel_jaw_right.x - sin_angle * rel_jaw_right.y
+
+            # Estimate contact forces based on jaw-link distance
+            # If link is between jaws, both jaws apply closing force
+            contact_threshold = self.link_width * 1.2  # Threshold for contact
+
+            total_force_x = 0.0
+            total_force_y = 0.0
+
+            # Check if link is roughly in grasping zone
+            if abs(link_local_y - self.gripper_jaw_length/2) < self.gripper_jaw_length:
+                # Link is in vertical range of jaws
+                left_dist = link_local_x - jaw_left_x
+                right_dist = jaw_right_x - link_local_x
+
+                if left_dist > 0 and right_dist > 0:
+                    # Link is between jaws - apply closing forces
+                    # Forces in gripper frame: jaws push inward (±x direction)
+                    # These create reaction force on gripper base
+                    total_force_x = 0.0  # Forces cancel out in x
+                    # Y force from friction/drag
+                    total_force_y = self.grip_force * 0.1  # Small friction component
+
+                    self.n_contact_points += 2  # Two jaws in contact
+
+            # Transform to body frame (already in gripper frame)
+            # Add small position-based spring for stability
+            position_error_local_x = link_local_x
+            position_error_local_y = link_local_y - self.gripper_jaw_length/2
+
+            spring_force_x = -position_error_local_x * 5.0
+            spring_force_y = -position_error_local_y * 5.0
+
+            force_body_x = total_force_x + spring_force_x
+            force_body_y = total_force_y + spring_force_y
+
+            # Estimate moment from link-gripper angular difference
             angle_diff = self.link1.angle - self.left_gripper.angle
-            moment_body = angle_diff * 10.0  # Approximate
+            moment_body = angle_diff * 10.0
 
             self.external_wrench_left = np.array([force_body_x, force_body_y, moment_body])
-            self.n_contact_points += 1
 
-        if self.right_grip_constraint is not None:
-            # Same for right gripper
-            right_gripper_pos = Vec2d(*self.right_gripper.position)
-            link2_pos = Vec2d(*self.link2.position)
-            position_error = link2_pos - right_gripper_pos
+        # === Right Gripper ===
+        if self.right_jaw_left is not None and self.right_jaw_right is not None:
+            # Same procedure for right gripper
+            gripper_pos = Vec2d(*self.right_gripper.position)
+            link_pos = Vec2d(*self.link2.position)
 
-            k_estimate = 100.0
-            force_world = position_error * k_estimate
+            jaw_left_pos = Vec2d(*self.right_jaw_left.position)
+            jaw_right_pos = Vec2d(*self.right_jaw_right.position)
 
             cos_angle = np.cos(-self.right_gripper.angle)
             sin_angle = np.sin(-self.right_gripper.angle)
-            force_body_x = cos_angle * force_world.x - sin_angle * force_world.y
-            force_body_y = sin_angle * force_world.x + cos_angle * force_world.y
+
+            rel_pos_world = link_pos - gripper_pos
+            link_local_x = cos_angle * rel_pos_world.x - sin_angle * rel_pos_world.y
+            link_local_y = sin_angle * rel_pos_world.x + cos_angle * rel_pos_world.y
+
+            rel_jaw_left = jaw_left_pos - gripper_pos
+            jaw_left_x = cos_angle * rel_jaw_left.x - sin_angle * rel_jaw_left.y
+
+            rel_jaw_right = jaw_right_pos - gripper_pos
+            jaw_right_x = cos_angle * rel_jaw_right.x - sin_angle * rel_jaw_right.y
+
+            total_force_x = 0.0
+            total_force_y = 0.0
+
+            if abs(link_local_y - self.gripper_jaw_length/2) < self.gripper_jaw_length:
+                left_dist = link_local_x - jaw_left_x
+                right_dist = jaw_right_x - link_local_x
+
+                if left_dist > 0 and right_dist > 0:
+                    total_force_x = 0.0
+                    total_force_y = self.grip_force * 0.1
+                    self.n_contact_points += 2
+
+            position_error_local_x = link_local_x
+            position_error_local_y = link_local_y - self.gripper_jaw_length/2
+
+            spring_force_x = -position_error_local_x * 5.0
+            spring_force_y = -position_error_local_y * 5.0
+
+            force_body_x = total_force_x + spring_force_x
+            force_body_y = total_force_y + spring_force_y
 
             angle_diff = self.link2.angle - self.right_gripper.angle
             moment_body = angle_diff * 10.0
 
             self.external_wrench_right = np.array([force_body_x, force_body_y, moment_body])
-            self.n_contact_points += 1
 
     def step(self, action):
         """
@@ -617,25 +762,61 @@ class BiArtEnv(gym.Env):
 
     def _apply_grip_forces(self):
         """
-        Apply gripping forces to hold the object.
+        Apply constant closing forces to gripper jaws.
 
-        Since we use PinJoint constraints for gripping, we don't need
-        to apply additional forces here. The constraints handle the gripping.
-
-        However, we can add damping to stabilize the grip if needed.
+        Each jaw applies a constant force towards the center (closing direction)
+        to grasp objects. This simulates a spring-loaded gripper mechanism.
         """
-        # Constraints handle gripping automatically
-        # Add small damping to gripper velocities for stability if needed
-        if self.left_grip_constraint is not None:
-            # Apply small damping force
-            damping = 0.98
-            self.left_gripper.velocity *= damping
-            self.left_gripper.angular_velocity *= damping
+        # Left gripper jaws
+        if self.left_jaw_left is not None and self.left_jaw_right is not None:
+            # Left jaw: apply force to the right (positive x in gripper frame)
+            # Right jaw: apply force to the left (negative x in gripper frame)
 
-        if self.right_grip_constraint is not None:
-            damping = 0.98
-            self.right_gripper.velocity *= damping
-            self.right_gripper.angular_velocity *= damping
+            # Transform closing force to world frame
+            gripper_angle = self.left_gripper.angle
+
+            # Closing direction for left jaw (towards right, in gripper frame)
+            left_close_dir_local = Vec2d(1, 0)  # Positive x
+            left_close_dir_world = left_close_dir_local.rotated(gripper_angle)
+
+            # Closing direction for right jaw (towards left, in gripper frame)
+            right_close_dir_local = Vec2d(-1, 0)  # Negative x
+            right_close_dir_world = right_close_dir_local.rotated(gripper_angle)
+
+            # Apply forces at jaw center of mass
+            self.left_jaw_left.apply_force_at_world_point(
+                left_close_dir_world * self.grip_force,
+                self.left_jaw_left.position
+            )
+
+            self.left_jaw_right.apply_force_at_world_point(
+                right_close_dir_world * self.grip_force,
+                self.left_jaw_right.position
+            )
+
+        # Right gripper jaws
+        if self.right_jaw_left is not None and self.right_jaw_right is not None:
+            # Transform closing force to world frame
+            gripper_angle = self.right_gripper.angle
+
+            # Closing direction for left jaw
+            left_close_dir_local = Vec2d(1, 0)
+            left_close_dir_world = left_close_dir_local.rotated(gripper_angle)
+
+            # Closing direction for right jaw
+            right_close_dir_local = Vec2d(-1, 0)
+            right_close_dir_world = right_close_dir_local.rotated(gripper_angle)
+
+            # Apply forces
+            self.right_jaw_left.apply_force_at_world_point(
+                left_close_dir_world * self.grip_force,
+                self.right_jaw_left.position
+            )
+
+            self.right_jaw_right.apply_force_at_world_point(
+                right_close_dir_world * self.grip_force,
+                self.right_jaw_right.position
+            )
 
     def _compute_reward(self):
         """
@@ -732,98 +913,89 @@ class BiArtEnv(gym.Env):
         # Right gripper grasps link2
         self._position_gripper_to_grasp(self.right_gripper, self.link2)
 
-        # Run a few physics steps to settle
-        for _ in range(5):
-            self.space.step(self.dt)
-
-        # Create grip constraints
-        self._create_grip_constraints()
-
-        # Run more steps to stabilize
-        for _ in range(5):
+        # Run a few physics steps to let jaws settle and grasp objects
+        # The constant closing forces will automatically grasp the objects
+        for _ in range(20):
+            # Apply grip forces during settling
+            self._apply_grip_forces()
             self.space.step(self.dt)
 
     def _position_gripper_to_grasp(self, gripper, link):
         """
-        Position gripper to grasp the link's grasping part.
+        Position parallel gripper to grasp the link.
 
-        The gripper's U-shape should align with the link so that the
-        grasping part (small rectangle at link center) fits inside the gripper.
+        The gripper's jaws will straddle the link, with the link positioned
+        between the two jaws. The constant closing force will then grasp it.
         """
-        # Gripper should be positioned slightly above/below the link
-        # and oriented perpendicular to the link
+        # Position gripper base near the link
+        # Gripper should be positioned so jaws can straddle the link
+        # Jaws extend downward (in gripper's +y direction when rotated)
 
-        # Position gripper at link position with offset
-        offset_distance = 0  # No offset, directly at link center
+        # Align gripper perpendicular to link (jaws perpendicular to link axis)
         perpendicular_angle = link.angle + np.pi / 2
 
-        # Add small random offset for variation
-        offset_x = self.np_random.uniform(-5, 5)
-        offset_y = self.np_random.uniform(-5, 5)
+        # Offset gripper base above the link
+        # So that when jaws extend down, they straddle the link
+        offset_distance = self.gripper_base_height/2 + self.gripper_jaw_length/3
 
-        gripper.position = (
-            link.position.x + offset_x,
-            link.position.y + offset_y
-        )
+        # Add small random variation
+        offset_x = self.np_random.uniform(-3, 3)
+        offset_y = self.np_random.uniform(-3, 3)
 
-        # Align gripper perpendicular to link (U-shape opening towards link)
+        # Position in direction perpendicular to link
+        offset_dir = Vec2d(0, -1).rotated(perpendicular_angle)  # Offset upward in gripper frame
+
+        gripper.position = Vec2d(*link.position) + offset_dir * offset_distance + Vec2d(offset_x, offset_y)
         gripper.angle = perpendicular_angle
+
+        # Also update jaw positions to match new gripper position
+        if gripper.name == "left":
+            jaw_left = self.left_jaw_left
+            jaw_right = self.left_jaw_right
+        else:
+            jaw_left = self.right_jaw_left
+            jaw_right = self.right_jaw_right
+
+        if jaw_left is not None and jaw_right is not None:
+            initial_jaw_offset = self.gripper_max_opening / 4
+            base_h = self.gripper_base_height
+
+            left_jaw_local_pos = Vec2d(-initial_jaw_offset, base_h/2)
+            right_jaw_local_pos = Vec2d(initial_jaw_offset, base_h/2)
+
+            jaw_left.position = gripper.local_to_world(left_jaw_local_pos)
+            jaw_left.angle = gripper.angle
+
+            jaw_right.position = gripper.local_to_world(right_jaw_local_pos)
+            jaw_right.angle = gripper.angle
 
         # Set velocities to zero
         gripper.velocity = Vec2d(0, 0)
         gripper.angular_velocity = 0
 
+        if jaw_left is not None:
+            jaw_left.velocity = Vec2d(0, 0)
+            jaw_left.angular_velocity = 0
+
+        if jaw_right is not None:
+            jaw_right.velocity = Vec2d(0, 0)
+            jaw_right.angular_velocity = 0
+
     def _create_grip_constraints(self):
         """
-        Create constraints to make grippers hold the objects.
+        No longer needed - parallel gripper jaws grasp automatically via constant closing forces.
 
-        Uses DampedSpring constraints to simulate gripping with compliance.
+        This function is kept for backward compatibility but does nothing.
         """
-        # Remove old constraints if they exist
-        if self.left_grip_constraint is not None:
-            if self.left_grip_constraint in self.space.constraints:
-                self.space.remove(self.left_grip_constraint)
-
-        if self.right_grip_constraint is not None:
-            if self.right_grip_constraint in self.space.constraints:
-                self.space.remove(self.right_grip_constraint)
-
-        # Create new grip constraints
-        # Use PinJoint for strong connection but allow some compliance through damping
-
-        # Left gripper to link1
-        anchor_gripper = Vec2d(0, 0)  # Center of gripper
-        anchor_link = Vec2d(0, 0)  # Center of link (where grasping part is)
-
-        self.left_grip_constraint = pymunk.PinJoint(
-            self.left_gripper, self.link1,
-            anchor_gripper, anchor_link
-        )
-        self.left_grip_constraint.error_bias = 0.1  # How fast to correct position errors
-        self.left_grip_constraint.max_bias = 10.0  # Max correction velocity
-        self.left_grip_constraint.max_force = self.grip_force * 10  # Max force constraint can apply
-
-        # Right gripper to link2
-        self.right_grip_constraint = pymunk.PinJoint(
-            self.right_gripper, self.link2,
-            anchor_gripper, anchor_link
-        )
-        self.right_grip_constraint.error_bias = 0.1
-        self.right_grip_constraint.max_bias = 10.0
-        self.right_grip_constraint.max_force = self.grip_force * 10
-
-        # Add constraints to space
-        self.space.add(self.left_grip_constraint, self.right_grip_constraint)
+        pass
 
     def _remove_grip_constraints(self):
-        """Remove grip constraints (for releasing objects if needed)."""
-        if self.left_grip_constraint is not None and self.left_grip_constraint in self.space.constraints:
-            self.space.remove(self.left_grip_constraint)
-            self.left_grip_constraint = None
+        """
+        No longer needed - parallel gripper jaws release when closing forces are removed.
 
-        if self.right_grip_constraint is not None and self.right_grip_constraint in self.space.constraints:
-            self.space.remove(self.right_grip_constraint)
-            self.right_grip_constraint = None
+        This function is kept for backward compatibility but does nothing.
+        """
+        pass
 
     def _set_state(self, state):
         """Set environment to a specific state."""
