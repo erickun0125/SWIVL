@@ -996,11 +996,12 @@ class BiArtEnv(gym.Env):
             self.link2.angular_velocity *= 0.9
 
         # NOW position grippers to grasp the links (after joint is settled)
-        # Left gripper grasps link1
-        self._position_gripper_to_grasp(self.left_gripper, self.link1)
+        # IMPORTANT: Grippers should grasp AWAY from the joint to avoid interference
+        # Left gripper grasps link1's left side (away from joint at right end)
+        self._position_gripper_to_grasp(self.left_gripper, self.link1, grasp_offset=-self.link_length/4)
 
-        # Right gripper grasps link2
-        self._position_gripper_to_grasp(self.right_gripper, self.link2)
+        # Right gripper grasps link2's right side (away from joint at left end)
+        self._position_gripper_to_grasp(self.right_gripper, self.link2, grasp_offset=self.link_length/4)
 
         # Run physics steps to let grippers settle and grasp objects
         # The constant closing forces will automatically grasp the objects
@@ -1019,7 +1020,7 @@ class BiArtEnv(gym.Env):
             self.link2.velocity *= 0.95
             self.link2.angular_velocity *= 0.95
 
-    def _position_gripper_to_grasp(self, gripper, link):
+    def _position_gripper_to_grasp(self, gripper, link, grasp_offset=0.0):
         """
         Position parallel gripper to grasp the link.
 
@@ -1027,26 +1028,33 @@ class BiArtEnv(gym.Env):
         - Gripper x-axis parallel to link's y-axis (jaws open/close perpendicular to link)
         - Gripper y-axis parallel to link's x-axis (jaws extend along link's length)
         - Link is positioned between the two jaws
+
+        Args:
+            gripper: The gripper body to position
+            link: The link body to grasp
+            grasp_offset: Offset along link's x-axis from center (positive = right, negative = left)
+                         This allows grasping at different points along the link
         """
         # Align gripper frame with object grasping frame
         # Gripper angle = link angle + 90 degrees
         # This makes gripper's x-axis perpendicular to link, y-axis along link
         gripper_angle = link.angle + np.pi / 2
 
-        # Position gripper base so that:
-        # 1. Gripper center aligns with link center (in x-y plane)
-        # 2. Jaws extend to straddle the link
+        # Calculate grasp point on the link
+        # Start from link center, then offset along link's x-axis
+        grasp_point_local = Vec2d(grasp_offset, 0)  # Offset in link's local frame
+        grasp_point_world = link.local_to_world(grasp_point_local)
 
-        # Calculate offset to position gripper base above link
+        # Calculate offset to position gripper base above the grasp point
         # When jaws extend down (in gripper's +y direction), they should straddle the link
         jaw_extension_to_link_center = self.gripper_jaw_length / 2
 
-        # Offset gripper base from link center (in gripper's y direction)
+        # Offset gripper base from grasp point (in gripper's y direction)
         offset_in_gripper_y = -(self.gripper_base_height/2 + jaw_extension_to_link_center)
         offset_world = Vec2d(0, offset_in_gripper_y).rotated(gripper_angle)
 
-        # Position gripper
-        gripper.position = Vec2d(*link.position) + offset_world
+        # Position gripper at grasp point
+        gripper.position = grasp_point_world + offset_world
         gripper.angle = gripper_angle
 
         # Update jaw positions to match gripper
