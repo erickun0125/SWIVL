@@ -123,12 +123,12 @@ class BiArtEnv(gym.Env):
         self.gripper_base_height = 8.0  # Height of base
         self.gripper_jaw_length = 20.0  # Length of each jaw
         self.gripper_jaw_thickness = 4.0  # Thickness of jaw
-        self.gripper_max_opening = 18.0  # Maximum opening between jaws
-        self.grip_force = 30.0  # Constant closing force for each jaw
+        self.gripper_max_opening = 20.0  # Maximum opening between jaws
+        self.grip_force = 25.0  # Constant closing force for each jaw (reduced for stability)
 
         # Object parameters
         self.link_length = 40.0
-        self.link_width = 15.0
+        self.link_width = 12.0  # Reduced to fit between jaws better
         self.link_mass = 0.5
 
         # Action and observation spaces
@@ -219,7 +219,7 @@ class BiArtEnv(gym.Env):
         """Setup the physics simulation."""
         self.space = pymunk.Space()
         self.space.gravity = 0, 0  # No gravity in SE(2)
-        self.space.damping = 0.95  # Some damping for stability
+        self.space.damping = 0.98  # Higher damping for better stability
 
         # Add walls
         walls = [
@@ -895,10 +895,14 @@ class BiArtEnv(gym.Env):
 
         # Link2 position depends on link1 and joint type
         if self.joint_type == "revolute":
-            # For revolute, link2 starts at a small angle offset
-            joint_angle_offset = self.np_random.uniform(-np.pi/6, np.pi/6)
-            offset = Vec2d(self.link_length, 0).rotated(self.link1.angle + joint_angle_offset)
-            self.link2.position = Vec2d(*self.link1.position) + offset
+            # For revolute, create V-shape with link2 at angle
+            # Joint angle: -120 to -60 degrees (opening downward like V)
+            joint_angle_offset = self.np_random.uniform(-2*np.pi/3, -np.pi/3)  # -120° to -60°
+            # Link2 connects at the end of link1
+            connection_point = Vec2d(*self.link1.position) + Vec2d(self.link_length/2, 0).rotated(self.link1.angle)
+            # Link2 extends from connection point
+            offset = Vec2d(self.link_length/2, 0).rotated(self.link1.angle + joint_angle_offset)
+            self.link2.position = connection_point + offset
             self.link2.angle = self.link1.angle + joint_angle_offset
         else:
             # For prismatic and fixed, links are aligned
@@ -913,42 +917,54 @@ class BiArtEnv(gym.Env):
         # Right gripper grasps link2
         self._position_gripper_to_grasp(self.right_gripper, self.link2)
 
-        # Run a few physics steps to let jaws settle and grasp objects
+        # Run physics steps to let jaws settle and grasp objects
         # The constant closing forces will automatically grasp the objects
-        for _ in range(20):
+        for _ in range(50):
             # Apply grip forces during settling
             self._apply_grip_forces()
             self.space.step(self.dt)
+
+            # Apply small damping to reduce oscillations
+            self.left_gripper.velocity *= 0.95
+            self.left_gripper.angular_velocity *= 0.95
+            self.right_gripper.velocity *= 0.95
+            self.right_gripper.angular_velocity *= 0.95
+            self.link1.velocity *= 0.95
+            self.link1.angular_velocity *= 0.95
+            self.link2.velocity *= 0.95
+            self.link2.angular_velocity *= 0.95
 
     def _position_gripper_to_grasp(self, gripper, link):
         """
         Position parallel gripper to grasp the link.
 
-        The gripper's jaws will straddle the link, with the link positioned
-        between the two jaws. The constant closing force will then grasp it.
+        The gripper's body frame is aligned with the object's grasping frame:
+        - Gripper x-axis parallel to link's y-axis (jaws open/close perpendicular to link)
+        - Gripper y-axis parallel to link's x-axis (jaws extend along link's length)
+        - Link is positioned between the two jaws
         """
-        # Position gripper base near the link
-        # Gripper should be positioned so jaws can straddle the link
-        # Jaws extend downward (in gripper's +y direction when rotated)
+        # Align gripper frame with object grasping frame
+        # Gripper angle = link angle + 90 degrees
+        # This makes gripper's x-axis perpendicular to link, y-axis along link
+        gripper_angle = link.angle + np.pi / 2
 
-        # Align gripper perpendicular to link (jaws perpendicular to link axis)
-        perpendicular_angle = link.angle + np.pi / 2
+        # Position gripper base so that:
+        # 1. Gripper center aligns with link center (in x-y plane)
+        # 2. Jaws extend to straddle the link
 
-        # Offset gripper base above the link
-        # So that when jaws extend down, they straddle the link
-        offset_distance = self.gripper_base_height/2 + self.gripper_jaw_length/3
+        # Calculate offset to position gripper base above link
+        # When jaws extend down (in gripper's +y direction), they should straddle the link
+        jaw_extension_to_link_center = self.gripper_jaw_length / 2
 
-        # Add small random variation
-        offset_x = self.np_random.uniform(-3, 3)
-        offset_y = self.np_random.uniform(-3, 3)
+        # Offset gripper base from link center (in gripper's y direction)
+        offset_in_gripper_y = -(self.gripper_base_height/2 + jaw_extension_to_link_center)
+        offset_world = Vec2d(0, offset_in_gripper_y).rotated(gripper_angle)
 
-        # Position in direction perpendicular to link
-        offset_dir = Vec2d(0, -1).rotated(perpendicular_angle)  # Offset upward in gripper frame
+        # Position gripper
+        gripper.position = Vec2d(*link.position) + offset_world
+        gripper.angle = gripper_angle
 
-        gripper.position = Vec2d(*link.position) + offset_dir * offset_distance + Vec2d(offset_x, offset_y)
-        gripper.angle = perpendicular_angle
-
-        # Also update jaw positions to match new gripper position
+        # Update jaw positions to match gripper
         if gripper.name == "left":
             jaw_left = self.left_jaw_left
             jaw_right = self.left_jaw_right
@@ -957,7 +973,8 @@ class BiArtEnv(gym.Env):
             jaw_right = self.right_jaw_right
 
         if jaw_left is not None and jaw_right is not None:
-            initial_jaw_offset = self.gripper_max_opening / 4
+            # Start jaws partially open (symmetric around center)
+            initial_jaw_offset = self.link_width / 2 + 1.0  # Slightly wider than link
             base_h = self.gripper_base_height
 
             left_jaw_local_pos = Vec2d(-initial_jaw_offset, base_h/2)
@@ -969,7 +986,7 @@ class BiArtEnv(gym.Env):
             jaw_right.position = gripper.local_to_world(right_jaw_local_pos)
             jaw_right.angle = gripper.angle
 
-        # Set velocities to zero
+        # Set all velocities to zero
         gripper.velocity = Vec2d(0, 0)
         gripper.angular_velocity = 0
 
