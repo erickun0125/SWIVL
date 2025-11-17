@@ -1,0 +1,6 @@
+gymnasium>=0.28.0
+numpy>=1.20.0
+pymunk>=6.0.0
+pygame>=2.0.0
+opencv-python>=4.5.0
+shapely>=1.8.0
