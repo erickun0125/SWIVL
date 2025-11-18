@@ -209,7 +209,9 @@ class TaskSpaceImpedanceController:
 
             # Convert velocities to body frame if provided
             if current_velocity is not None:
-                body_twist_current = world_to_body_velocity(current_pose, current_velocity)
+                # current_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
+                current_velocity_mr = np.array([current_velocity[2], current_velocity[0], current_velocity[1]])
+                body_twist_current = world_to_body_velocity(current_pose, current_velocity_mr)
             else:
                 body_twist_current = np.zeros(3)
 
@@ -286,7 +288,9 @@ class TaskSpaceImpedanceController:
         # 2. Compute velocity/twist error in body frame
         if current_velocity is not None and desired_velocity is not None:
             # Convert current spatial velocity to body frame
-            current_twist_body = world_to_body_velocity(current_pose, current_velocity)
+            # current_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
+            current_velocity_mr = np.array([current_velocity[2], current_velocity[0], current_velocity[1]])
+            current_twist_body = world_to_body_velocity(current_pose, current_velocity_mr)
 
             # desired_velocity is already in body frame (body twist)
             desired_twist_body = desired_velocity
@@ -298,7 +302,9 @@ class TaskSpaceImpedanceController:
 
         elif current_velocity is not None:
             # Only current velocity available - assume desired velocity is zero
-            current_twist_body = world_to_body_velocity(current_pose, current_velocity)
+            # current_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
+            current_velocity_mr = np.array([current_velocity[2], current_velocity[0], current_velocity[1]])
+            current_twist_body = world_to_body_velocity(current_pose, current_velocity_mr)
             error_vel_linear = -current_twist_body[1:3]  # MR: linear components at indices 1,2
             error_vel_angular = -current_twist_body[0]   # MR: angular component at index 0
 
