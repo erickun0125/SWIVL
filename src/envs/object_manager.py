@@ -413,6 +413,12 @@ class ArticulatedObject:
             # MR convention: [1, r_y, -r_x] (angular component first!)
             B = np.array([1.0, ry, -rx])
 
+            # IMPORTANT NOTE ON NORMALIZATION:
+            # This screw is NOT normalized to unit norm! ||B|| = sqrt(1 + ry^2 + rx^2)
+            # This is intentional: it represents the twist induced by unit angular velocity.
+            # The screw decomposition controller handles non-unit screws via projection operators.
+            # Normalizing would lose information about the physical distance to joint center.
+
         elif self.joint_type == JointType.PRISMATIC:
             # Transform joint direction to grasp frame (only rotation, no translation)
             joint_dir_grasp = R_grasp_link @ joint_dir_link
@@ -422,6 +428,11 @@ class ArticulatedObject:
             joint_dir_grasp_normalized = joint_dir_grasp / np.linalg.norm(joint_dir_grasp)
             # MR convention: [0, vx, vy] (angular component first, which is 0 for prismatic!)
             B = np.array([0.0, joint_dir_grasp_normalized[0], joint_dir_grasp_normalized[1]])
+
+            # IMPORTANT NOTE ON NORMALIZATION:
+            # This screw IS normalized to unit norm: ||B|| = 1
+            # This represents unit linear velocity along the sliding direction.
+            # Different normalization convention from revolute joints is intentional!
 
         else:
             B = np.zeros(3)

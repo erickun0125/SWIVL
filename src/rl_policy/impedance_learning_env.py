@@ -492,8 +492,11 @@ class ImpedanceLearningEnv(gym.Env):
         Update SE2 impedance controller gains.
 
         Following Modern Robotics convention:
-        - damping: [D_angular, D_linear, D_linear]
-        - stiffness: [K_angular, K_linear, K_linear]
+        - damping: [D_angular, D_linear_x, D_linear_y]
+        - stiffness: [K_angular, K_linear_x, K_linear_y]
+
+        Note: TaskSpaceImpedanceController uses isotropic linear gains (same for x and y).
+        We average the x and y components to maintain backward compatibility.
         """
         for i in range(2):
             damping = impedance_params['damping'][i]
@@ -501,9 +504,11 @@ class ImpedanceLearningEnv(gym.Env):
 
             # Update gains (MR convention: angular at index 0, linear at indices 1,2)
             self.controllers[i].gains.kd_angular = damping[0]  # MR: angular first!
-            self.controllers[i].gains.kd_linear = damping[1]   # MR: linear components at 1,2
+            # Average x and y damping for isotropic controller
+            self.controllers[i].gains.kd_linear = (damping[1] + damping[2]) / 2.0
             self.controllers[i].gains.kp_angular = stiffness[0]  # MR: angular first!
-            self.controllers[i].gains.kp_linear = stiffness[1]   # MR: linear components at 1,2
+            # Average x and y stiffness for isotropic controller
+            self.controllers[i].gains.kp_linear = (stiffness[1] + stiffness[2]) / 2.0
 
     def _update_screw_gains(self, impedance_params: Dict[str, np.ndarray]):
         """Update screw-decomposed controller gains."""
