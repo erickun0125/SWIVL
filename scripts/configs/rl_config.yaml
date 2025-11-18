@@ -1,0 +1,256 @@
+# Comprehensive RL Configuration for SWIVL
+# Impedance Parameter Learning with Hierarchical Control
+
+# =============================================================================
+# High-Level Policy Configuration
+# =============================================================================
+hl_policy:
+  # Policy type: flow_matching, diffusion, act, or none
+  type: "flow_matching"
+
+  # Checkpoint path (null for random initialization)
+  checkpoint: null
+
+  # Device: cpu, cuda, or auto
+  device: "auto"
+
+  # Policy-specific parameters
+  flow_matching:
+    state_dim: 18
+    action_dim: 6
+    hidden_dim: 256
+    num_layers: 4
+    num_diffusion_steps: 10
+    context_length: 10
+    output_frequency: 10.0  # Hz
+
+  diffusion:
+    state_dim: 18
+    action_dim: 6
+    hidden_dim: 256
+    num_layers: 4
+    num_diffusion_steps: 50
+    context_length: 10
+    output_frequency: 10.0  # Hz
+
+  act:
+    state_dim: 18
+    action_dim: 6
+    hidden_dim: 256
+    num_layers: 6
+    chunk_size: 10
+    context_length: 10
+    output_frequency: 10.0  # Hz
+
+# =============================================================================
+# Low-Level Controller Configuration
+# =============================================================================
+ll_controller:
+  # Controller type: se2_impedance or screw_decomposed
+  type: "se2_impedance"
+
+  # Robot parameters (for screw decomposed controller)
+  robot:
+    mass: 1.0        # kg
+    inertia: 0.1     # kg⋅m²
+
+  # SE(2) Impedance Controller Parameters
+  se2_impedance:
+    # Damping bounds (D)
+    min_damping_linear: 1.0
+    max_damping_linear: 50.0
+    min_damping_angular: 0.5
+    max_damping_angular: 20.0
+
+    # Stiffness bounds (K)
+    min_stiffness_linear: 10.0
+    max_stiffness_linear: 200.0
+    min_stiffness_angular: 5.0
+    max_stiffness_angular: 100.0
+
+  # Screw-Decomposed Impedance Controller Parameters
+  screw_decomposed:
+    # Parallel direction (compliant, along joint axis)
+    min_damping_parallel: 1.0
+    max_damping_parallel: 50.0
+    min_stiffness_parallel: 5.0
+    max_stiffness_parallel: 100.0
+
+    # Perpendicular direction (stiff, maintain grasp)
+    min_damping_perpendicular: 5.0
+    max_damping_perpendicular: 100.0
+    min_stiffness_perpendicular: 20.0
+    max_stiffness_perpendicular: 500.0
+
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+environment:
+  name: "BiArt"
+
+  # Joint type: revolute, prismatic, or fixed
+  joint_type: "revolute"
+
+  # Object parameters
+  object:
+    link_length: 40.0
+    link_width: 12.0
+    link_mass: 0.5
+
+  # Control frequency
+  control_dt: 0.01   # 100 Hz (low-level control)
+  policy_dt: 0.1     # 10 Hz (RL policy updates)
+
+  # Episode settings
+  max_episode_steps: 1000
+
+  # Observation type
+  obs_type: "state"
+
+  # Render mode: human, rgb_array, or null
+  render_mode: null
+
+# =============================================================================
+# RL Training Configuration
+# =============================================================================
+rl_training:
+  # Algorithm: PPO (Proximal Policy Optimization)
+  algorithm: "ppo"
+
+  # Total training timesteps
+  total_timesteps: 1000000
+
+  # PPO hyperparameters
+  ppo:
+    learning_rate: 3.0e-4
+    n_steps: 2048          # Steps per update
+    batch_size: 64         # Minibatch size
+    n_epochs: 10           # Optimization epochs per update
+    gamma: 0.99            # Discount factor
+    gae_lambda: 0.95       # GAE parameter
+    clip_range: 0.2        # PPO clip range
+    ent_coef: 0.0          # Entropy coefficient
+    vf_coef: 0.5           # Value function coefficient
+    max_grad_norm: 0.5     # Gradient clipping
+
+  # Network architecture
+  policy_network:
+    features_dim: 256
+    activation: "relu"
+
+  # Reward weights
+  reward:
+    tracking_weight: 1.0      # Tracking error penalty
+    wrench_weight: 0.1        # External wrench penalty
+    smoothness_weight: 0.01   # Impedance smoothness penalty
+
+  # Evaluation
+  evaluation:
+    eval_freq: 10000          # Evaluate every N timesteps
+    n_eval_episodes: 5        # Number of evaluation episodes
+    deterministic: true       # Use deterministic policy for eval
+
+  # Logging
+  logging:
+    tensorboard_log: "./logs/impedance_rl/"
+    save_freq: 50000          # Save checkpoint every N timesteps
+    log_interval: 100         # Log every N steps
+    verbose: 1                # Verbosity: 0 (none), 1 (info), 2 (debug)
+
+  # Output
+  output:
+    checkpoint_dir: "./checkpoints"
+    checkpoint_name: "impedance_policy.zip"
+
+# =============================================================================
+# HL Policy Training Configuration (Imitation Learning)
+# =============================================================================
+hl_training:
+  # Dataset
+  dataset:
+    path: "./data/demonstrations"
+    num_demonstrations: 1000
+    augment: true
+    shuffle: true
+    train_split: 0.8          # 80% train, 20% validation
+
+  # Training hyperparameters
+  batch_size: 64
+  learning_rate: 1.0e-4
+  num_epochs: 100
+  optimizer: "adam"
+
+  # Learning rate scheduler
+  lr_scheduler:
+    type: "cosine"            # cosine, step, or none
+    warmup_epochs: 10
+    min_lr: 1.0e-6
+
+  # Regularization
+  weight_decay: 1.0e-5
+  dropout: 0.1
+
+  # Logging
+  logging:
+    tensorboard_log: "./logs/hl_policy/"
+    save_freq: 10             # Save every N epochs
+    log_interval: 100         # Log every N steps
+    verbose: 1
+
+  # Output
+  output:
+    checkpoint_dir: "./checkpoints"
+    checkpoint_name_template: "{policy_type}_epoch_{epoch}.pth"
+    save_best_only: true
+    metric: "val_loss"        # Metric for best model selection
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  # Number of test episodes
+  num_episodes: 50
+
+  # Use deterministic policy
+  deterministic: true
+
+  # Save results
+  save_trajectories: true
+  save_metrics: true
+  save_videos: true
+
+  # Visualization
+  visualize: true
+  render_mode: "rgb_array"
+  fps: 30
+
+  # Metrics to compute
+  metrics:
+    - "success_rate"
+    - "tracking_error"
+    - "wrench_magnitude"
+    - "episode_length"
+    - "task_completion_time"
+
+  # Output directory
+  output_dir: "./evaluation_results"
+
+# =============================================================================
+# Experiment Tracking
+# =============================================================================
+experiment:
+  name: "swivl_impedance_learning"
+  tags:
+    - "bimanual"
+    - "impedance_control"
+    - "hierarchical_rl"
+
+  # Seed for reproducibility
+  seed: 42
+
+  # Notes
+  notes: |
+    Hierarchical learning experiment:
+    - High-level policy: Vision-based imitation learning
+    - Low-level policy: RL for impedance parameter learning
+    - Configurable controller types and HL policies
