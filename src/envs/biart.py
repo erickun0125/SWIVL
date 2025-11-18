@@ -423,6 +423,27 @@ class BiArtEnv(gym.Env):
         else:
             raise ValueError(f"Unknown obs_type: {self.obs_type}")
 
+    def get_joint_axis_screws(self):
+        """
+        Get joint axis as SE(2) unit screws in each end effector frame.
+
+        Returns body twist representation of object's joint axis as seen from
+        each EE frame. This is configuration-invariant kinematic constraint
+        information that depends only on grasping frames and joint geometry.
+
+        Returns:
+            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw:
+                - For revolute: [r_y, -r_x, 1] (r is position to joint center)
+                - For prismatic: [v_x, v_y, 0] (v is unit sliding direction)
+                - For fixed: [0, 0, 0] (no motion)
+
+        Example:
+            >>> B_left, B_right = env.get_joint_axis_screws()
+            >>> # B_left describes how left EE moves when joint rotates/slides
+            >>> # with unit velocity in joint space
+        """
+        return self.object_manager.get_joint_axis_screws()
+
     def _draw(self):
         """Draw the environment."""
         # Create screen

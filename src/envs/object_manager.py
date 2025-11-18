@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 import pygame
 
-from src.se2_math import SE2Pose, normalize_angle
+from src.se2_math import SE2Pose, normalize_angle, se2_inverse
 
 
 class JointType(Enum):
@@ -328,6 +328,102 @@ class ArticulatedObject:
             for name in self.grasping_frames.keys()
         }
 
+    def get_joint_axis_screws(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get joint axis as SE(2) unit screws in each end effector (grasping) frame.
+
+        Returns body twist representation of joint axis as seen from each EE frame.
+        This is configuration-invariant - depends only on grasping frames and joint geometry.
+
+        For revolute joint:
+            B = [v_x, v_y, omega] where v = omega × r (r is position to joint axis)
+            Normalized: [r_y, -r_x, 1] (unit angular velocity)
+
+        For prismatic joint:
+            B = [v_x, v_y, 0] where [v_x, v_y] is unit direction of sliding
+
+        Returns:
+            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw
+        """
+        # Get joint connection point and direction in link frames
+        if self.joint_type == JointType.REVOLUTE:
+            # Connection point is at link1's right end (local coords)
+            joint_pos_link1 = np.array([self.link_length / 2, 0.0])
+            # In link2, it's at the left end
+            joint_pos_link2 = np.array([-self.link_length / 2, 0.0])
+
+        elif self.joint_type == JointType.PRISMATIC:
+            # Joint axis direction is along link1's x-axis
+            joint_direction_link1 = np.array([1.0, 0.0])
+            # Same direction in link2 (parallel constraint)
+            joint_direction_link2 = np.array([1.0, 0.0])
+
+        else:  # FIXED
+            # No motion allowed - return zero screws
+            return np.zeros(3), np.zeros(3)
+
+        # Compute screw in each grasping frame
+        B_left = self._compute_joint_screw_in_grasp_frame("left",
+                                                           joint_pos_link1 if self.joint_type == JointType.REVOLUTE else None,
+                                                           joint_direction_link1 if self.joint_type == JointType.PRISMATIC else None)
+        B_right = self._compute_joint_screw_in_grasp_frame("right",
+                                                            joint_pos_link2 if self.joint_type == JointType.REVOLUTE else None,
+                                                            joint_direction_link2 if self.joint_type == JointType.PRISMATIC else None)
+
+        return B_left, B_right
+
+    def _compute_joint_screw_in_grasp_frame(self,
+                                             gripper_name: str,
+                                             joint_pos_link: Optional[np.ndarray] = None,
+                                             joint_dir_link: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Compute joint axis screw in grasping frame.
+
+        Args:
+            gripper_name: "left" or "right"
+            joint_pos_link: Joint position in link frame [x, y] (for revolute)
+            joint_dir_link: Joint direction in link frame [dx, dy] (for prismatic)
+
+        Returns:
+            SE(2) unit screw in grasping frame (3,)
+        """
+        # Get grasping frame
+        grasp_frame = self.grasping_frames[gripper_name]
+
+        # Grasping frame pose in link frame (T_link_grasp)
+        T_link_grasp = SE2Pose.from_array(grasp_frame.local_pose).to_matrix()
+
+        # Invert to get T_grasp_link (grasp frame relative to link)
+        T_grasp_link = se2_inverse(T_link_grasp)
+
+        # Extract rotation and translation from T_grasp_link
+        # T_grasp_link transforms points from link frame to grasp frame
+        R_grasp_link = T_grasp_link[:2, :2]  # Rotation matrix
+        t_grasp_link = T_grasp_link[:2, 2]   # Translation vector
+
+        if self.joint_type == JointType.REVOLUTE:
+            # Transform joint position to grasp frame
+            joint_pos_grasp = R_grasp_link @ joint_pos_link + t_grasp_link
+
+            # SE(2) screw for revolute: [r_y, -r_x, 1]
+            # This represents v = omega × r with omega = 1 (unit angular velocity)
+            rx, ry = joint_pos_grasp
+            B = np.array([ry, -rx, 1.0])
+
+        elif self.joint_type == JointType.PRISMATIC:
+            # Transform joint direction to grasp frame (only rotation, no translation)
+            joint_dir_grasp = R_grasp_link @ joint_dir_link
+
+            # SE(2) screw for prismatic: [v_x, v_y, 0] with unit linear velocity
+            # Normalize to ensure unit velocity
+            joint_dir_grasp_normalized = joint_dir_grasp / np.linalg.norm(joint_dir_grasp)
+            B = np.array([joint_dir_grasp_normalized[0], joint_dir_grasp_normalized[1], 0.0])
+
+        else:
+            B = np.zeros(3)
+
+        return B
+
     def get_joint_state(self) -> float:
         """
         Get current joint state.
@@ -468,3 +564,19 @@ class ObjectManager:
         if self.object is None:
             raise RuntimeError("Object not initialized. Call reset() first.")
         return self.object
+
+    def get_joint_axis_screws(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get joint axis as SE(2) unit screws in each end effector frame.
+
+        This is configuration-invariant kinematic constraint information.
+        Returns body twist representation of joint axis as seen from each EE frame.
+
+        Returns:
+            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw
+                - For revolute: [r_y, -r_x, 1] (r is position to joint center)
+                - For prismatic: [v_x, v_y, 0] (v is unit sliding direction)
+        """
+        if self.object is None:
+            raise RuntimeError("Object not initialized. Call reset() first.")
+        return self.object.get_joint_axis_screws()
