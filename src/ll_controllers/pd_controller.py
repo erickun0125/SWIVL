@@ -68,14 +68,18 @@ class PDController:
         self,
         current_pose: np.ndarray,
         desired_pose: np.ndarray,
+        desired_velocity: np.ndarray,
+        desired_acceleration: Optional[np.ndarray] = None,
         current_velocity: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
-        Compute control wrench to track desired pose.
+        Compute control wrench to track desired trajectory.
 
         Args:
             current_pose: Current pose [x, y, theta] in world frame
             desired_pose: Desired pose [x, y, theta] in world frame
+            desired_velocity: Desired velocity [vx, vy, omega] in world frame
+            desired_acceleration: Desired acceleration [ax, ay, alpha] in world frame (usually zero)
             current_velocity: Optional current velocity [vx, vy, omega] in world frame
 
         Returns:
@@ -100,49 +104,71 @@ class PDController:
         # Compute angular error (shortest rotation)
         error_angle = normalize_angle(theta_d - theta)
 
-        # Compute derivative terms
+        # Transform desired velocity to body frame
+        vx_d, vy_d, omega_d = desired_velocity
+        desired_vel_body = np.array([
+            cos_theta * vx_d + sin_theta * vy_d,
+            -sin_theta * vx_d + cos_theta * vy_d
+        ])
+
+        # Compute velocity error
         if current_velocity is not None:
-            # Use provided velocity for derivative term
+            # Use provided velocity for error computation
             vx, vy, omega = current_velocity
 
-            # Transform velocity to body frame
+            # Transform current velocity to body frame
             vel_body = np.array([
                 cos_theta * vx + sin_theta * vy,
                 -sin_theta * vx + cos_theta * vy
             ])
 
-            # Derivative of position error (negative of velocity)
-            derror_pos_body = -vel_body
-            derror_angle = -omega
+            # Velocity error in body frame
+            error_vel_body = desired_vel_body - vel_body
+            error_omega = omega_d - omega
 
         else:
-            # Estimate derivative from finite differences
+            # Estimate velocity error from finite differences
             if self.prev_error_pos is not None:
                 derror_pos_body = (error_pos_body - self.prev_error_pos) / self.dt
+                error_vel_body = -derror_pos_body
             else:
-                derror_pos_body = np.zeros(2)
+                error_vel_body = desired_vel_body  # Assume current vel = 0
 
             if self.prev_error_angle is not None:
                 derror_angle = (error_angle - self.prev_error_angle) / self.dt
+                error_omega = -derror_angle
             else:
-                derror_angle = 0.0
+                error_omega = omega_d
 
             # Store current errors for next iteration
             self.prev_error_pos = error_pos_body.copy()
             self.prev_error_angle = error_angle
 
-        # PD control law
+        # PD control law with feedforward
         # Force in body frame
         force_body = (
             self.gains.kp_linear * error_pos_body +
-            self.gains.kd_linear * derror_pos_body
+            self.gains.kd_linear * error_vel_body
         )
 
         # Torque
         torque = (
             self.gains.kp_angular * error_angle +
-            self.gains.kd_angular * derror_angle
+            self.gains.kd_angular * error_omega
         )
+
+        # Add feedforward term if desired acceleration provided
+        # (Usually zero, but included for completeness)
+        if desired_acceleration is not None:
+            ax_d, ay_d, alpha_d = desired_acceleration
+            # Transform to body frame
+            accel_body = np.array([
+                cos_theta * ax_d + sin_theta * ay_d,
+                -sin_theta * ax_d + cos_theta * ay_d
+            ])
+            # Feedforward assumes unit mass/inertia
+            force_body += accel_body
+            torque += alpha_d
 
         # Saturate to limits
         force_magnitude = np.linalg.norm(force_body)
@@ -200,6 +226,8 @@ class MultiGripperPDController:
         self,
         current_poses: np.ndarray,
         desired_poses: np.ndarray,
+        desired_velocities: np.ndarray,
+        desired_accelerations: Optional[np.ndarray] = None,
         current_velocities: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
@@ -208,7 +236,9 @@ class MultiGripperPDController:
         Args:
             current_poses: Array of shape (num_grippers, 3) with current poses
             desired_poses: Array of shape (num_grippers, 3) with desired poses
-            current_velocities: Optional array of shape (num_grippers, 3) with velocities
+            desired_velocities: Array of shape (num_grippers, 3) with desired velocities
+            desired_accelerations: Optional array of shape (num_grippers, 3) with desired accelerations
+            current_velocities: Optional array of shape (num_grippers, 3) with current velocities
 
         Returns:
             Array of shape (num_grippers, 3) with wrenches [fx, fy, tau]
@@ -219,10 +249,13 @@ class MultiGripperPDController:
         wrenches = []
         for i in range(self.num_grippers):
             current_vel = current_velocities[i] if current_velocities is not None else None
+            desired_accel = desired_accelerations[i] if desired_accelerations is not None else None
 
             wrench = self.controllers[i].compute_wrench(
                 current_poses[i],
                 desired_poses[i],
+                desired_velocities[i],
+                desired_accel,
                 current_vel
             )
             wrenches.append(wrench)
