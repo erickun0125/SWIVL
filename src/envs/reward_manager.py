@@ -17,7 +17,7 @@ import numpy as np
 from typing import Dict, Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle
+from src.se2_math import normalize_angle, se2_log, se2_inverse, SE2Pose
 
 
 @dataclass
@@ -130,34 +130,66 @@ class RewardManager:
             'is_failure': is_failure
         }
 
+    def _compute_se2_geodesic_distance(
+        self,
+        current_pose: np.ndarray,
+        desired_pose: np.ndarray
+    ) -> float:
+        """
+        Compute SE(2) geodesic distance using logarithm map.
+
+        This is the proper distance metric on the SE(2) manifold.
+
+        Args:
+            current_pose: Current pose [x, y, theta]
+            desired_pose: Desired pose [x, y, theta]
+
+        Returns:
+            Geodesic distance (scalar)
+        """
+        T_current = SE2Pose.from_array(current_pose).to_matrix()
+        T_desired = SE2Pose.from_array(desired_pose).to_matrix()
+
+        # Compute relative transformation
+        T_error = se2_inverse(T_current) @ T_desired
+
+        # Logarithm map gives the error in se(2) algebra
+        error = se2_log(T_error)  # [omega, vx, vy] (MR convention)
+
+        # Compute weighted norm (weight rotation and translation differently)
+        # error = [omega, vx, vy]
+        angular_error = np.abs(error[0])  # MR: angular component at index 0
+        linear_error = np.linalg.norm(error[1:3])  # MR: linear components at indices 1,2
+
+        # Weighted combination
+        total_error = linear_error + 10.0 * angular_error
+
+        return total_error
+
     def _compute_pose_tracking_reward(
         self,
         current_poses: np.ndarray,
         desired_poses: np.ndarray
     ) -> float:
         """
-        Compute pose tracking reward.
+        Compute pose tracking reward using SE(2) geodesic distance.
 
         Uses exponential reward: r = exp(-error)
         """
-        # Compute position error (Euclidean distance)
-        pos_error = np.linalg.norm(
-            current_poses[:, :2] - desired_poses[:, :2],
-            axis=1
-        ).mean()
+        # Compute SE(2) geodesic distance for each EE
+        errors = []
+        for i in range(len(current_poses)):
+            error = self._compute_se2_geodesic_distance(
+                current_poses[i],
+                desired_poses[i]
+            )
+            errors.append(error)
 
-        # Compute angle error
-        angle_errors = np.array([
-            np.abs(normalize_angle(current_poses[i, 2] - desired_poses[i, 2]))
-            for i in range(len(current_poses))
-        ])
-        angle_error = angle_errors.mean()
-
-        # Weighted error
-        total_error = pos_error + 10.0 * angle_error  # Weight angle more
+        # Average error
+        avg_error = np.mean(errors)
 
         # Exponential reward (higher is better)
-        reward = np.exp(-total_error / 50.0)
+        reward = np.exp(-avg_error / 50.0)
 
         return reward
 
@@ -185,10 +217,12 @@ class RewardManager:
         Compute energy efficiency reward.
 
         Penalizes large control efforts.
+
+        Following MR convention: wrench = [tau, fx, fy]
         """
         # Average wrench magnitude
         wrench_magnitudes = np.array([
-            np.linalg.norm(w[:2]) + np.abs(w[2])  # Force + torque
+            np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
             for w in wrenches
         ])
         avg_magnitude = wrench_magnitudes.mean()
@@ -207,10 +241,12 @@ class RewardManager:
         Compute safety reward.
 
         Penalizes excessive wrenches that might damage system.
+
+        Following MR convention: wrench = [tau, fx, fy]
         """
-        # Check applied wrenches
+        # Check applied wrenches (MR: [tau, fx, fy])
         max_applied = np.array([
-            np.linalg.norm(w[:2]) + np.abs(w[2])
+            np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
             for w in applied_wrenches
         ]).max()
 
@@ -218,7 +254,7 @@ class RewardManager:
         max_external = 0.0
         if external_wrenches is not None:
             max_external = np.array([
-                np.linalg.norm(w[:2]) + np.abs(w[2])
+                np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
                 for w in external_wrenches
             ]).max()
 
@@ -266,9 +302,11 @@ class RewardManager:
         Check if task failed.
 
         Failure: wrench exceeds safety limit.
+
+        Following MR convention: wrench = [tau, fx, fy]
         """
         max_wrench = np.array([
-            np.linalg.norm(w[:2]) + np.abs(w[2])
+            np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
             for w in wrenches
         ]).max()
 
@@ -310,9 +348,9 @@ class RewardManager:
         ])
         angle_error = angle_errors.mean()
 
-        # Wrench magnitudes
+        # Wrench magnitudes (MR convention: [tau, fx, fy])
         wrench_magnitudes = np.array([
-            np.linalg.norm(w[:2]) + np.abs(w[2])
+            np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
             for w in applied_wrenches
         ])
 
@@ -325,7 +363,7 @@ class RewardManager:
 
         if external_wrenches is not None:
             ext_magnitudes = np.array([
-                np.linalg.norm(w[:2]) + np.abs(w[2])
+                np.abs(w[0]) + np.linalg.norm(w[1:3])  # MR: torque (index 0) + force (indices 1,2)
                 for w in external_wrenches
             ])
             info['max_external_wrench'] = ext_magnitudes.max()

@@ -283,11 +283,16 @@ class ImpedanceLearningEnv(gym.Env):
                         desired_acceleration=desired_accels[i]  # Body frame acceleration (feedforward)
                     )
                 elif self.config.controller_type == 'screw_decomposed':
+                    # Use proper current body twist from observation
+                    current_body_twist = obs.get('ee_body_twists', obs['ee_twists'])[i]  # Fallback for compatibility
+
                     wrench, _ = self.controllers[i].compute_control(
                         current_pose=obs['ee_poses'][i],
                         desired_pose=desired_poses[i],
-                        body_twist_current=desired_twists[i],  # Body frame twist
-                        body_twist_desired=desired_twists[i]  # Body frame twist
+                        body_twist_current=current_body_twist,  # ✅ Current body twist (MR convention!)
+                        body_twist_desired=desired_twists[i],   # Desired body twist
+                        body_accel_desired=desired_accels[i],   # Desired body acceleration (feedforward)
+                        F_ext=obs['external_wrenches'][i]       # External wrench for impedance modulation
                     )
                 wrenches.append(wrench)
 
@@ -595,24 +600,24 @@ class ImpedanceLearningEnv(gym.Env):
         Construct RL observation from environment observation.
 
         Observation includes:
-        - External wrenches (2, 3)
+        - External wrenches (2, 3) - MR convention: [tau, fx, fy]
         - Current poses (2, 3)
-        - Current twists (2, 3)
+        - Current body twists (2, 3) - MR convention: [omega, vx_b, vy_b]
         - Desired poses (2, 3)
-        - Desired twists (2, 3)
+        - Desired twists (2, 3) - MR convention: [omega, vx_b, vy_b]
         """
         desired_poses, desired_twists, _ = self._get_trajectory_targets()
 
-        # Get current twists (velocities)
-        current_twists = obs.get('ee_twists', np.zeros((2, 3)))
+        # Get current body twists (use new field if available, fallback to spatial for compatibility)
+        current_twists = obs.get('ee_body_twists', obs.get('ee_twists', np.zeros((2, 3))))
 
         # Concatenate all observations
         rl_obs = np.concatenate([
-            obs['external_wrenches'].flatten(),  # 6
+            obs['external_wrenches'].flatten(),  # 6 - [tau, fx, fy] for both arms
             obs['ee_poses'].flatten(),  # 6
-            current_twists.flatten(),  # 6
+            current_twists.flatten(),  # 6 - [omega, vx_b, vy_b] for both arms
             desired_poses.flatten(),  # 6
-            desired_twists.flatten()  # 6
+            desired_twists.flatten()  # 6 - [omega, vx_b, vy_b] for both arms
         ])
 
         return rl_obs.astype(np.float32)

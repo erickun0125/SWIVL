@@ -20,7 +20,7 @@ from scipy.interpolate import CubicSpline, interp1d
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, SE2Pose, world_to_body_velocity
+from src.se2_math import normalize_angle, SE2Pose, spatial_to_body_twist
 
 
 @dataclass
@@ -169,7 +169,8 @@ class CubicSplineTrajectory:
 
         # Convert spatial velocity to body twist
         # Body twist: velocity expressed in the body frame
-        velocity_body = world_to_body_velocity(pose, velocity_spatial)
+        # Use modern function name (spatial_to_body_twist instead of deprecated world_to_body_velocity)
+        velocity_body = spatial_to_body_twist(pose, velocity_spatial)
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
@@ -273,7 +274,7 @@ class MinimumJerkTrajectory:
         acceleration = s_ddot * delta_pose
 
         # Convert spatial velocity to body twist
-        velocity_body = world_to_body_velocity(pose, velocity_spatial)
+        velocity_body = spatial_to_body_twist(pose, velocity_spatial)
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 

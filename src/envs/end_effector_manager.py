@@ -17,6 +17,8 @@ from typing import Tuple, Optional
 from dataclasses import dataclass
 import pygame
 
+from src.se2_math import spatial_to_body_twist
+
 
 @dataclass
 class GripperConfig:
@@ -173,7 +175,8 @@ class ParallelGripper:
         space.add(right_rotation)
 
         # External wrench tracking
-        self.external_wrench = np.zeros(3)  # [fx, fy, tau] in body frame
+        # Following Modern Robotics convention: [tau, fx, fy]
+        self.external_wrench = np.zeros(3)  # [tau, fx, fy] in body frame (MR convention!)
         self.contact_impulses = []  # Store contact impulses during step
 
     def apply_grip_force(self):
@@ -286,7 +289,8 @@ class ParallelGripper:
         fy_body = -sin_theta * total_force_world.x + cos_theta * total_force_world.y
 
         # Store and return
-        self.external_wrench = np.array([fx_body, fy_body, total_torque])
+        # Following Modern Robotics convention: [τ, fx, fy] (torque first!)
+        self.external_wrench = np.array([total_torque, fx_body, fy_body])
 
         # Clear impulses for next step
         self.contact_impulses = []
@@ -435,8 +439,32 @@ class EndEffectorManager:
         return np.array([g.get_pose() for g in self.grippers])
 
     def get_velocities(self) -> np.ndarray:
-        """Get all gripper velocities."""
+        """
+        Get all gripper velocities in spatial frame.
+
+        Returns:
+            Array of shape (num_grippers, 3) with spatial velocities [vx_s, vy_s, omega]
+        """
         return np.array([g.get_velocity() for g in self.grippers])
+
+    def get_body_twists(self) -> np.ndarray:
+        """
+        Get all gripper body frame twists.
+
+        Following Modern Robotics convention:
+        Converts spatial velocities to body frame twists [ω, vx_b, vy_b]
+
+        Returns:
+            Array of shape (num_grippers, 3) with body twists [omega, vx_b, vy_b] (MR convention!)
+        """
+        body_twists = []
+        for gripper in self.grippers:
+            pose = gripper.get_pose()  # [x, y, theta]
+            vel_spatial = gripper.get_velocity()  # [vx_s, vy_s, omega]
+            # Convert spatial velocity to body twist (MR convention)
+            twist_body = spatial_to_body_twist(pose, vel_spatial)
+            body_twists.append(twist_body)
+        return np.array(body_twists)
 
     def apply_wrenches(self, wrenches: np.ndarray):
         """
