@@ -26,7 +26,7 @@ import numpy as np
 from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
-from src.envs.biart import BiartEnv
+from src.envs.biart import BiArtEnv
 from src.trajectory_generator import MinimumJerkTrajectory, TrajectoryPoint
 from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController, ImpedanceGains
 
@@ -91,7 +91,7 @@ class ImpedanceLearningEnv(gym.Env):
         self.render_mode = render_mode
 
         # Create base environment
-        self.base_env = BiartEnv(render_mode=render_mode)
+        self.base_env = BiArtEnv(render_mode=render_mode)
 
         # Create impedance controllers for both arms
         self.controllers = [
@@ -192,8 +192,8 @@ class ImpedanceLearningEnv(gym.Env):
             # Get current observation
             obs = self.base_env.get_obs()
 
-            # Get desired poses and twists from trajectories
-            desired_poses, desired_twists = self._get_trajectory_targets()
+            # Get desired poses, twists, and accelerations from trajectories
+            desired_poses, desired_twists, desired_accels = self._get_trajectory_targets()
 
             # Compute control wrenches using impedance controllers
             wrenches = []
@@ -203,7 +203,8 @@ class ImpedanceLearningEnv(gym.Env):
                     desired_pose=desired_poses[i],
                     measured_wrench=obs['external_wrenches'][i],
                     current_velocity=obs['ee_twists'][i],  # Spatial frame velocity
-                    desired_velocity=desired_twists[i]  # Body frame twist
+                    desired_velocity=desired_twists[i],  # Body frame twist
+                    desired_acceleration=desired_accels[i]  # Body frame acceleration (feedforward)
                 )
                 wrenches.append(wrench)
 
@@ -370,31 +371,43 @@ class ImpedanceLearningEnv(gym.Env):
 
         self.trajectory_time = 0.0
 
-    def _get_trajectory_targets(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _get_trajectory_targets(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Get desired poses and twists from trajectories.
+        Get desired poses, twists, and accelerations from trajectories.
 
         Returns:
-            Tuple of (desired_poses, desired_twists) where:
+            Tuple of (desired_poses, desired_twists, desired_accelerations) where:
                 - desired_poses: (2, 3) array in spatial frame (T_si^des)
                 - desired_twists: (2, 3) array in body frame (i^V_i^des)
+                - desired_accelerations: (2, 3) array in body frame (i^dV_i^des)
         """
+        from src.se2_math import world_to_body_acceleration
+
         desired_poses = []
         desired_twists = []
+        desired_accelerations = []
 
         for i in range(2):
             if self.trajectories[i] is None:
                 # Fallback to zero
                 desired_poses.append(np.zeros(3))
                 desired_twists.append(np.zeros(3))
+                desired_accelerations.append(np.zeros(3))
             else:
                 traj_point = self.trajectories[i].evaluate(self.trajectory_time)
                 # Pose in spatial frame
                 desired_poses.append(traj_point.pose)
                 # Twist in BODY frame (this is what we want!)
                 desired_twists.append(traj_point.velocity_body)
+                # Acceleration in BODY frame (transform from spatial)
+                accel_body = world_to_body_acceleration(
+                    pose=traj_point.pose,
+                    vel_world=traj_point.velocity_spatial,
+                    accel_world=traj_point.acceleration
+                )
+                desired_accelerations.append(accel_body)
 
-        return np.array(desired_poses), np.array(desired_twists)
+        return np.array(desired_poses), np.array(desired_twists), np.array(desired_accelerations)
 
     def _get_rl_observation(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
         """
@@ -407,7 +420,7 @@ class ImpedanceLearningEnv(gym.Env):
         - Desired poses (2, 3)
         - Desired twists (2, 3)
         """
-        desired_poses, desired_twists = self._get_trajectory_targets()
+        desired_poses, desired_twists, _ = self._get_trajectory_targets()
 
         # Get current twists (velocities)
         current_twists = obs.get('ee_twists', np.zeros((2, 3)))

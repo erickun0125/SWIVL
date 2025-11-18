@@ -328,6 +328,52 @@ def world_to_body_velocity(pose: np.ndarray, vel_world: np.ndarray) -> np.ndarra
     return vel_body
 
 
+def world_to_body_acceleration(
+    pose: np.ndarray,
+    vel_world: np.ndarray,
+    accel_world: np.ndarray
+) -> np.ndarray:
+    """
+    Transform acceleration from world frame to body frame.
+
+    For SE(2), the transformation accounts for the time derivative of the
+    rotation matrix, resulting in centrifugal/Coriolis-like terms.
+
+    Derivation:
+    a_b = R^T * a_w - ω * (R^T * skew * v_w)
+    where ω is angular velocity and skew is 2D rotation by π/2
+
+    Args:
+        pose: Current pose [x, y, theta]
+        vel_world: World frame velocity [vx_w, vy_w, omega]
+        accel_world: World frame acceleration [ax_w, ay_w, alpha]
+
+    Returns:
+        Body frame acceleration [ax_b, ay_b, alpha]
+    """
+    theta = pose[2]
+    omega = vel_world[2]
+    R = rotation_matrix(theta)
+
+    # Linear acceleration transformation
+    # a_body = R^T * a_world - ω * R^T * skew(v_world)
+    # where skew(v) rotates v by π/2: [vx, vy] → [-vy, vx]
+
+    # Transform acceleration
+    accel_linear_body = R.T @ accel_world[:2]
+
+    # Centrifugal/Coriolis correction due to rotating frame
+    # skew([vx, vy]) = [-vy, vx]
+    vel_skew = np.array([-vel_world[1], vel_world[0]])
+    correction = omega * (R.T @ vel_skew)
+
+    accel_body = np.zeros(3)
+    accel_body[:2] = accel_linear_body - correction
+    accel_body[2] = accel_world[2]  # Angular acceleration unchanged
+
+    return accel_body
+
+
 def se2_interpolate(pose_start: np.ndarray, pose_end: np.ndarray, alpha: float) -> np.ndarray:
     """
     Interpolate between two SE(2) poses using geodesic interpolation.
