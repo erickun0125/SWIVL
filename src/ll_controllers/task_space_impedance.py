@@ -9,7 +9,11 @@ Implements proper impedance control with robot dynamics:
 
 This is a wrapper around SE2ImpedanceController for backward compatibility.
 
-Reference: Modern Robotics, Lynch & Park
+Following Modern Robotics (Lynch & Park) convention:
+- Twist: V = [ω, vx, vy]^T (angular velocity first!)
+- Wrench: F = [τ, fx, fy]^T (torque first!)
+
+Reference: Modern Robotics, Lynch & Park, Chapter 11
 """
 
 import numpy as np
@@ -89,24 +93,24 @@ class TaskSpaceImpedanceController:
 
         if self.use_dynamics:
             # Create proper impedance controller with dynamics
-            # Convert gains to impedance matrices
+            # Convert gains to impedance matrices (MR convention: angular first!)
             K_d = np.diag([
+                self.gains.kp_angular,  # K_theta (MR: angular first!)
                 self.gains.kp_linear,   # K_x
-                self.gains.kp_linear,   # K_y
-                self.gains.kp_angular   # K_theta
+                self.gains.kp_linear    # K_y
             ])
 
             D_d = np.diag([
+                self.gains.kd_angular,  # D_theta (MR: angular first!)
                 self.gains.kd_linear,   # D_x
-                self.gains.kd_linear,   # D_y
-                self.gains.kd_angular   # D_theta
+                self.gains.kd_linear    # D_y
             ])
 
-            # Model matching: M_d = Lambda_b
+            # Model matching: M_d = Lambda_b (MR convention: inertia first!)
             M_d = np.diag([
-                self.gains.robot_mass,
-                self.gains.robot_mass,
-                self.gains.robot_inertia
+                self.gains.robot_inertia,  # I_d (MR: angular first!)
+                self.gains.robot_mass,     # m_d_x
+                self.gains.robot_mass      # m_d_y
             ])
 
             self.controller = SE2ImpedanceController(
@@ -141,22 +145,23 @@ class TaskSpaceImpedanceController:
 
         if self.use_dynamics and self.controller is not None:
             # Update impedance parameters in SE2ImpedanceController
+            # MR convention: angular first!
             K_d = np.diag([
-                self.gains.kp_linear,
-                self.gains.kp_linear,
-                self.gains.kp_angular
+                self.gains.kp_angular,  # K_theta (MR: angular first!)
+                self.gains.kp_linear,   # K_x
+                self.gains.kp_linear    # K_y
             ])
 
             D_d = np.diag([
-                self.gains.kd_linear,
-                self.gains.kd_linear,
-                self.gains.kd_angular
+                self.gains.kd_angular,  # D_theta (MR: angular first!)
+                self.gains.kd_linear,   # D_x
+                self.gains.kd_linear    # D_y
             ])
 
             M_d = np.diag([
-                self.gains.robot_mass,
-                self.gains.robot_mass,
-                self.gains.robot_inertia
+                self.gains.robot_inertia,  # I_d (MR: angular first!)
+                self.gains.robot_mass,     # m_d_x
+                self.gains.robot_mass      # m_d_y
             ])
 
             self.controller.set_impedance_parameters(M_d=M_d, D_d=D_d, K_d=K_d)
@@ -173,19 +178,23 @@ class TaskSpaceImpedanceController:
         """
         Compute impedance control wrench with proper dynamics.
 
+        Following Modern Robotics convention:
+        - Twist: [ω, vx, vy]
+        - Wrench: [τ, fx, fy]
+
         Impedance control law (model matching):
             F = Lambda_b * dV_d + C_b * V + eta_b + D_d * V_e + K_d * e
 
         Args:
             current_pose: Current pose [x, y, theta] in spatial frame (T_si)
             desired_pose: Desired pose [x, y, theta] in spatial frame (T_si^des)
-            measured_wrench: Measured external wrench [fx, fy, tau] in body frame
+            measured_wrench: Measured external wrench [tau, fx, fy] in body frame (MR convention!)
             current_velocity: Current velocity [vx, vy, omega] in spatial frame
-            desired_velocity: Desired velocity [vx, vy, omega] in body frame (body twist)
-            desired_acceleration: Desired acceleration [dvx, dvy, domega] in body frame
+            desired_velocity: Desired velocity [omega, vx, vy] in body frame (body twist, MR convention!)
+            desired_acceleration: Desired acceleration [domega, dvx, dvy] in body frame (MR convention!)
 
         Returns:
-            Control wrench [fx, fy, tau] in body frame
+            Control wrench [tau, fx, fy] in body frame (MR convention!)
         """
         if self.use_dynamics and self.controller is not None:
             # ========================================
@@ -219,7 +228,8 @@ class TaskSpaceImpedanceController:
 
             # Apply additional compliance modulation based on force threshold
             # (for backward compatibility with original behavior)
-            measured_force_mag = np.linalg.norm(measured_wrench[:2])
+            # MR convention: force is at indices 1,2 (not 0,1)
+            measured_force_mag = np.linalg.norm(measured_wrench[1:3])
             if measured_force_mag > self.gains.force_threshold:
                 compliance_scale = self.gains.compliance_factor
                 # Scale down the impedance feedback term
@@ -275,16 +285,16 @@ class TaskSpaceImpedanceController:
             # desired_velocity is already in body frame (body twist)
             desired_twist_body = desired_velocity
 
-            # Twist error in body frame
+            # Twist error in body frame (MR convention: [ω, vx, vy])
             error_twist_body = desired_twist_body - current_twist_body
-            error_vel_linear = error_twist_body[:2]
-            error_vel_angular = error_twist_body[2]
+            error_vel_linear = error_twist_body[1:3]  # MR: linear components at indices 1,2
+            error_vel_angular = error_twist_body[0]   # MR: angular component at index 0
 
         elif current_velocity is not None:
             # Only current velocity available - assume desired velocity is zero
             current_twist_body = world_to_body_velocity(current_pose, current_velocity)
-            error_vel_linear = -current_twist_body[:2]
-            error_vel_angular = -current_twist_body[2]
+            error_vel_linear = -current_twist_body[1:3]  # MR: linear components at indices 1,2
+            error_vel_angular = -current_twist_body[0]   # MR: angular component at index 0
 
         else:
             # No velocity information - use finite difference
@@ -312,7 +322,8 @@ class TaskSpaceImpedanceController:
         )
 
         # Apply compliance based on measured force
-        measured_force_mag = np.linalg.norm(measured_wrench[:2])
+        # MR convention: force is at indices 1,2 (not 0,1)
+        measured_force_mag = np.linalg.norm(measured_wrench[1:3])
 
         if measured_force_mag > self.gains.force_threshold:
             # Reduce stiffness for compliance
@@ -320,7 +331,7 @@ class TaskSpaceImpedanceController:
             force_body *= compliance_scale
 
             # Add force feedback term
-            force_body -= measured_wrench[:2] * (1.0 - compliance_scale)
+            force_body -= measured_wrench[1:3] * (1.0 - compliance_scale)
 
         # Saturate
         force_mag = np.linalg.norm(force_body)
@@ -329,7 +340,8 @@ class TaskSpaceImpedanceController:
 
         torque = np.clip(torque, -self.max_torque, self.max_torque)
 
-        return np.array([force_body[0], force_body[1], torque])
+        # MR convention: return [tau, fx, fy]
+        return np.array([torque, force_body[0], force_body[1]])
 
     def reset(self):
         """Reset controller state."""
