@@ -4,18 +4,23 @@ Gym Environment for Impedance Parameter Learning
 This environment wraps the bimanual manipulation task and provides
 an interface for learning optimal impedance parameters using RL.
 
+Following Modern Robotics (Lynch & Park) convention:
+- Twist: V = [ω, vx, vy]^T (angular velocity first!)
+- Wrench: F = [τ, fx, fy]^T (torque first!)
+
 State space (per arm):
-- External wrench (3): [fx, fy, tau]
+- External wrench (3): [tau, fx, fy] (MR convention!)
 - Current pose (3): [x, y, theta]
-- Current twist (3): [vx, vy, omega]
+- Current twist (3): [omega, vx, vy] (MR convention!)
 - Desired pose (3): [x_d, y_d, theta_d]
-- Desired twist (3): [vx_d, vy_d, omega_d]
+- Desired twist (3): [omega_d, vx_d, vy_d] (MR convention!)
 Total: 15 * 2 = 30 dimensions (bimanual)
 
 Action space (per arm):
-- Damping parameters (3): [D_linear_x, D_linear_y, D_angular]
-- Stiffness parameters (3): [K_linear_x, K_linear_y, K_angular]
-Total: 6 * 2 = 12 dimensions (bimanual)
+- For SE(2) impedance: Damping (3) [D_angular, D_linear, D_linear] +
+                       Stiffness (3) [K_angular, K_linear, K_linear]
+- For screw decomposed: [D_parallel, K_parallel, D_perpendicular, K_perpendicular]
+Total: 12 dimensions (bimanual SE(2)) or 8 dimensions (bimanual screw)
 
 Note: Actions are scaled and clipped to safe ranges.
 """
@@ -348,7 +353,19 @@ class ImpedanceLearningEnv(gym.Env):
             raise ValueError(f"Unknown controller type: {self.config.controller_type}")
 
     def _decode_action_se2(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """Decode action for SE2 impedance controller."""
+        """
+        Decode action for SE2 impedance controller.
+
+        Following Modern Robotics convention:
+        - Damping: [D_angular, D_linear, D_linear]
+        - Stiffness: [K_angular, K_linear, K_linear]
+
+        Action indices:
+        - 0: D_angular
+        - 1,2: D_linear (x, y)
+        - 3: K_angular
+        - 4,5: K_linear (x, y)
+        """
         # Split action for two arms
         action_arm0 = action[:6]
         action_arm1 = action[6:]
@@ -359,12 +376,12 @@ class ImpedanceLearningEnv(gym.Env):
         }
 
         for arm_action in [action_arm0, action_arm1]:
-            # Damping: [D_linear_x, D_linear_y, D_angular]
+            # Damping: [D_angular, D_linear, D_linear] (MR convention!)
             damping = np.array([
                 self._scale_action(
                     arm_action[0],
-                    self.config.min_damping_linear,
-                    self.config.max_damping_linear
+                    self.config.min_damping_angular,
+                    self.config.max_damping_angular
                 ),
                 self._scale_action(
                     arm_action[1],
@@ -373,17 +390,17 @@ class ImpedanceLearningEnv(gym.Env):
                 ),
                 self._scale_action(
                     arm_action[2],
-                    self.config.min_damping_angular,
-                    self.config.max_damping_angular
+                    self.config.min_damping_linear,
+                    self.config.max_damping_linear
                 )
             ])
 
-            # Stiffness: [K_linear_x, K_linear_y, K_angular]
+            # Stiffness: [K_angular, K_linear, K_linear] (MR convention!)
             stiffness = np.array([
                 self._scale_action(
                     arm_action[3],
-                    self.config.min_stiffness_linear,
-                    self.config.max_stiffness_linear
+                    self.config.min_stiffness_angular,
+                    self.config.max_stiffness_angular
                 ),
                 self._scale_action(
                     arm_action[4],
@@ -392,8 +409,8 @@ class ImpedanceLearningEnv(gym.Env):
                 ),
                 self._scale_action(
                     arm_action[5],
-                    self.config.min_stiffness_angular,
-                    self.config.max_stiffness_angular
+                    self.config.min_stiffness_linear,
+                    self.config.max_stiffness_linear
                 )
             ])
 
@@ -466,17 +483,22 @@ class ImpedanceLearningEnv(gym.Env):
             self._update_screw_gains(impedance_params)
 
     def _update_se2_gains(self, impedance_params: Dict[str, np.ndarray]):
-        """Update SE2 impedance controller gains."""
+        """
+        Update SE2 impedance controller gains.
+
+        Following Modern Robotics convention:
+        - damping: [D_angular, D_linear, D_linear]
+        - stiffness: [K_angular, K_linear, K_linear]
+        """
         for i in range(2):
             damping = impedance_params['damping'][i]
             stiffness = impedance_params['stiffness'][i]
 
-            # Update gains
-            # Note: We set separate gains for x, y directions and angular
-            self.controllers[i].gains.kd_linear = damping[0]  # Using x for both x, y
-            self.controllers[i].gains.kp_linear = stiffness[0]
-            self.controllers[i].gains.kd_angular = damping[2]
-            self.controllers[i].gains.kp_angular = stiffness[2]
+            # Update gains (MR convention: angular at index 0, linear at indices 1,2)
+            self.controllers[i].gains.kd_angular = damping[0]  # MR: angular first!
+            self.controllers[i].gains.kd_linear = damping[1]   # MR: linear components at 1,2
+            self.controllers[i].gains.kp_angular = stiffness[0]  # MR: angular first!
+            self.controllers[i].gains.kp_linear = stiffness[1]   # MR: linear components at 1,2
 
     def _update_screw_gains(self, impedance_params: Dict[str, np.ndarray]):
         """Update screw-decomposed controller gains."""
