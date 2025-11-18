@@ -6,14 +6,15 @@ Bimanual manipulation of articulated objects with inter-force interaction using 
 
 This repository contains the implementation of SWIVL, a framework for learning impedance parameters for bimanual manipulation of articulated objects. The system uses:
 
-- **Task-space impedance control** for robot manipulation
+- **Task-space impedance control** with proper SE(2) dynamics
+- **Screw-decomposed impedance control** for directional compliance
 - **Low-level policy** that learns impedance variables (stiffness, damping) via RL
 - **High-level policy** that provides desired trajectories
 - **Dual-arm coordination** for manipulating shared 1-DOF linkage objects
 
 ## 🚀 Quick Start
 
-### 30 Second Setup
+### Installation
 
 ```bash
 # 1. Setup conda environment and install dependencies
@@ -21,214 +22,201 @@ bash setup_conda.sh
 
 # 2. Activate environment
 conda activate swivl
-
-# 3. Run visualization!
-python run_visualization.py
 ```
 
-See [QUICKSTART.md](QUICKSTART.md) for more options.
+### Run Demos
+
+```bash
+# Visualization demo
+python scripts/run_visualization.py
+
+# Teleoperation demo
+python -m scripts.demos.demo_teleoperation
+
+# Static hold demo
+python -m scripts.demos.demo_static_hold
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+python -m pytest scripts/tests/
+
+# Run specific test
+python -m scripts.tests.test_biart_simple
+```
 
 ## 📁 Repository Structure
 
 ```
 SWIVL/
-├── gym_pusht/              # Reference PushT environment
-├── gym_biart/              # BiArt SE(2) environment (main)
-│   ├── envs/
-│   │   ├── biart.py       # Main environment implementation
-│   │   └── pymunk_override.py
-│   ├── example.py          # Usage examples
-│   └── README.md           # Detailed documentation
-├── run_visualization.py    # Visualization script
-├── test_biart_simple.py    # Test suite
-├── setup_conda.sh          # Automated setup script
-├── QUICKSTART.md           # Quick start guide
-├── SETUP_GUIDE.md          # Detailed setup instructions
-└── requirements.txt        # Python dependencies
+├── src/                           # Core implementation
+│   ├── envs/                      # Environments
+│   │   ├── biart.py              # Main BiArt environment
+│   │   ├── object_manager.py     # Articulated object management
+│   │   └── end_effector_manager.py
+│   ├── ll_controllers/            # Low-level controllers
+│   │   ├── se2_impedance_controller.py              # Standard impedance
+│   │   ├── se2_screw_decomposed_impedance.py       # Screw decomposition
+│   │   └── task_space_impedance.py                  # Backward compatibility
+│   ├── hl_planners/               # High-level planners
+│   │   ├── diffusion_policy.py   # Diffusion policy
+│   │   ├── act_policy.py         # ACT policy
+│   │   └── flow_matching_policy.py
+│   ├── rl_policy/                 # RL policy
+│   │   └── impedance_learning_env.py
+│   ├── se2_math.py                # SE(2) math utilities
+│   ├── se2_dynamics.py            # Robot dynamics
+│   └── trajectory_generator.py    # Trajectory generation
+├── scripts/                       # Scripts and utilities
+│   ├── demos/                     # Demo scripts
+│   │   ├── demo_teleoperation.py
+│   │   └── demo_static_hold.py
+│   ├── tests/                     # Test scripts
+│   │   ├── test_biart_simple.py
+│   │   ├── test_controllers.py
+│   │   └── test_integrated_system.py
+│   ├── training/                  # Training scripts
+│   ├── evaluation/                # Evaluation scripts
+│   └── run_visualization.py       # Visualization runner
+├── examples/                      # Usage examples
+│   └── screw_decomposed_bimanual_control.py
+├── docs/                          # Documentation
+│   ├── SE2_IMPEDANCE_VERIFICATION.md       # Controller verification
+│   ├── IMPEDANCE_CONTROLLER_IMPLEMENTATION.md
+│   ├── PIPELINE_FLOW_ANALYSIS.md
+│   └── SE2_FRAME_CONVENTIONS.md
+└── README.md                      # This file
 ```
 
-## 🤖 BiArt Environment
+## 🤖 Key Features
 
-**BiArt** (Bimanual Articulated object manipulation) is our SE(2) environment featuring:
+### SE(2) Impedance Control
 
-- ✅ Dual dynamic robot grippers with U-shaped (ㄷ) design
-- ✅ Wrench command control (force + moment in body frame)
-- ✅ Articulated objects (revolute, prismatic, fixed joints)
-- ✅ External wrench sensing
-- ✅ Physics-based simulation with Pymunk
-- ✅ Gymnasium-compatible API
+- **Proper robot dynamics:** Task-space inertia, Coriolis, gravity compensation
+- **Model matching mode:** M_d = Lambda_b for guaranteed passivity
+- **Acceleration feedforward:** Lambda_b * dV_d for improved tracking
+- **Frame conventions:** Consistent spatial/body frame transformations
 
-### Environment Features
+See [docs/SE2_IMPEDANCE_VERIFICATION.md](docs/SE2_IMPEDANCE_VERIFICATION.md) for mathematical verification.
 
-**Action Space** (6D):
+### Screw-Decomposed Impedance Control
+
+- **Directional compliance:** Independent impedance along/perpendicular to screw axis
+- **Natural constraints:** Uses object's joint axis as screw
+- **1D + 2D decomposition:** Parallel (compliant) + Perpendicular (stiff)
+- **Coordinated bimanual control:** Both EEs respect kinematic constraints
+
+Example:
 ```python
-[left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+# Get joint axis in each EE frame
+B_left, B_right = env.get_joint_axis_screws()
+
+# Create screw-decomposed controller
+controller = SE2ScrewDecomposedImpedanceController(
+    screw_axis=B_left,
+    params=ScrewImpedanceParams(
+        K_parallel=10.0,      # Compliant along joint
+        K_perpendicular=100.0 # Stiff to maintain grasp
+    )
+)
 ```
 
-**Observation Space** (18D):
-```python
-[left_gripper(x,y,θ), right_gripper(x,y,θ),
- link1(x,y,θ), link2(x,y,θ),
- external_wrench_left(fx,fy,τ), external_wrench_right(fx,fy,τ)]
-```
+See [examples/screw_decomposed_bimanual_control.py](examples/screw_decomposed_bimanual_control.py) for complete example.
 
-**Reward Function**:
-- Tracking reward: exponential reward based on position/orientation error
-- Safety penalty: penalizes excessive contact forces
+### High-Level Planners
 
-## 📖 Usage Examples
+- **Diffusion Policy:** Conditional diffusion for trajectory generation
+- **ACT (Action Chunking Transformer):** Transformer-based policy
+- **Flow Matching Policy:** Continuous normalizing flows
 
-### Basic Usage
+### RL-Based Impedance Learning
 
-```python
-import gymnasium as gym
-import gym_biart
-
-# Create environment
-env = gym.make("gym_biart/BiArt-v0",
-               render_mode="human",
-               joint_type="revolute")  # or "prismatic", "fixed"
-
-# Run episode
-obs, info = env.reset()
-for _ in range(1000):
-    action = env.action_space.sample()  # Replace with your policy
-    obs, reward, terminated, truncated, info = env.step(action)
-
-    if terminated or truncated:
-        obs, info = env.reset()
-
-env.close()
-```
-
-### Visualization Options
-
-```bash
-# Visual mode with different joint types
-python run_visualization.py --mode visual --joint revolute
-python run_visualization.py --mode visual --joint prismatic
-python run_visualization.py --mode visual --joint fixed
-
-# Slow motion for detailed observation
-python run_visualization.py --mode visual --joint revolute --slow
-
-# Test specific control patterns
-python run_visualization.py --mode controlled --joint revolute
-
-# Compare all joint types
-python run_visualization.py --mode compare
-
-# Headless mode (for servers) with image saving
-python run_visualization.py --mode headless --save-images
-```
-
-## 🔧 Installation
-
-### Requirements
-
-- Python 3.11+
-- Conda or Miniconda (recommended)
-
-### Method 1: Automated Setup (Recommended)
-
-```bash
-bash setup_conda.sh
-conda activate swivl
-```
-
-### Method 2: Manual Setup
-
-```bash
-# Create conda environment
-conda create -n swivl python=3.11 -y
-conda activate swivl
-
-# Install packages
-conda install -c conda-forge pygame pymunk -y
-pip install gymnasium numpy opencv-python shapely
-```
-
-### Method 3: Using pip only
-
-```bash
-pip install -r requirements.txt
-```
-
-## 🧪 Testing
-
-```bash
-# Quick test (no display)
-python test_biart_simple.py
-
-# Visual test
-python gym_biart/example.py
-
-# Full test suite
-python run_visualization.py --mode visual --steps 500
-```
+- **PPO for impedance parameters:** Learns optimal stiffness/damping
+- **Separate HL/LL policies:** Trajectory planning + impedance control
+- **Proper dynamics:** Full control pipeline with acceleration feedforward
 
 ## 📚 Documentation
 
-- **Quick Start**: [QUICKSTART.md](QUICKSTART.md) - Get started in 30 seconds
-- **Setup Guide**: [SETUP_GUIDE.md](SETUP_GUIDE.md) - Detailed installation and troubleshooting
-- **BiArt Docs**: [gym_biart/README.md](gym_biart/README.md) - Environment API and details
+- [SE(2) Impedance Verification](docs/SE2_IMPEDANCE_VERIFICATION.md) - Mathematical verification and comparison with SE(3)
+- [Impedance Controller Implementation](docs/IMPEDANCE_CONTROLLER_IMPLEMENTATION.md) - Implementation guide
+- [Pipeline Flow Analysis](docs/PIPELINE_FLOW_ANALYSIS.md) - Complete data flow from planner to physics
+- [SE(2) Frame Conventions](docs/SE2_FRAME_CONVENTIONS.md) - Frame conventions used throughout
 
-## 🔬 Research Context
+## 🧪 Testing
 
-This work is part of research on impedance control for bimanual manipulation:
+Run the test suite:
 
-- **Problem**: Bimanual manipulation of articulated objects with inter-force interaction
-- **Approach**: Learn impedance variables (stiffness, damping) via RL
-- **Framework**: Task-space impedance control with dual-arm coordination
-- **Environments**:
-  - SE(2): BiArt (Pymunk-based, implemented ✅)
-  - SE(3): Franka FR3 dual-arm (IsaacLab, planned 🚧)
+```bash
+# All tests
+python -m pytest scripts/tests/
 
-## 🛣️ Roadmap
+# Controller tests
+python -m scripts.tests.test_controllers
 
-### SE(2) Environment (BiArt) - ✅ Complete
-- [x] Dual dynamic grippers with U-shape
-- [x] Wrench command control
-- [x] Articulated objects (3 joint types)
-- [x] External wrench sensing (basic)
-- [x] Reward function (tracking + safety)
-- [ ] Proper collision-based wrench sensing
-- [ ] High-level policy interface
-- [ ] Impedance control integration
+# Integration tests
+python -m scripts.tests.test_integrated_system
 
-### SE(3) Environment - 🚧 Planned
-- [ ] IsaacLab integration
-- [ ] Franka FR3 dual-arm setup
-- [ ] 3D articulated objects
-- [ ] 6-DOF manipulation
+# Stability tests
+python -m scripts.tests.test_stability
+```
 
-### Learning Pipeline - 🚧 Planned
-- [ ] PPO/SAC implementation
-- [ ] Impedance parameter learning
-- [ ] Trajectory optimization
-- [ ] Transfer learning SE(2) → SE(3)
+## 🎮 Environment Details
 
-## 🤝 Contributing
+### BiArt Environment
 
-This is a research project. For questions or collaboration:
-- Open an issue for bugs or feature requests
-- Check documentation before asking questions
+SE(2) bimanual manipulation environment with:
+- Dual parallel-jaw grippers with wrench sensing
+- Articulated objects (revolute, prismatic, fixed joints)
+- Proper SE(2) dynamics and frame transformations
+- External wrench sensing via Pymunk collision handlers
+
+**Observation Space:**
+```python
+{
+    'ee_poses': (2, 3),          # [x, y, theta] in spatial frame
+    'ee_twists': (2, 3),         # [vx, vy, omega] in spatial frame
+    'link_poses': (2, 3),        # Object link poses
+    'external_wrenches': (2, 3)  # [fx, fy, tau] in body frame
+}
+```
+
+**Action Space:**
+```python
+# Wrenches in body frame for both grippers
+[left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+```
+
+## 🔬 Research
+
+This project implements:
+- **Proper SE(2) impedance control** with full robot dynamics
+- **Screw-axis based impedance decomposition** for directional compliance
+- **RL for impedance learning** with separation of trajectory and compliance
+- **Bimanual coordination** via kinematic constraints
+
+## 📝 Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@software{swivl2024,
+  title={SWIVL: Screw and Wrench informed Impedance Variable Learning},
+  author={Your Name},
+  year={2024},
+  url={https://github.com/yourusername/SWIVL}
+}
+```
 
 ## 📄 License
 
-Research project - License TBD
+[Your License Here]
 
-## 🙏 Acknowledgments
+## 🤝 Contributing
 
-- PushT environment as reference implementation
-- Pymunk physics engine
-- Gymnasium framework
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📧 Contact
 
-For research inquiries, please open an issue on this repository.
-
----
-
-**Status**: SE(2) environment complete and tested ✅
-**Next**: Implement RL training pipeline and SE(3) environment
+[Your Contact Information]
