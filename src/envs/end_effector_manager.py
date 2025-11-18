@@ -482,8 +482,13 @@ class EndEffectorManager:
         for gripper in self.grippers:
             pose = gripper.get_pose()  # [x, y, theta]
             vel_spatial = gripper.get_velocity()  # [vx_s, vy_s, omega]
+
+            # Convert to MR convention [omega, vx_s, vy_s]
+            # get_velocity() returns [vx_s, vy_s, omega], but spatial_to_body_twist expects [omega, vx_s, vy_s]
+            vel_spatial_mr = np.array([vel_spatial[2], vel_spatial[0], vel_spatial[1]])
+
             # Convert spatial velocity to body twist (MR convention)
-            twist_body = spatial_to_body_twist(pose, vel_spatial)
+            twist_body = spatial_to_body_twist(pose, vel_spatial_mr)
             body_twists.append(twist_body)
         return np.array(body_twists)
 
