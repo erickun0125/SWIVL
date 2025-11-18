@@ -202,7 +202,8 @@ class ImpedanceLearningEnv(gym.Env):
                     current_pose=obs['ee_poses'][i],
                     desired_pose=desired_poses[i],
                     measured_wrench=obs['external_wrenches'][i],
-                    current_velocity=obs['ee_twists'][i]
+                    current_velocity=obs['ee_twists'][i],  # Spatial frame velocity
+                    desired_velocity=desired_twists[i]  # Body frame twist
                 )
                 wrenches.append(wrench)
 
@@ -370,7 +371,14 @@ class ImpedanceLearningEnv(gym.Env):
         self.trajectory_time = 0.0
 
     def _get_trajectory_targets(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Get desired poses and twists from trajectories."""
+        """
+        Get desired poses and twists from trajectories.
+
+        Returns:
+            Tuple of (desired_poses, desired_twists) where:
+                - desired_poses: (2, 3) array in spatial frame (T_si^des)
+                - desired_twists: (2, 3) array in body frame (i^V_i^des)
+        """
         desired_poses = []
         desired_twists = []
 
@@ -381,8 +389,10 @@ class ImpedanceLearningEnv(gym.Env):
                 desired_twists.append(np.zeros(3))
             else:
                 traj_point = self.trajectories[i].evaluate(self.trajectory_time)
+                # Pose in spatial frame
                 desired_poses.append(traj_point.pose)
-                desired_twists.append(traj_point.velocity)
+                # Twist in BODY frame (this is what we want!)
+                desired_twists.append(traj_point.velocity_body)
 
         return np.array(desired_poses), np.array(desired_twists)
 

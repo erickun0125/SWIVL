@@ -13,7 +13,7 @@ import numpy as np
 from typing import Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle
+from src.se2_math import normalize_angle, world_to_body_velocity
 
 
 @dataclass
@@ -66,66 +66,85 @@ class TaskSpaceImpedanceController:
         current_pose: np.ndarray,
         desired_pose: np.ndarray,
         measured_wrench: np.ndarray,
-        current_velocity: Optional[np.ndarray] = None
+        current_velocity: Optional[np.ndarray] = None,
+        desired_velocity: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Compute impedance control wrench.
 
+        Impedance control law (in body frame):
+            F = K * error_pose + D * error_twist
+
         Args:
-            current_pose: Current pose [x, y, theta]
-            desired_pose: Desired pose [x, y, theta]
-            measured_wrench: Measured external wrench [fx, fy, tau]
-            current_velocity: Optional velocity [vx, vy, omega]
+            current_pose: Current pose [x, y, theta] in spatial frame (T_si)
+            desired_pose: Desired pose [x, y, theta] in spatial frame (T_si^des)
+            measured_wrench: Measured external wrench [fx, fy, tau] in body frame
+            current_velocity: Current velocity [vx, vy, omega] in spatial frame
+            desired_velocity: Desired velocity [vx, vy, omega] in body frame (body twist)
 
         Returns:
             Control wrench [fx, fy, tau] in body frame
         """
-        # Compute pose error
+        # 1. Compute pose error in body frame
         x, y, theta = current_pose
         x_d, y_d, theta_d = desired_pose
 
+        # Position error in spatial/world frame
         error_pos_world = np.array([x_d - x, y_d - y])
 
-        # Transform to body frame
+        # Transform position error to body frame
         cos_theta, sin_theta = np.cos(theta), np.sin(theta)
         error_pos_body = np.array([
             cos_theta * error_pos_world[0] + sin_theta * error_pos_world[1],
             -sin_theta * error_pos_world[0] + cos_theta * error_pos_world[1]
         ])
 
+        # Orientation error (always scalar, same in all frames)
         error_angle = normalize_angle(theta_d - theta)
 
-        # Compute velocity error
-        if current_velocity is not None:
-            vx, vy, omega = current_velocity
-            vel_body = np.array([
-                cos_theta * vx + sin_theta * vy,
-                -sin_theta * vx + cos_theta * vy
-            ])
-            derror_pos_body = -vel_body
-            derror_angle = -omega
+        # 2. Compute velocity/twist error in body frame
+        if current_velocity is not None and desired_velocity is not None:
+            # Convert current spatial velocity to body frame
+            current_twist_body = world_to_body_velocity(current_pose, current_velocity)
+
+            # desired_velocity is already in body frame (body twist)
+            desired_twist_body = desired_velocity
+
+            # Twist error in body frame
+            error_twist_body = desired_twist_body - current_twist_body
+            error_vel_linear = error_twist_body[:2]
+            error_vel_angular = error_twist_body[2]
+
+        elif current_velocity is not None:
+            # Only current velocity available - assume desired velocity is zero
+            current_twist_body = world_to_body_velocity(current_pose, current_velocity)
+            error_vel_linear = -current_twist_body[:2]
+            error_vel_angular = -current_twist_body[2]
+
         else:
+            # No velocity information - use finite difference
             if self.prev_error_pos is not None:
-                derror_pos_body = (error_pos_body - self.prev_error_pos) / self.dt
+                error_vel_linear = (error_pos_body - self.prev_error_pos) / self.dt
             else:
-                derror_pos_body = np.zeros(2)
+                error_vel_linear = np.zeros(2)
 
             if self.prev_error_angle is not None:
-                derror_angle = (error_angle - self.prev_error_angle) / self.dt
+                error_vel_angular = (error_angle - self.prev_error_angle) / self.dt
             else:
-                derror_angle = 0.0
+                error_vel_angular = 0.0
 
             self.prev_error_pos = error_pos_body.copy()
             self.prev_error_angle = error_angle
 
-        # Nominal impedance control law
+        # 3. Impedance control law in body frame
+        # F = K * error_pose + D * error_twist
         force_body = (
             self.gains.kp_linear * error_pos_body +
-            self.gains.kd_linear * derror_pos_body
+            self.gains.kd_linear * error_vel_linear
         )
         torque = (
             self.gains.kp_angular * error_angle +
-            self.gains.kd_angular * derror_angle
+            self.gains.kd_angular * error_vel_angular
         )
 
         # Apply compliance based on measured force

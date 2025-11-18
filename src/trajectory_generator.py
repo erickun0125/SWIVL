@@ -17,7 +17,7 @@ from scipy.interpolate import CubicSpline, interp1d
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, SE2Pose
+from src.se2_math import normalize_angle, SE2Pose, world_to_body_velocity
 
 
 @dataclass
@@ -26,13 +26,15 @@ class TrajectoryPoint:
     Single point in a trajectory.
 
     Attributes:
-        pose: SE(2) pose [x, y, theta]
-        velocity: Velocity [vx, vy, omega]
-        acceleration: Acceleration [ax, ay, alpha]
+        pose: SE(2) pose [x, y, theta] in spatial frame (T_si)
+        velocity_spatial: Spatial velocity [vx, vy, omega] (time derivative of pose)
+        velocity_body: Body twist [vx_b, vy_b, omega] (twist in body frame)
+        acceleration: Acceleration [ax, ay, alpha] in spatial frame
         time: Time stamp
     """
     pose: np.ndarray
-    velocity: np.ndarray
+    velocity_spatial: np.ndarray
+    velocity_body: np.ndarray
     acceleration: np.ndarray
     time: float
 
@@ -134,20 +136,20 @@ class CubicSplineTrajectory:
             t: Time in [0, duration]
 
         Returns:
-            TrajectoryPoint with pose, velocity, and acceleration
+            TrajectoryPoint with pose, spatial velocity, body twist, and acceleration
         """
         # Normalize time to [0, 1]
         t_norm = np.clip(t / self.duration, 0.0, 1.0)
 
-        # Evaluate splines
+        # Evaluate splines for pose
         x = self.spline_x(t_norm)
         y = self.spline_y(t_norm)
         theta = normalize_angle(self.spline_theta(t_norm))
 
-        # Evaluate derivatives (velocities)
+        # Evaluate derivatives (spatial velocities)
         # Note: derivatives are w.r.t. normalized time, so scale by duration
-        vx = self.spline_x(t_norm, 1) / self.duration
-        vy = self.spline_y(t_norm, 1) / self.duration
+        vx_spatial = self.spline_x(t_norm, 1) / self.duration
+        vy_spatial = self.spline_y(t_norm, 1) / self.duration
         omega = self.spline_theta(t_norm, 1) / self.duration
 
         # Evaluate second derivatives (accelerations)
@@ -156,10 +158,14 @@ class CubicSplineTrajectory:
         alpha = self.spline_theta(t_norm, 2) / (self.duration ** 2)
 
         pose = np.array([x, y, theta])
-        velocity = np.array([vx, vy, omega])
+        velocity_spatial = np.array([vx_spatial, vy_spatial, omega])
         acceleration = np.array([ax, ay, alpha])
 
-        return TrajectoryPoint(pose, velocity, acceleration, t)
+        # Convert spatial velocity to body twist
+        # Body twist: velocity expressed in the body frame
+        velocity_body = world_to_body_velocity(pose, velocity_spatial)
+
+        return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
     def sample(self, num_samples: int) -> List[TrajectoryPoint]:
         """
@@ -231,7 +237,7 @@ class MinimumJerkTrajectory:
             t: Time in [0, duration]
 
         Returns:
-            TrajectoryPoint
+            TrajectoryPoint with pose, spatial velocity, body twist, and acceleration
         """
         # Clamp time
         t = np.clip(t, 0.0, self.duration)
@@ -252,15 +258,18 @@ class MinimumJerkTrajectory:
         pose[2] = self.start_pose[2] + s * angle_diff
         pose[2] = normalize_angle(pose[2])
 
-        # Compute velocity
+        # Compute spatial velocity
         delta_pose = self.end_pose - self.start_pose
         delta_pose[2] = angle_diff
-        velocity = s_dot * delta_pose
+        velocity_spatial = s_dot * delta_pose
 
         # Compute acceleration
         acceleration = s_ddot * delta_pose
 
-        return TrajectoryPoint(pose, velocity, acceleration, t)
+        # Convert spatial velocity to body twist
+        velocity_body = world_to_body_velocity(pose, velocity_spatial)
+
+        return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
     def sample(self, num_samples: int) -> List[TrajectoryPoint]:
         """Sample trajectory at evenly spaced points."""
