@@ -224,11 +224,12 @@ class ParallelGripper:
         """
         Apply wrench command (in body frame).
 
+        Following Modern Robotics convention:
         Args:
-            wrench: [fx, fy, tau] in body frame
+            wrench: [tau, fx, fy] in body frame (MR convention: torque first!)
         """
-        # Transform force from body frame to world frame
-        fx_body, fy_body, tau = wrench
+        # Parse wrench (MR convention: [tau, fx, fy])
+        tau, fx_body, fy_body = wrench
 
         cos_theta = np.cos(self.base_body.angle)
         sin_theta = np.sin(self.base_body.angle)
@@ -243,25 +244,32 @@ class ParallelGripper:
         )
         self.base_body.torque += tau
 
-    def add_contact_impulse(self, impulse: Vec2d, contact_point: Vec2d):
+    def add_contact_impulse(self, impulse: Vec2d, contact_point: Vec2d, contact_body=None):
         """
         Add a contact impulse from collision callback.
 
         Args:
             impulse: Contact impulse in world frame
             contact_point: Contact point in world frame
+            contact_body: Pymunk body where contact occurred (base_body, left_jaw, or right_jaw)
+                         If None, assumes base_body
         """
-        self.contact_impulses.append((impulse, contact_point))
+        if contact_body is None:
+            contact_body = self.base_body
+        self.contact_impulses.append((impulse, contact_point, contact_body))
 
     def compute_external_wrench(self, dt: float) -> np.ndarray:
         """
         Compute external wrench from accumulated contact impulses.
 
+        Improved to handle jaw contacts properly by computing torque contribution
+        from jaw contact points correctly.
+
         Args:
             dt: Physics timestep (to convert impulses to forces)
 
         Returns:
-            External wrench [fx, fy, tau] in body frame
+            External wrench [tau, fx, fy] in body frame (MR convention!)
         """
         if not self.contact_impulses:
             return np.zeros(3)
@@ -270,12 +278,14 @@ class ParallelGripper:
         total_force_world = Vec2d(0, 0)
         total_torque = 0.0
 
-        for impulse, contact_point in self.contact_impulses:
+        for impulse, contact_point, contact_body in self.contact_impulses:
             # Convert impulse to force: F = impulse / dt
             force = impulse / dt
             total_force_world += force
 
             # Compute torque about base body center
+            # Note: Even if contact is on jaw, we compute torque w.r.t. base center
+            # because jaw forces are transmitted to base through prismatic joint
             r = contact_point - self.base_body.position
             # Torque = r × F (cross product in 2D)
             torque = r.x * force.y - r.y * force.x
@@ -399,6 +409,9 @@ class EndEffectorManager:
         """
         Collision callback to record contact forces.
 
+        Improved to handle jaw contacts properly by identifying which body
+        (base, left_jaw, or right_jaw) the contact occurred on.
+
         Args:
             arbiter: Collision arbiter containing contact information
             space: Pymunk space
@@ -410,13 +423,21 @@ class EndEffectorManager:
             impulse = Vec2d(contact.normal.x, contact.normal.y) * contact.normal_impulse
             contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
 
-            # Determine which gripper this belongs to
+            # Determine which gripper and which body this belongs to
             for gripper in self.grippers:
-                # Check if either the base or jaws are involved
-                if (arbiter.shapes[0].body == gripper.base_body or
-                    arbiter.shapes[0].body == gripper.left_jaw or
-                    arbiter.shapes[0].body == gripper.right_jaw):
-                    gripper.add_contact_impulse(impulse, contact_point)
+                contact_body = None
+
+                # Identify which body the contact occurred on
+                if arbiter.shapes[0].body == gripper.base_body:
+                    contact_body = gripper.base_body
+                elif arbiter.shapes[0].body == gripper.left_jaw:
+                    contact_body = gripper.left_jaw
+                elif arbiter.shapes[0].body == gripper.right_jaw:
+                    contact_body = gripper.right_jaw
+
+                if contact_body is not None:
+                    # Record contact with body information
+                    gripper.add_contact_impulse(impulse, contact_point, contact_body)
                     break
 
         return True

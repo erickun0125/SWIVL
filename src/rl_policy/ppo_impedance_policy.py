@@ -31,6 +31,25 @@ class ImpedanceFeatureExtractor(BaseFeaturesExtractor):
     Uses separate processing for different observation components.
     """
 
+    # Observation indices (for clarity and maintainability)
+    WRENCH_DIM = 3
+    POSE_DIM = 3
+    TWIST_DIM = 3
+    OBS_PER_ARM = WRENCH_DIM + POSE_DIM + TWIST_DIM + POSE_DIM + TWIST_DIM  # 15
+    NUM_ARMS = 2
+
+    # Start indices for each component
+    WRENCH_START = 0
+    WRENCH_END = WRENCH_START + WRENCH_DIM * NUM_ARMS  # 0:6
+    POSE_CURRENT_START = WRENCH_END
+    POSE_CURRENT_END = POSE_CURRENT_START + POSE_DIM * NUM_ARMS  # 6:12
+    TWIST_CURRENT_START = POSE_CURRENT_END
+    TWIST_CURRENT_END = TWIST_CURRENT_START + TWIST_DIM * NUM_ARMS  # 12:18
+    POSE_DESIRED_START = TWIST_CURRENT_END
+    POSE_DESIRED_END = POSE_DESIRED_START + POSE_DIM * NUM_ARMS  # 18:24
+    TWIST_DESIRED_START = POSE_DESIRED_END
+    TWIST_DESIRED_END = TWIST_DESIRED_START + TWIST_DIM * NUM_ARMS  # 24:30
+
     def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 256):
         """
         Initialize feature extractor.
@@ -95,18 +114,12 @@ class ImpedanceFeatureExtractor(BaseFeaturesExtractor):
         Returns:
             (batch_size, features_dim) features
         """
-        # Split observations
-        # External wrenches: 0:6
-        # Current poses: 6:12
-        # Current twists: 12:18
-        # Desired poses: 18:24
-        # Desired twists: 24:30
-
-        wrenches = observations[:, 0:6]
-        current_poses = observations[:, 6:12]
-        current_twists = observations[:, 12:18]
-        desired_poses = observations[:, 18:24]
-        desired_twists = observations[:, 24:30]
+        # Split observations using class constants for maintainability
+        wrenches = observations[:, self.WRENCH_START:self.WRENCH_END]
+        current_poses = observations[:, self.POSE_CURRENT_START:self.POSE_CURRENT_END]
+        current_twists = observations[:, self.TWIST_CURRENT_START:self.TWIST_CURRENT_END]
+        desired_poses = observations[:, self.POSE_DESIRED_START:self.POSE_DESIRED_END]
+        desired_twists = observations[:, self.TWIST_DESIRED_START:self.TWIST_DESIRED_END]
 
         # Encode wrenches
         wrench_features = self.wrench_encoder(wrenches)

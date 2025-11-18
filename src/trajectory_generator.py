@@ -164,13 +164,15 @@ class CubicSplineTrajectory:
         alpha = self.spline_theta(t_norm, 2) / (self.duration ** 2)
 
         pose = np.array([x, y, theta])
-        velocity_spatial = np.array([vx_spatial, vy_spatial, omega])
+        velocity_spatial = np.array([vx_spatial, vy_spatial, omega])  # Pose derivative form
         acceleration = np.array([ax, ay, alpha])
 
         # Convert spatial velocity to body twist
         # Body twist: velocity expressed in the body frame
-        # Use modern function name (spatial_to_body_twist instead of deprecated world_to_body_velocity)
-        velocity_body = spatial_to_body_twist(pose, velocity_spatial)
+        # Note: spatial_to_body_twist expects MR convention [omega, vx, vy]
+        # We have velocity_spatial as pose derivative [vx, vy, omega], so reorder:
+        velocity_spatial_mr = np.array([omega, vx_spatial, vy_spatial])  # MR convention
+        velocity_body = spatial_to_body_twist(pose, velocity_spatial_mr)
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
@@ -268,13 +270,16 @@ class MinimumJerkTrajectory:
         # Compute spatial velocity
         delta_pose = self.end_pose - self.start_pose
         delta_pose[2] = angle_diff
-        velocity_spatial = s_dot * delta_pose
+        velocity_spatial = s_dot * delta_pose  # [vx, vy, omega] form
 
         # Compute acceleration
         acceleration = s_ddot * delta_pose
 
         # Convert spatial velocity to body twist
-        velocity_body = spatial_to_body_twist(pose, velocity_spatial)
+        # Note: spatial_to_body_twist expects MR convention [omega, vx, vy]
+        # We have velocity_spatial as [vx, vy, omega], so reorder:
+        velocity_spatial_mr = np.array([velocity_spatial[2], velocity_spatial[0], velocity_spatial[1]])
+        velocity_body = spatial_to_body_twist(pose, velocity_spatial_mr)
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
