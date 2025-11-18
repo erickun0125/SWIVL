@@ -68,11 +68,11 @@ class BiArtEnv(gym.Env):
 
     ## Action Space
 
-    The action space consists of wrench commands for both grippers:
-    [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+    The action space consists of wrench commands for both grippers (Modern Robotics convention):
+    [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
+    - left_tau: moment (torque) in body frame of left gripper (MR convention: angular first!)
     - left_fx, left_fy: forces in body frame of left gripper
-    - left_tau: moment (torque) in body frame of left gripper
-    - right_fx, right_fy, right_tau: same for right gripper
+    - right_tau, right_fx, right_fy: same for right gripper
 
     ## Observation Space
 
@@ -80,7 +80,7 @@ class BiArtEnv(gym.Env):
     - 'ee_poses': (2, 3) array - poses of both grippers [x, y, theta] in spatial frame
     - 'ee_twists': (2, 3) array - velocities of both grippers [vx, vy, omega] in spatial frame
     - 'link_poses': (2, 3) array - poses of object links [x, y, theta]
-    - 'external_wrenches': (2, 3) array - external wrenches [fx, fy, tau] in body frame
+    - 'external_wrenches': (2, 3) array - external wrenches [tau, fx, fy] in body frame (MR convention!)
 
     ## Rewards
 
@@ -108,6 +108,7 @@ class BiArtEnv(gym.Env):
         visualization_height=680,
         control_hz=10,
         physics_hz=100,
+        grip_force=15.0,  # Configurable gripper grip force
     ):
         super().__init__()
 
@@ -142,7 +143,7 @@ class BiArtEnv(gym.Env):
             jaw_length=20.0,
             jaw_thickness=4.0,
             max_opening=20.0,
-            grip_force=15.0
+            grip_force=grip_force  # Use configurable parameter
         )
 
         # Managers (initialized in reset)
@@ -166,16 +167,16 @@ class BiArtEnv(gym.Env):
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces."""
-        # Action space: wrench commands for both grippers
-        # [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+        # Action space: wrench commands for both grippers (MR convention)
+        # [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
         max_force = 100.0
         max_torque = 50.0
         max_velocity = 500.0
         max_angular_velocity = 10.0
 
         self.action_space = spaces.Box(
-            low=np.array([-max_force, -max_force, -max_torque, -max_force, -max_force, -max_torque]),
-            high=np.array([max_force, max_force, max_torque, max_force, max_force, max_torque]),
+            low=np.array([-max_torque, -max_force, -max_force, -max_torque, -max_force, -max_force]),
+            high=np.array([max_torque, max_force, max_force, max_torque, max_force, max_force]),
             dtype=np.float32
         )
 
@@ -297,16 +298,17 @@ class BiArtEnv(gym.Env):
         """
         Step the environment.
 
+        Following Modern Robotics convention:
         Args:
-            action: [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+            action: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy] (MR convention!)
         """
         # Store action
         self._last_action = action
 
-        # Parse wrenches from action
+        # Parse wrenches from action (MR convention: [tau, fx, fy])
         wrenches = np.array([
-            action[:3],   # Left gripper wrench
-            action[3:]    # Right gripper wrench
+            action[:3],   # Left gripper wrench [tau, fx, fy]
+            action[3:]    # Right gripper wrench [tau, fx, fy]
         ])
 
         # Apply wrenches to grippers

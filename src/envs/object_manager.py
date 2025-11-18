@@ -381,13 +381,21 @@ class ArticulatedObject:
         """
         Compute joint axis screw in grasping frame.
 
+        NORMALIZATION CONVENTION:
+        - Revolute joints: Angular velocity component ω normalized to 1
+                          B = [1, ry, -rx], ||B|| = sqrt(1 + ry^2 + rx^2) (NOT unit norm!)
+                          Represents twist from unit angular velocity ω=1
+        - Prismatic joints: Linear velocity component v normalized to 1
+                           B = [0, vx, vy], ||B|| = 1 (unit norm!)
+                           Represents twist from unit linear velocity along joint axis
+
         Args:
             gripper_name: "left" or "right"
             joint_pos_link: Joint position in link frame [x, y] (for revolute)
             joint_dir_link: Joint direction in link frame [dx, dy] (for prismatic)
 
         Returns:
-            SE(2) unit screw in grasping frame (3,)
+            SE(2) screw in grasping frame (3,) following normalization convention above
         """
         # Get grasping frame
         grasp_frame = self.grasping_frames[gripper_name]

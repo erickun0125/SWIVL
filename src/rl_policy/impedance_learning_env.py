@@ -284,7 +284,21 @@ class ImpedanceLearningEnv(gym.Env):
                     )
                 elif self.config.controller_type == 'screw_decomposed':
                     # Use proper current body twist from observation
-                    current_body_twist = obs.get('ee_body_twists', obs['ee_twists'])[i]  # Fallback for compatibility
+                    if 'ee_body_twists' in obs:
+                        current_body_twist = obs['ee_body_twists'][i]
+                    else:
+                        # Fallback: Convert spatial twist to body twist
+                        import warnings
+                        warnings.warn(
+                            "Using deprecated 'ee_twists' field. Please update environment to provide 'ee_body_twists'.",
+                            DeprecationWarning
+                        )
+                        from src.se2_math import world_to_body_velocity
+                        # ee_twists is [vx, vy, omega] in spatial frame
+                        spatial_twist = obs['ee_twists'][i]
+                        # Convert to MR convention [omega, vx, vy]
+                        spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
+                        current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
 
                     wrench, _ = self.controllers[i].compute_control(
                         current_pose=obs['ee_poses'][i],
@@ -613,8 +627,28 @@ class ImpedanceLearningEnv(gym.Env):
         """
         desired_poses, desired_twists, _ = self._get_trajectory_targets()
 
-        # Get current body twists (use new field if available, fallback to spatial for compatibility)
-        current_twists = obs.get('ee_body_twists', obs.get('ee_twists', np.zeros((2, 3))))
+        # Get current body twists (use new field if available, fallback with conversion)
+        if 'ee_body_twists' in obs:
+            current_twists = obs['ee_body_twists']
+        elif 'ee_twists' in obs:
+            # Fallback: Convert spatial twists to body twists
+            import warnings
+            warnings.warn(
+                "Using deprecated 'ee_twists' field in observation. Please update environment to provide 'ee_body_twists'.",
+                DeprecationWarning
+            )
+            from src.se2_math import world_to_body_velocity
+            current_twists = []
+            for i in range(2):
+                # ee_twists is [vx, vy, omega] in spatial frame
+                spatial_twist = obs['ee_twists'][i]
+                # Convert to MR convention [omega, vx, vy]
+                spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
+                body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+                current_twists.append(body_twist)
+            current_twists = np.array(current_twists)
+        else:
+            current_twists = np.zeros((2, 3))
 
         # Concatenate all observations
         rl_obs = np.concatenate([

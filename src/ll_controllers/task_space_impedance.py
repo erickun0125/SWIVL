@@ -185,13 +185,19 @@ class TaskSpaceImpedanceController:
         Impedance control law (model matching):
             F = Lambda_b * dV_d + C_b * V + eta_b + D_d * V_e + K_d * e
 
+        IMPORTANT - Velocity Frame Convention:
+        - current_velocity: Spatial frame [vx_s, vy_s, omega] (pose time derivative)
+                           This is converted to body frame internally
+        - desired_velocity: Body frame [omega, vx_b, vy_b] (MR convention!)
+        - desired_acceleration: Body frame [domega, dvx_b, dvy_b] (MR convention!)
+
         Args:
             current_pose: Current pose [x, y, theta] in spatial frame (T_si)
             desired_pose: Desired pose [x, y, theta] in spatial frame (T_si^des)
             measured_wrench: Measured external wrench [tau, fx, fy] in body frame (MR convention!)
-            current_velocity: Current velocity [vx, vy, omega] in spatial frame
-            desired_velocity: Desired velocity [omega, vx, vy] in body frame (body twist, MR convention!)
-            desired_acceleration: Desired acceleration [domega, dvx, dvy] in body frame (MR convention!)
+            current_velocity: Current velocity [vx_s, vy_s, omega] in spatial frame (will be converted internally!)
+            desired_velocity: Desired body twist [omega, vx_b, vy_b] in body frame (MR convention!)
+            desired_acceleration: Desired body acceleration [domega, dvx_b, dvy_b] in body frame (MR convention!)
 
         Returns:
             Control wrench [tau, fx, fy] in body frame (MR convention!)

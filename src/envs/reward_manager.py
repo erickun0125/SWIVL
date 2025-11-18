@@ -30,6 +30,11 @@ class RewardWeights:
     success_bonus: float = 10.0
     failure_penalty: float = -10.0
 
+    # Configurable parameters for reward computation
+    pose_error_scale: float = 50.0  # Scale for exponential pose tracking reward
+    velocity_error_scale: float = 20.0  # Scale for exponential velocity tracking reward
+    angular_to_linear_ratio: float = 10.0  # Weight ratio between angular and linear error in SE(2) geodesic distance
+
 
 class RewardManager:
     """
@@ -161,8 +166,8 @@ class RewardManager:
         angular_error = np.abs(error[0])  # MR: angular component at index 0
         linear_error = np.linalg.norm(error[1:3])  # MR: linear components at indices 1,2
 
-        # Weighted combination
-        total_error = linear_error + 10.0 * angular_error
+        # Weighted combination (configurable weight ratio)
+        total_error = linear_error + self.weights.angular_to_linear_ratio * angular_error
 
         return total_error
 
@@ -188,8 +193,8 @@ class RewardManager:
         # Average error
         avg_error = np.mean(errors)
 
-        # Exponential reward (higher is better)
-        reward = np.exp(-avg_error / 50.0)
+        # Exponential reward (higher is better, configurable scale)
+        reward = np.exp(-avg_error / self.weights.pose_error_scale)
 
         return reward
 
@@ -207,8 +212,8 @@ class RewardManager:
             axis=1
         ).mean()
 
-        # Exponential reward
-        reward = np.exp(-vel_error / 20.0)
+        # Exponential reward (configurable scale)
+        reward = np.exp(-vel_error / self.weights.velocity_error_scale)
 
         return reward
 
