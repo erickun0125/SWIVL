@@ -29,11 +29,23 @@ from dataclasses import dataclass
 from src.envs.biart import BiArtEnv
 from src.trajectory_generator import MinimumJerkTrajectory, TrajectoryPoint
 from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController, ImpedanceGains
+from src.ll_controllers.se2_screw_decomposed_impedance import (
+    SE2ScrewDecomposedImpedanceController,
+    ScrewImpedanceParams
+)
+from src.se2_dynamics import SE2Dynamics, SE2RobotParams
 
 
 @dataclass
 class ImpedanceLearningConfig:
     """Configuration for impedance learning environment."""
+    # Controller type: 'se2_impedance' or 'screw_decomposed'
+    controller_type: str = 'se2_impedance'
+
+    # Robot parameters (for screw decomposed controller)
+    robot_mass: float = 1.0
+    robot_inertia: float = 0.1
+
     # Damping bounds (D)
     min_damping_linear: float = 1.0
     max_damping_linear: float = 50.0
@@ -45,6 +57,17 @@ class ImpedanceLearningConfig:
     max_stiffness_linear: float = 200.0
     min_stiffness_angular: float = 5.0
     max_stiffness_angular: float = 100.0
+
+    # Screw decomposed bounds (parallel and perpendicular)
+    min_damping_parallel: float = 1.0
+    max_damping_parallel: float = 50.0
+    min_stiffness_parallel: float = 5.0
+    max_stiffness_parallel: float = 100.0
+
+    min_damping_perpendicular: float = 5.0
+    max_damping_perpendicular: float = 100.0
+    min_stiffness_perpendicular: float = 20.0
+    max_stiffness_perpendicular: float = 500.0
 
     # Reward weights
     tracking_weight: float = 1.0
@@ -93,11 +116,25 @@ class ImpedanceLearningEnv(gym.Env):
         # Create base environment
         self.base_env = BiArtEnv(render_mode=render_mode)
 
-        # Create impedance controllers for both arms
-        self.controllers = [
-            TaskSpaceImpedanceController(),
-            TaskSpaceImpedanceController()
-        ]
+        # Create impedance controllers for both arms based on controller type
+        if self.config.controller_type == 'se2_impedance':
+            self.controllers = [
+                TaskSpaceImpedanceController(),
+                TaskSpaceImpedanceController()
+            ]
+            self.action_dim_per_arm = 6  # damping (3) + stiffness (3)
+        elif self.config.controller_type == 'screw_decomposed':
+            # For screw decomposed, we need joint axis screws
+            # These will be initialized in reset()
+            robot_params = SE2RobotParams(
+                mass=self.config.robot_mass,
+                inertia=self.config.robot_inertia
+            )
+            self.controllers = [None, None]  # Will be initialized in reset()
+            self.robot_params = robot_params
+            self.action_dim_per_arm = 4  # D_parallel, K_parallel, D_perpendicular, K_perpendicular
+        else:
+            raise ValueError(f"Unknown controller type: {self.config.controller_type}")
 
         # Trajectory trackers
         self.trajectories = [None, None]
@@ -126,10 +163,11 @@ class ImpedanceLearningEnv(gym.Env):
         )
 
         # Define action space
-        # Per arm: damping (3) + stiffness (3) = 6
-        # Bimanual: 6 * 2 = 12
+        # SE2 impedance: Per arm: damping (3) + stiffness (3) = 6
+        # Screw decomposed: Per arm: D_parallel, K_parallel, D_perp, K_perp = 4
+        # Bimanual: action_dim_per_arm * 2
         # Actions are normalized to [-1, 1]
-        action_dim = 12
+        action_dim = self.action_dim_per_arm * 2
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -152,9 +190,41 @@ class ImpedanceLearningEnv(gym.Env):
         if self.hl_policy is not None:
             self.hl_policy.reset()
 
+        # Initialize screw-decomposed controllers if needed
+        if self.config.controller_type == 'screw_decomposed':
+            # Get joint axis screws from object
+            B_left, B_right = self.base_env.object_manager.get_joint_axis_screws()
+
+            # Create controllers with screw axes
+            initial_params = ScrewImpedanceParams(
+                M_parallel=self.config.robot_mass,
+                D_parallel=10.0,
+                K_parallel=20.0,
+                M_perpendicular=self.config.robot_mass,
+                D_perpendicular=20.0,
+                K_perpendicular=100.0
+            )
+
+            self.controllers[0] = SE2ScrewDecomposedImpedanceController(
+                screw_axis=B_left,
+                params=initial_params,
+                robot_dynamics=SE2Dynamics(self.robot_params),
+                model_matching=True,
+                use_feedforward=True
+            )
+
+            self.controllers[1] = SE2ScrewDecomposedImpedanceController(
+                screw_axis=B_right,
+                params=initial_params,
+                robot_dynamics=SE2Dynamics(self.robot_params),
+                model_matching=True,
+                use_feedforward=True
+            )
+
         # Reset controllers
         for controller in self.controllers:
-            controller.reset()
+            if controller is not None:
+                controller.reset()
 
         # Reset counters
         self.episode_steps = 0
@@ -198,14 +268,22 @@ class ImpedanceLearningEnv(gym.Env):
             # Compute control wrenches using impedance controllers
             wrenches = []
             for i in range(2):  # For each arm
-                wrench = self.controllers[i].compute_wrench(
-                    current_pose=obs['ee_poses'][i],
-                    desired_pose=desired_poses[i],
-                    measured_wrench=obs['external_wrenches'][i],
-                    current_velocity=obs['ee_twists'][i],  # Spatial frame velocity
-                    desired_velocity=desired_twists[i],  # Body frame twist
-                    desired_acceleration=desired_accels[i]  # Body frame acceleration (feedforward)
-                )
+                if self.config.controller_type == 'se2_impedance':
+                    wrench = self.controllers[i].compute_wrench(
+                        current_pose=obs['ee_poses'][i],
+                        desired_pose=desired_poses[i],
+                        measured_wrench=obs['external_wrenches'][i],
+                        current_velocity=obs['ee_twists'][i],  # Spatial frame velocity
+                        desired_velocity=desired_twists[i],  # Body frame twist
+                        desired_acceleration=desired_accels[i]  # Body frame acceleration (feedforward)
+                    )
+                elif self.config.controller_type == 'screw_decomposed':
+                    wrench, _ = self.controllers[i].compute_control(
+                        current_pose=obs['ee_poses'][i],
+                        desired_pose=desired_poses[i],
+                        body_twist_current=desired_twists[i],  # Body frame twist
+                        body_twist_desired=desired_twists[i]  # Body frame twist
+                    )
                 wrenches.append(wrench)
 
             wrenches = np.array(wrenches)
@@ -262,6 +340,15 @@ class ImpedanceLearningEnv(gym.Env):
         Returns:
             Dictionary with damping and stiffness for both arms
         """
+        if self.config.controller_type == 'se2_impedance':
+            return self._decode_action_se2(action)
+        elif self.config.controller_type == 'screw_decomposed':
+            return self._decode_action_screw(action)
+        else:
+            raise ValueError(f"Unknown controller type: {self.config.controller_type}")
+
+    def _decode_action_se2(self, action: np.ndarray) -> Dict[str, np.ndarray]:
+        """Decode action for SE2 impedance controller."""
         # Split action for two arms
         action_arm0 = action[:6]
         action_arm1 = action[6:]
@@ -318,12 +405,68 @@ class ImpedanceLearningEnv(gym.Env):
 
         return params
 
+    def _decode_action_screw(self, action: np.ndarray) -> Dict[str, np.ndarray]:
+        """Decode action for screw-decomposed controller."""
+        # Split action for two arms
+        action_arm0 = action[:4]
+        action_arm1 = action[4:]
+
+        params = {
+            'D_parallel': [],
+            'K_parallel': [],
+            'D_perpendicular': [],
+            'K_perpendicular': []
+        }
+
+        for arm_action in [action_arm0, action_arm1]:
+            # Parallel direction (compliant)
+            D_parallel = self._scale_action(
+                arm_action[0],
+                self.config.min_damping_parallel,
+                self.config.max_damping_parallel
+            )
+            K_parallel = self._scale_action(
+                arm_action[1],
+                self.config.min_stiffness_parallel,
+                self.config.max_stiffness_parallel
+            )
+
+            # Perpendicular direction (stiff)
+            D_perpendicular = self._scale_action(
+                arm_action[2],
+                self.config.min_damping_perpendicular,
+                self.config.max_damping_perpendicular
+            )
+            K_perpendicular = self._scale_action(
+                arm_action[3],
+                self.config.min_stiffness_perpendicular,
+                self.config.max_stiffness_perpendicular
+            )
+
+            params['D_parallel'].append(D_parallel)
+            params['K_parallel'].append(K_parallel)
+            params['D_perpendicular'].append(D_perpendicular)
+            params['K_perpendicular'].append(K_perpendicular)
+
+        # Convert to arrays
+        for key in params:
+            params[key] = np.array(params[key])
+
+        return params
+
     def _scale_action(self, normalized_value: float, min_val: float, max_val: float) -> float:
         """Scale normalized action from [-1, 1] to [min_val, max_val]."""
         return min_val + (normalized_value + 1.0) * 0.5 * (max_val - min_val)
 
     def _update_controller_gains(self, impedance_params: Dict[str, np.ndarray]):
         """Update impedance controller gains."""
+        if self.config.controller_type == 'se2_impedance':
+            self._update_se2_gains(impedance_params)
+        elif self.config.controller_type == 'screw_decomposed':
+            self._update_screw_gains(impedance_params)
+
+    def _update_se2_gains(self, impedance_params: Dict[str, np.ndarray]):
+        """Update SE2 impedance controller gains."""
         for i in range(2):
             damping = impedance_params['damping'][i]
             stiffness = impedance_params['stiffness'][i]
@@ -334,6 +477,22 @@ class ImpedanceLearningEnv(gym.Env):
             self.controllers[i].gains.kp_linear = stiffness[0]
             self.controllers[i].gains.kd_angular = damping[2]
             self.controllers[i].gains.kp_angular = stiffness[2]
+
+    def _update_screw_gains(self, impedance_params: Dict[str, np.ndarray]):
+        """Update screw-decomposed controller gains."""
+        for i in range(2):
+            # Create new screw impedance params
+            new_params = ScrewImpedanceParams(
+                M_parallel=self.config.robot_mass,
+                D_parallel=impedance_params['D_parallel'][i],
+                K_parallel=impedance_params['K_parallel'][i],
+                M_perpendicular=self.config.robot_mass,
+                D_perpendicular=impedance_params['D_perpendicular'][i],
+                K_perpendicular=impedance_params['K_perpendicular'][i]
+            )
+
+            # Update controller params
+            self.controllers[i].params = new_params
 
     def _update_trajectories(self, obs: Dict[str, np.ndarray]):
         """Update trajectories using high-level policy."""

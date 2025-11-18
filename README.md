@@ -47,6 +47,33 @@ python -m pytest scripts/tests/
 python -m scripts.tests.test_biart_simple
 ```
 
+### Training
+
+```bash
+# Train high-level policy (Flow Matching, Diffusion, or ACT)
+python scripts/training/train_hl_policy.py --policy flow_matching
+
+# Train low-level impedance learning policy
+# Works with ANY HL policy and BOTH controller types
+python scripts/training/train_ll_policy.py \
+    --hl_policy flow_matching \
+    --controller se2_impedance
+
+# Train with screw-decomposed controller
+python scripts/training/train_ll_policy.py \
+    --hl_policy diffusion \
+    --controller screw_decomposed
+```
+
+### Evaluation
+
+```bash
+# Evaluate hierarchical pipeline (HL + LL)
+python scripts/evaluation/evaluate_hierarchical.py \
+    --ll_checkpoint checkpoints/impedance_policy.zip \
+    --num_episodes 50
+```
+
 ## 📁 Repository Structure
 
 ```
