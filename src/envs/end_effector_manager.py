@@ -174,6 +174,7 @@ class ParallelGripper:
 
         # External wrench tracking
         self.external_wrench = np.zeros(3)  # [fx, fy, tau] in body frame
+        self.contact_impulses = []  # Store contact impulses during step
 
     def apply_grip_force(self):
         """Apply constant closing force to both jaws."""
@@ -239,21 +240,62 @@ class ParallelGripper:
         )
         self.base_body.torque += tau
 
-    def compute_external_wrench(self, link_body: Optional[pymunk.Body] = None) -> np.ndarray:
+    def add_contact_impulse(self, impulse: Vec2d, contact_point: Vec2d):
         """
-        Compute external wrench from contact forces.
-
-        This is simplified - proper implementation would use collision callbacks.
+        Add a contact impulse from collision callback.
 
         Args:
-            link_body: Optional link body that gripper is grasping
+            impulse: Contact impulse in world frame
+            contact_point: Contact point in world frame
+        """
+        self.contact_impulses.append((impulse, contact_point))
+
+    def compute_external_wrench(self, dt: float) -> np.ndarray:
+        """
+        Compute external wrench from accumulated contact impulses.
+
+        Args:
+            dt: Physics timestep (to convert impulses to forces)
 
         Returns:
             External wrench [fx, fy, tau] in body frame
         """
-        # Simplified: return zero for now
-        # Proper implementation would accumulate forces from contact callbacks
-        return np.zeros(3)
+        if not self.contact_impulses:
+            return np.zeros(3)
+
+        # Accumulate forces and torques in world frame
+        total_force_world = Vec2d(0, 0)
+        total_torque = 0.0
+
+        for impulse, contact_point in self.contact_impulses:
+            # Convert impulse to force: F = impulse / dt
+            force = impulse / dt
+            total_force_world += force
+
+            # Compute torque about base body center
+            r = contact_point - self.base_body.position
+            # Torque = r × F (cross product in 2D)
+            torque = r.x * force.y - r.y * force.x
+            total_torque += torque
+
+        # Transform force from world frame to body frame
+        cos_theta = np.cos(self.base_body.angle)
+        sin_theta = np.sin(self.base_body.angle)
+
+        fx_body = cos_theta * total_force_world.x + sin_theta * total_force_world.y
+        fy_body = -sin_theta * total_force_world.x + cos_theta * total_force_world.y
+
+        # Store and return
+        self.external_wrench = np.array([fx_body, fy_body, total_torque])
+
+        # Clear impulses for next step
+        self.contact_impulses = []
+
+        return self.external_wrench.copy()
+
+    def clear_contact_impulses(self):
+        """Clear accumulated contact impulses."""
+        self.contact_impulses = []
 
     def get_external_wrench(self) -> np.ndarray:
         """Get most recent external wrench measurement."""
@@ -275,7 +317,8 @@ class EndEffectorManager:
         self,
         space: pymunk.Space,
         num_grippers: int = 2,
-        config: Optional[GripperConfig] = None
+        config: Optional[GripperConfig] = None,
+        dt: float = 0.01
     ):
         """
         Initialize end-effector manager.
@@ -284,9 +327,11 @@ class EndEffectorManager:
             space: Pymunk space
             num_grippers: Number of grippers
             config: Optional gripper configuration
+            dt: Physics timestep for force computation
         """
         self.space = space
         self.num_grippers = num_grippers
+        self.dt = dt
 
         # Use provided config or default
         if config is None:
@@ -306,6 +351,9 @@ class EndEffectorManager:
 
         # Grippers will be created during reset
         self.grippers = []
+
+        # Setup collision handlers for force sensing
+        self._setup_collision_handlers()
 
     def reset(self, initial_poses: np.ndarray):
         """
@@ -336,14 +384,51 @@ class EndEffectorManager:
             )
             self.grippers.append(gripper)
 
+    def _setup_collision_handlers(self):
+        """Setup collision handlers for force sensing."""
+        # Collision type 1 is for grippers
+        # We'll handle collisions between grippers and objects (collision type 2)
+        handler = self.space.add_collision_handler(1, 2)
+        handler.post_solve = self._handle_collision
+
+    def _handle_collision(self, arbiter, space, data):
+        """
+        Collision callback to record contact forces.
+
+        Args:
+            arbiter: Collision arbiter containing contact information
+            space: Pymunk space
+            data: User data
+        """
+        # Get contact information
+        for contact in arbiter.contact_point_set.points:
+            # Get the impulse (force * dt)
+            impulse = Vec2d(contact.normal.x, contact.normal.y) * contact.normal_impulse
+            contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
+
+            # Determine which gripper this belongs to
+            for gripper in self.grippers:
+                # Check if either the base or jaws are involved
+                if (arbiter.shapes[0].body == gripper.base_body or
+                    arbiter.shapes[0].body == gripper.left_jaw or
+                    arbiter.shapes[0].body == gripper.right_jaw):
+                    gripper.add_contact_impulse(impulse, contact_point)
+                    break
+
+        return True
+
     def step(self):
         """
         Step end-effector physics.
 
-        Applies grip forces to all grippers.
+        Applies grip forces and computes external wrenches from contacts.
         """
         for gripper in self.grippers:
             gripper.apply_grip_force()
+
+        # Compute external wrenches from accumulated contact impulses
+        for gripper in self.grippers:
+            gripper.compute_external_wrench(self.dt)
 
     def get_poses(self) -> np.ndarray:
         """Get all gripper poses."""

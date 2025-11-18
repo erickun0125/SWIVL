@@ -63,16 +63,18 @@ class ScrewImpedanceController:
         current_pose: np.ndarray,
         desired_pose: np.ndarray,
         measured_wrench: np.ndarray,
-        current_velocity: Optional[np.ndarray] = None
+        current_velocity: Optional[np.ndarray] = None,
+        desired_velocity: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Compute screw-aware impedance control wrench.
 
         Args:
-            current_pose: Current pose [x, y, theta]
-            desired_pose: Desired pose [x, y, theta]
-            measured_wrench: Measured external wrench [fx, fy, tau]
-            current_velocity: Optional velocity [vx, vy, omega]
+            current_pose: Current pose [x, y, theta] in spatial frame
+            desired_pose: Desired pose [x, y, theta] in spatial frame
+            measured_wrench: Measured external wrench [fx, fy, tau] in body frame
+            current_velocity: Optional current velocity [vx, vy, omega] in spatial frame
+            desired_velocity: Optional desired velocity [vx, vy, omega] in body frame
 
         Returns:
             Control wrench [fx, fy, tau] in body frame
@@ -106,19 +108,29 @@ class ScrewImpedanceController:
 
         # Compute velocity error in screw coordinates
         if current_velocity is not None:
+            # Convert current velocity from spatial frame to body frame
             vx, vy, omega = current_velocity
-            vel_body = np.array([
+            current_vel_body = np.array([
                 cos_theta * vx + sin_theta * vy,
                 -sin_theta * vx + cos_theta * vy,
                 omega
             ])
 
-            # Project velocity onto screw axis
-            vel_along = np.dot(vel_body, screw_axis)
-            vel_perp = vel_body - vel_along * screw_axis
+            # Desired velocity is already in body frame
+            if desired_velocity is not None:
+                desired_vel_body = desired_velocity
+            else:
+                desired_vel_body = np.zeros(3)
 
-            derror_along = -vel_along
-            derror_perp = -vel_perp
+            # Velocity error in body frame
+            vel_error_body = desired_vel_body - current_vel_body
+
+            # Project velocity error onto screw axis
+            vel_error_along = np.dot(vel_error_body, screw_axis)
+            vel_error_perp = vel_error_body - vel_error_along * screw_axis
+
+            derror_along = vel_error_along
+            derror_perp = vel_error_perp
         else:
             if self.prev_error_screw is not None:
                 derror_screw = (error_screw - self.prev_error_screw) / self.dt

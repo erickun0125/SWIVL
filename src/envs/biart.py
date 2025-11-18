@@ -75,12 +75,11 @@ class BiArtEnv(gym.Env):
 
     ## Observation Space
 
-    If `obs_type` is set to `state`, the observation includes:
-    - Left gripper: [x, y, theta]
-    - Right gripper: [x, y, theta]
-    - Object link 1: [x, y, theta]
-    - Object link 2: [x, y, theta]
-    - External wrenches: [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+    If `obs_type` is set to `state`, the observation is a dictionary with:
+    - 'ee_poses': (2, 3) array - poses of both grippers [x, y, theta] in spatial frame
+    - 'ee_twists': (2, 3) array - velocities of both grippers [vx, vy, omega] in spatial frame
+    - 'link_poses': (2, 3) array - poses of object links [x, y, theta]
+    - 'external_wrenches': (2, 3) array - external wrenches [fx, fy, tau] in body frame
 
     ## Rewards
 
@@ -170,6 +169,9 @@ class BiArtEnv(gym.Env):
         # [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
         max_force = 100.0
         max_torque = 50.0
+        max_velocity = 500.0
+        max_angular_velocity = 10.0
+
         self.action_space = spaces.Box(
             low=np.array([-max_force, -max_force, -max_torque, -max_force, -max_force, -max_torque]),
             high=np.array([max_force, max_force, max_torque, max_force, max_force, max_torque]),
@@ -178,33 +180,41 @@ class BiArtEnv(gym.Env):
 
         # Observation space
         if self.obs_type == "state":
-            # State: [left_gripper(3), right_gripper(3), link1(3), link2(3), ext_wrench_left(3), ext_wrench_right(3)]
-            # Total: 18 dimensions
-            self.observation_space = spaces.Box(
-                low=np.array([
-                    # Left gripper (x, y, theta)
-                    0, 0, -np.pi,
-                    # Right gripper (x, y, theta)
-                    0, 0, -np.pi,
-                    # Link 1 (x, y, theta)
-                    0, 0, -np.pi,
-                    # Link 2 (x, y, theta)
-                    0, 0, -np.pi,
-                    # External wrench left (fx, fy, tau)
-                    -max_force, -max_force, -max_torque,
-                    # External wrench right (fx, fy, tau)
-                    -max_force, -max_force, -max_torque,
-                ]),
-                high=np.array([
-                    512, 512, np.pi,
-                    512, 512, np.pi,
-                    512, 512, np.pi,
-                    512, 512, np.pi,
-                    max_force, max_force, max_torque,
-                    max_force, max_force, max_torque,
-                ]),
-                dtype=np.float32,
-            )
+            # Dictionary observation with separate fields
+            self.observation_space = spaces.Dict({
+                'ee_poses': spaces.Box(
+                    low=np.array([[0, 0, -np.pi], [0, 0, -np.pi]]),
+                    high=np.array([[512, 512, np.pi], [512, 512, np.pi]]),
+                    dtype=np.float32
+                ),
+                'ee_twists': spaces.Box(
+                    low=np.array([
+                        [-max_velocity, -max_velocity, -max_angular_velocity],
+                        [-max_velocity, -max_velocity, -max_angular_velocity]
+                    ]),
+                    high=np.array([
+                        [max_velocity, max_velocity, max_angular_velocity],
+                        [max_velocity, max_velocity, max_angular_velocity]
+                    ]),
+                    dtype=np.float32
+                ),
+                'link_poses': spaces.Box(
+                    low=np.array([[0, 0, -np.pi], [0, 0, -np.pi]]),
+                    high=np.array([[512, 512, np.pi], [512, 512, np.pi]]),
+                    dtype=np.float32
+                ),
+                'external_wrenches': spaces.Box(
+                    low=np.array([
+                        [-max_force, -max_force, -max_torque],
+                        [-max_force, -max_force, -max_torque]
+                    ]),
+                    high=np.array([
+                        [max_force, max_force, max_torque],
+                        [max_force, max_force, max_torque]
+                    ]),
+                    dtype=np.float32
+                )
+            })
         elif self.obs_type == "pixels":
             self.observation_space = spaces.Box(
                 low=0,
@@ -249,7 +259,8 @@ class BiArtEnv(gym.Env):
         self.ee_manager = EndEffectorManager(
             space=self.space,
             num_grippers=2,
-            config=self.gripper_config
+            config=self.gripper_config,
+            dt=self.dt
         )
 
         # Create RewardManager
@@ -391,24 +402,18 @@ class BiArtEnv(gym.Env):
         """Get observation."""
         if self.obs_type == "state":
             # Get states from managers
-            ee_poses = self.ee_manager.get_poses()  # (2, 3)
+            ee_poses = self.ee_manager.get_poses()  # (2, 3) - spatial frame
+            ee_twists = self.ee_manager.get_velocities()  # (2, 3) - spatial frame velocities
             link_poses = self.object_manager.get_link_poses()  # (2, 3)
             external_wrenches = self.ee_manager.get_external_wrenches()  # (2, 3)
 
-            # Construct state observation
-            obs = np.concatenate([
-                # Left gripper
-                ee_poses[0],
-                # Right gripper
-                ee_poses[1],
-                # Link 1
-                link_poses[0],
-                # Link 2
-                link_poses[1],
-                # External wrenches
-                external_wrenches[0],
-                external_wrenches[1],
-            ], dtype=np.float32)
+            # Return dictionary observation
+            obs = {
+                'ee_poses': ee_poses.astype(np.float32),
+                'ee_twists': ee_twists.astype(np.float32),
+                'link_poses': link_poses.astype(np.float32),
+                'external_wrenches': external_wrenches.astype(np.float32)
+            }
 
             return obs
 

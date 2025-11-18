@@ -17,10 +17,14 @@ Keyboard mapping:
 
 import numpy as np
 import pygame
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Any
 from dataclasses import dataclass
 
-from .linkage_manager import LinkageObject
+# LinkageObject is optional - can work with ObjectManager too
+try:
+    from .linkage_manager import LinkageObject
+except ImportError:
+    LinkageObject = None
 
 
 @dataclass
@@ -185,7 +189,7 @@ class MultiEEPlanner:
     def __init__(
         self,
         num_end_effectors: int,
-        linkage_object: LinkageObject,
+        linkage_object: Optional[Any] = None,
         control_dt: float = 0.1
     ):
         """
@@ -193,7 +197,7 @@ class MultiEEPlanner:
 
         Args:
             num_end_effectors: Number of end-effectors (grippers)
-            linkage_object: LinkageObject being manipulated
+            linkage_object: Optional LinkageObject or ObjectManager being manipulated
             control_dt: Control timestep for velocity integration
         """
         self.num_ee = num_end_effectors
@@ -309,11 +313,28 @@ class MultiEEPlanner:
         Args:
             current_ee_poses: Current poses of all end-effectors
         """
-        # Update linkage state
-        self.linkage.update_joint_states()
+        if self.linkage is None:
+            # No linkage object - keep current poses
+            for i in range(self.num_ee):
+                if i != self.controlled_ee_idx:
+                    self.desired_poses[i] = current_ee_poses[i]
+            return
+
+        # Update linkage state (if linkage object supports it)
+        if hasattr(self.linkage, 'update_joint_states'):
+            self.linkage.update_joint_states()
 
         # Get suggested grasp poses from linkage
-        grasp_poses = self.linkage.compute_grasp_poses(num_grippers=self.num_ee)
+        if hasattr(self.linkage, 'compute_grasp_poses'):
+            grasp_poses = self.linkage.compute_grasp_poses(num_grippers=self.num_ee)
+        elif hasattr(self.linkage, 'get_grasping_poses'):
+            # ObjectManager interface
+            grasp_poses_dict = self.linkage.get_grasping_poses()
+            grasp_poses = [grasp_poses_dict.get('left', current_ee_poses[0]),
+                          grasp_poses_dict.get('right', current_ee_poses[1])]
+        else:
+            # Fallback: keep current poses
+            grasp_poses = current_ee_poses
 
         # Update desired poses for non-controlled end-effectors
         for i in range(self.num_ee):
@@ -354,7 +375,7 @@ class CoordinatedMotionPlanner:
     def __init__(
         self,
         num_end_effectors: int,
-        linkage_object: LinkageObject,
+        linkage_object: Optional[Any] = None,
         control_dt: float = 0.1
     ):
         """Initialize coordinated motion planner."""
@@ -426,11 +447,26 @@ class CoordinatedMotionPlanner:
 
         Followers maintain their grasp on the object while the leader moves.
         """
+        if self.linkage is None:
+            # No linkage object - keep current poses
+            for i in range(self.num_ee):
+                if i != self.leader_ee_idx:
+                    self.desired_poses[i] = current_ee_poses[i]
+            return
+
         # Update linkage state
-        self.linkage.update_joint_states()
+        if hasattr(self.linkage, 'update_joint_states'):
+            self.linkage.update_joint_states()
 
         # Get grasp poses
-        grasp_poses = self.linkage.compute_grasp_poses(num_grippers=self.num_ee)
+        if hasattr(self.linkage, 'compute_grasp_poses'):
+            grasp_poses = self.linkage.compute_grasp_poses(num_grippers=self.num_ee)
+        elif hasattr(self.linkage, 'get_grasping_poses'):
+            grasp_poses_dict = self.linkage.get_grasping_poses()
+            grasp_poses = [grasp_poses_dict.get('left', current_ee_poses[0]),
+                          grasp_poses_dict.get('right', current_ee_poses[1])]
+        else:
+            grasp_poses = current_ee_poses
 
         # Update follower poses
         for i in range(self.num_ee):
@@ -462,7 +498,11 @@ class CoordinatedMotionPlanner:
         vel_cmd = self.keyboard.get_velocity_array()
 
         # Compute object centroid
-        centroid = self.linkage.compute_object_centroid()
+        if self.linkage is not None and hasattr(self.linkage, 'compute_object_centroid'):
+            centroid = self.linkage.compute_object_centroid()
+        else:
+            # Fallback: use average of current EE positions
+            centroid = np.mean([pose[:2] for pose in current_ee_poses], axis=0)
 
         # Move object centroid according to velocity command
         # For simplicity, use average orientation of EEs
@@ -491,7 +531,7 @@ class CoordinatedMotionPlanner:
 
 def create_keyboard_teleoperation_system(
     num_end_effectors: int,
-    linkage_object: LinkageObject,
+    linkage_object: Optional[Any] = None,
     mode: str = "leader_follower"
 ) -> MultiEEPlanner:
     """
@@ -499,7 +539,7 @@ def create_keyboard_teleoperation_system(
 
     Args:
         num_end_effectors: Number of end-effectors
-        linkage_object: LinkageObject being manipulated
+        linkage_object: Optional LinkageObject or ObjectManager being manipulated
         mode: Control mode ("leader_follower" or "coordinated")
 
     Returns:
