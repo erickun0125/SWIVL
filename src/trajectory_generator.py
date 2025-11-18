@@ -5,6 +5,9 @@ This module generates smooth trajectories in SE(2) using cubic splines.
 Position (x, y) and orientation (theta) are interpolated separately using
 cubic spline interpolation for smooth, differentiable trajectories.
 
+Following Modern Robotics (Lynch & Park) convention:
+- Body twist: V = [ω, vx, vy]^T (angular velocity first!)
+
 Key features:
 - Cubic spline interpolation for position and orientation
 - Separate handling of position and orientation for better control
@@ -25,10 +28,13 @@ class TrajectoryPoint:
     """
     Single point in a trajectory.
 
+    Following Modern Robotics convention:
+    - Body twist: [ω, vx, vy]
+
     Attributes:
         pose: SE(2) pose [x, y, theta] in spatial frame (T_si)
         velocity_spatial: Spatial velocity [vx, vy, omega] (time derivative of pose)
-        velocity_body: Body twist [vx_b, vy_b, omega] (twist in body frame)
+        velocity_body: Body twist [omega, vx_b, vy_b] (twist in body frame, MR convention!)
         acceleration: Acceleration [ax, ay, alpha] in spatial frame
         time: Time stamp
     """

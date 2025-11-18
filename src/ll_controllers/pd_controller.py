@@ -3,11 +3,17 @@ PD Controller for SE(2) Pose Control
 
 Implements a Position & Orientation decomposed PD controller that:
 - Takes desired pose (x, y, theta) as input
-- Computes control wrench (fx, fy, tau) in body frame
+- Computes control wrench in body frame
 - Uses PD gains to generate smooth tracking behavior
 
 The controller computes errors in the body frame and applies
 proportional and derivative terms to generate wrench commands.
+
+Following Modern Robotics (Lynch & Park) convention:
+- Output wrench: F = [τ, fx, fy]^T (torque first!)
+
+Note: This controller works with spatial/world frame velocities as input
+(not body twists), since it's a simple PD controller without dynamics.
 """
 
 import numpy as np
@@ -75,15 +81,21 @@ class PDController:
         """
         Compute control wrench to track desired trajectory.
 
+        Following Modern Robotics convention:
+        - Output wrench: [τ, fx, fy]
+
+        Note: This controller works with spatial/world frame velocities
+        (not body twists) since it's a simple PD controller.
+
         Args:
             current_pose: Current pose [x, y, theta] in world frame
             desired_pose: Desired pose [x, y, theta] in world frame
-            desired_velocity: Desired velocity [vx, vy, omega] in world frame
-            desired_acceleration: Desired acceleration [ax, ay, alpha] in world frame (usually zero)
-            current_velocity: Optional current velocity [vx, vy, omega] in world frame
+            desired_velocity: Desired velocity [vx, vy, omega] in spatial/world frame
+            desired_acceleration: Desired acceleration [ax, ay, alpha] in spatial/world frame (usually zero)
+            current_velocity: Optional current velocity [vx, vy, omega] in spatial/world frame
 
         Returns:
-            Wrench [fx, fy, tau] in body frame
+            Wrench [tau, fx, fy] in body frame (MR convention!)
         """
         # Extract poses
         x, y, theta = current_pose
@@ -177,8 +189,8 @@ class PDController:
 
         torque = np.clip(torque, -self.max_torque, self.max_torque)
 
-        # Construct wrench [fx, fy, tau]
-        wrench = np.array([force_body[0], force_body[1], torque])
+        # Construct wrench [tau, fx, fy] (MR convention!)
+        wrench = np.array([torque, force_body[0], force_body[1]])
 
         return wrench
 
@@ -233,15 +245,18 @@ class MultiGripperPDController:
         """
         Compute wrenches for all grippers.
 
+        Following Modern Robotics convention:
+        - Output wrenches: [τ, fx, fy]
+
         Args:
             current_poses: Array of shape (num_grippers, 3) with current poses
             desired_poses: Array of shape (num_grippers, 3) with desired poses
-            desired_velocities: Array of shape (num_grippers, 3) with desired velocities
-            desired_accelerations: Optional array of shape (num_grippers, 3) with desired accelerations
-            current_velocities: Optional array of shape (num_grippers, 3) with current velocities
+            desired_velocities: Array of shape (num_grippers, 3) with desired spatial velocities
+            desired_accelerations: Optional array of shape (num_grippers, 3) with desired spatial accelerations
+            current_velocities: Optional array of shape (num_grippers, 3) with current spatial velocities
 
         Returns:
-            Array of shape (num_grippers, 3) with wrenches [fx, fy, tau]
+            Array of shape (num_grippers, 3) with wrenches [tau, fx, fy] (MR convention!)
         """
         if current_poses.shape[0] != self.num_grippers:
             raise ValueError(f"Expected {self.num_grippers} poses, got {current_poses.shape[0]}")

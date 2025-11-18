@@ -1,12 +1,17 @@
 % Algorithms for SWIVL Paper
 % Include these in the main paper or supplementary material
+%
+% Convention: Following Modern Robotics (Lynch & Park)
+% - Twist: V = [\omega, v_x, v_y]^T (angular velocity first!)
+% - Wrench: F = [\tau, f_x, f_y]^T (torque first!)
+% - Screw axis: B = [s_\omega, s_x, s_y]^T (angular component first!)
 
 \begin{algorithm}[t]
 \caption{SE(2) Task Space Impedance Control}
 \label{alg:impedance_control}
 \begin{algorithmic}[1]
-\REQUIRE Current pose $T_{si}$, desired pose $T_{si}^d$, desired twist ${}^i V_i^d$, desired acceleration ${}^i \dot{V}_i^d$, current twist ${}^i V_i$, measured wrench ${}^i F_{\text{ext}}$, impedance gains $(D_d, K_d)$
-\ENSURE Wrench command ${}^i F_i^{\text{cmd}}$
+\REQUIRE Current pose $T_{si}$, desired pose $T_{si}^d$, desired twist ${}^i V_i^d = [\omega^d, v_x^d, v_y^d]^T$, desired acceleration ${}^i \dot{V}_i^d$, current twist ${}^i V_i = [\omega, v_x, v_y]^T$, measured wrench ${}^i F_{\text{ext}} = [\tau, f_x, f_y]^T$, impedance gains $(D_d, K_d)$
+\ENSURE Wrench command ${}^i F_i^{\text{cmd}} = [\tau, f_x, f_y]^T$
 
 \STATE Compute pose error: $e_i \gets \log(T_{si}^{-1} T_{si}^d)$
 \STATE Compute velocity error: ${}^i V_e \gets {}^i V_i - {}^i V_i^d$
@@ -29,8 +34,8 @@
 \caption{Screw-Decomposed Impedance Control}
 \label{alg:screw_impedance}
 \begin{algorithmic}[1]
-\REQUIRE Current pose $T_{si}$, desired pose $T_{si}^d$, desired twist ${}^i V_i^d$, current twist ${}^i V_i$, measured wrench ${}^i F_{\text{ext}}$, screw axis $B_i$, impedance params $(D_\parallel, K_\parallel, D_\perp, K_\perp)$
-\ENSURE Wrench command ${}^i F_i^{\text{cmd}}$
+\REQUIRE Current pose $T_{si}$, desired pose $T_{si}^d$, desired twist ${}^i V_i^d = [\omega^d, v_x^d, v_y^d]^T$, current twist ${}^i V_i = [\omega, v_x, v_y]^T$, measured wrench ${}^i F_{\text{ext}} = [\tau, f_x, f_y]^T$, screw axis $B_i = [s_\omega, s_x, s_y]^T$, impedance params $(D_\parallel, K_\parallel, D_\perp, K_\perp)$
+\ENSURE Wrench command ${}^i F_i^{\text{cmd}} = [\tau, f_x, f_y]^T$
 
 \STATE // Compute errors
 \STATE $e_i \gets \log(T_{si}^{-1} T_{si}^d)$
@@ -246,7 +251,7 @@
 \label{alg:screw_extraction}
 \begin{algorithmic}[1]
 \REQUIRE Object joint type (revolute or prismatic), joint configuration, end-effector poses $\{T_{sL}, T_{sR}\}$
-\ENSURE Screw axes $\{B_L, B_R\}$ in body frames
+\ENSURE Screw axes $\{B_L, B_R\}$ in body frames, $B_i = [s_\omega, s_x, s_y]^T$ (MR convention)
 
 \STATE // Get joint axis in world frame
 \IF{joint type is revolute}

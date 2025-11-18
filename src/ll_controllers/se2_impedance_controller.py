@@ -4,17 +4,21 @@ SE(2) Impedance Controller
 Implements proper impedance control on SE(2) for planar robots.
 Supports both general impedance control and model-matching special case.
 
+Following Modern Robotics (Lynch & Park) convention:
+- Twist: V = [ω, vx, vy]^T (angular velocity first!)
+- Wrench: F = [τ, fx, fy]^T (torque first!)
+
 Target dynamics: M_d * dV_e + D_d * V_e + K_d * e = F_ext
 
 where:
-    e: pose error in R³ (log map of T_bd)
-    V_e: velocity error in R³
-    M_d: desired inertia matrix (3x3)
-    D_d: desired damping matrix (3x3)
-    K_d: desired stiffness matrix (3x3)
-    F_ext: external wrench in body frame
+    e: pose error in R³ (log map of T_bd), [ω, vx, vy]
+    V_e: velocity error in R³, [ω, vx, vy]
+    M_d: desired inertia matrix (3x3), diag(I_d, m_d, m_d)
+    D_d: desired damping matrix (3x3), diag(d_θ, d_x, d_y)
+    K_d: desired stiffness matrix (3x3), diag(k_θ, k_x, k_y)
+    F_ext: external wrench in body frame, [τ, fx, fy]
 
-Reference: Modern Robotics, Lynch & Park
+Reference: Modern Robotics, Lynch & Park, Chapter 11
           Impedance Control on SE(3), Various Papers
 """
 
@@ -102,6 +106,11 @@ class SE2ImpedanceController:
         """
         Create impedance controller with diagonal impedance matrices.
 
+        Following Modern Robotics convention:
+        - M_d = diag(I_d, m_d, m_d) - rotational inertia first!
+        - D_d = diag(d_θ, d_x, d_y) - rotational damping first!
+        - K_d = diag(k_θ, k_x, k_y) - rotational stiffness first!
+
         Args:
             I_d: Rotational inertia [kg⋅m²]
             m_d: Translational mass [kg]
@@ -117,9 +126,10 @@ class SE2ImpedanceController:
         Returns:
             controller: SE2ImpedanceController instance
         """
-        M_d = np.diag([m_d, m_d, I_d])
-        D_d = np.diag([d_x, d_y, d_theta])
-        K_d = np.diag([k_x, k_y, k_theta])
+        # MR convention: [angular, linear_x, linear_y]
+        M_d = np.diag([I_d, m_d, m_d])
+        D_d = np.diag([d_theta, d_x, d_y])
+        K_d = np.diag([k_theta, k_x, k_y])
 
         robot_dynamics = SE2Dynamics(robot_params)
 
@@ -136,12 +146,15 @@ class SE2ImpedanceController:
 
         e = log(T_bd)^∨ = log(T_sb^(-1) * T_sd)^∨
 
+        Following Modern Robotics convention:
+        Returns [ω, vx, vy] (angular error first!)
+
         Args:
             T_sb: Current pose (space to body) - 3x3 matrix
             T_sd: Desired pose (space to desired) - 3x3 matrix
 
         Returns:
-            e: Pose error vector [vx, vy, omega] in R³ (se(2) coordinates)
+            e: Pose error vector [omega, vx, vy] in R³ (se(2) coordinates, MR convention)
         """
         T_bd = se2_inverse(T_sb) @ T_sd
         e = se2_log(T_bd)
@@ -174,12 +187,14 @@ class SE2ImpedanceController:
 
         V_e = b_V_d - b_V_b
 
+        Following Modern Robotics convention: [ω, vx, vy]
+
         Args:
-            body_twist_current: Current body twist b_V_b [vx, vy, omega]
-            body_twist_desired: Desired body twist b_V_d [vx, vy, omega]
+            body_twist_current: Current body twist b_V_b [omega, vx, vy]
+            body_twist_desired: Desired body twist b_V_d [omega, vx, vy]
 
         Returns:
-            V_e: Velocity error in R³
+            V_e: Velocity error in R³ [omega, vx, vy]
         """
         V_e = body_twist_desired - body_twist_current
 
@@ -196,6 +211,10 @@ class SE2ImpedanceController:
         """
         Compute control wrench for impedance control.
 
+        Following Modern Robotics convention:
+        - Twist/error: [ω, vx, vy]
+        - Wrench: [τ, fx, fy]
+
         Two cases:
         1. Model Matching (M_d = Lambda_b):
            F_cmd = Lambda_b * dV_d + C_b * V + eta_b + D_d * V_e + K_d * e
@@ -205,15 +224,15 @@ class SE2ImpedanceController:
            where dV_cmd = dV_d + M_d^(-1) * (D_d * V_e + K_d * e - F_ext)
 
         Args:
-            e: Pose error (3,)
-            V_e: Velocity error (3,)
-            body_twist_current: Current body twist b_V_b (3,)
-            body_accel_desired: Desired body acceleration db_V_d (3,) [optional]
-            F_ext: External wrench (3,) [optional]
+            e: Pose error (3,) [omega, vx, vy]
+            V_e: Velocity error (3,) [omega, vx, vy]
+            body_twist_current: Current body twist b_V_b (3,) [omega, vx, vy]
+            body_accel_desired: Desired body acceleration db_V_d (3,) [domega, dvx, dvy] [optional]
+            F_ext: External wrench (3,) [tau, fx, fy] [optional]
             current_pose: Current pose [x, y, theta] [optional, for debugging]
 
         Returns:
-            F_cmd: Control wrench in body frame (3,) [fx, fy, tau]
+            F_cmd: Control wrench in body frame (3,) [tau, fx, fy] (MR convention!)
         """
         # Default values for optional parameters
         if body_accel_desired is None:
@@ -270,21 +289,23 @@ class SE2ImpedanceController:
         """
         Saturate wrench to maximum limits.
 
+        Following Modern Robotics convention: [τ, fx, fy]
+
         Args:
-            wrench: Input wrench [fx, fy, tau]
+            wrench: Input wrench [tau, fx, fy]
 
         Returns:
-            Saturated wrench
+            Saturated wrench [tau, fx, fy]
         """
         wrench_out = wrench.copy()
 
-        # Saturate force
-        force_mag = np.linalg.norm(wrench[:2])
-        if force_mag > self.max_force:
-            wrench_out[:2] = wrench[:2] / force_mag * self.max_force
+        # Saturate torque (first element in MR convention!)
+        wrench_out[0] = np.clip(wrench[0], -self.max_torque, self.max_torque)
 
-        # Saturate torque
-        wrench_out[2] = np.clip(wrench[2], -self.max_torque, self.max_torque)
+        # Saturate force (elements 1,2 in MR convention!)
+        force_mag = np.linalg.norm(wrench[1:3])
+        if force_mag > self.max_force:
+            wrench_out[1:3] = wrench[1:3] / force_mag * self.max_force
 
         return wrench_out
 
@@ -300,16 +321,20 @@ class SE2ImpedanceController:
 
         This is the main interface for the controller.
 
+        Following Modern Robotics convention:
+        - Twist: [ω, vx, vy]
+        - Wrench: [τ, fx, fy]
+
         Args:
             current_pose: Current pose [x, y, theta]
             desired_pose: Desired pose [x, y, theta]
-            body_twist_current: Current body twist [vx, vy, omega]
-            body_twist_desired: Desired body twist [vx, vy, omega]
-            body_accel_desired: Desired body acceleration [dvx, dvy, domega] [optional]
-            F_ext: External wrench [fx, fy, tau] [optional]
+            body_twist_current: Current body twist [omega, vx, vy]
+            body_twist_desired: Desired body twist [omega, vx, vy]
+            body_accel_desired: Desired body acceleration [domega, dvx, dvy] [optional]
+            F_ext: External wrench [tau, fx, fy] [optional]
 
         Returns:
-            F_cmd: Control wrench (3,) [fx, fy, tau]
+            F_cmd: Control wrench (3,) [tau, fx, fy] (MR convention!)
             info: Dictionary with debugging information
         """
         # Compute errors
@@ -323,14 +348,15 @@ class SE2ImpedanceController:
         )
 
         # Collect debug info
+        # MR convention: e = [ω, vx, vy], F_cmd = [τ, fx, fy]
         info = {
             'pose_error': e,
             'velocity_error': V_e,
             'pose_error_norm': np.linalg.norm(e),
             'velocity_error_norm': np.linalg.norm(V_e),
             'control_wrench': F_cmd,
-            'position_error_norm': np.linalg.norm(e[:2]),
-            'orientation_error': e[2]
+            'position_error_norm': np.linalg.norm(e[1:3]),  # MR: linear components are [1:3]
+            'orientation_error': e[0]  # MR: angular component is [0]
         }
 
         return F_cmd, info
@@ -419,10 +445,13 @@ if __name__ == "__main__":
     desired_pose = np.array([1.5, 1.0, np.pi/4])
     print(f"Desired pose: {desired_pose}")
 
-    # Current and desired twists
-    body_twist_current = np.array([0.1, 0.05, 0.1])
+    # Current and desired twists (MR convention: [ω, vx, vy])
+    body_twist_current = np.array([0.1, 0.1, 0.05])  # [omega, vx, vy]
     body_twist_desired = np.array([0.0, 0.0, 0.0])
     body_accel_desired = np.array([0.0, 0.0, 0.0])
+
+    print(f"Current twist: {body_twist_current} [omega, vx, vy]")
+    print(f"Desired twist: {body_twist_desired}")
 
     # Compute control
     print("\n[Computing Control Wrench]")
@@ -433,10 +462,11 @@ if __name__ == "__main__":
         body_accel_desired
     )
 
-    print("\nControl wrench F_cmd:")
-    print(f"  Force X: {F_cmd[0]:.4f} N")
-    print(f"  Force Y: {F_cmd[1]:.4f} N")
-    print(f"  Torque:  {F_cmd[2]:.4f} N⋅m")
+    # MR convention: wrench is [τ, fx, fy]
+    print("\nControl wrench F_cmd (MR convention: [tau, fx, fy]):")
+    print(f"  Torque:  {F_cmd[0]:.4f} N⋅m")
+    print(f"  Force X: {F_cmd[1]:.4f} N")
+    print(f"  Force Y: {F_cmd[2]:.4f} N")
 
     print("\nError information:")
     print(f"  Pose error:     {info['pose_error']}")

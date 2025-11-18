@@ -335,15 +335,17 @@ class ArticulatedObject:
         Returns body twist representation of joint axis as seen from each EE frame.
         This is configuration-invariant - depends only on grasping frames and joint geometry.
 
+        Following Modern Robotics convention: Screw = [sω, sx, sy]
+
         For revolute joint:
-            B = [v_x, v_y, omega] where v = omega × r (r is position to joint axis)
-            Normalized: [r_y, -r_x, 1] (unit angular velocity)
+            B = [omega, v_x, v_y] where v = omega × r (r is position to joint axis)
+            Normalized: [1, r_y, -r_x] (unit angular velocity, MR convention)
 
         For prismatic joint:
-            B = [v_x, v_y, 0] where [v_x, v_y] is unit direction of sliding
+            B = [0, v_x, v_y] where [v_x, v_y] is unit direction of sliding (MR convention)
 
         Returns:
-            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw
+            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw [sω, sx, sy]
         """
         # Get joint connection point and direction in link frames
         if self.joint_type == JointType.REVOLUTE:
@@ -405,19 +407,21 @@ class ArticulatedObject:
             # Transform joint position to grasp frame
             joint_pos_grasp = R_grasp_link @ joint_pos_link + t_grasp_link
 
-            # SE(2) screw for revolute: [r_y, -r_x, 1]
+            # SE(2) screw for revolute: [omega, v_x, v_y] (MR convention!)
             # This represents v = omega × r with omega = 1 (unit angular velocity)
             rx, ry = joint_pos_grasp
-            B = np.array([ry, -rx, 1.0])
+            # MR convention: [1, r_y, -r_x] (angular component first!)
+            B = np.array([1.0, ry, -rx])
 
         elif self.joint_type == JointType.PRISMATIC:
             # Transform joint direction to grasp frame (only rotation, no translation)
             joint_dir_grasp = R_grasp_link @ joint_dir_link
 
-            # SE(2) screw for prismatic: [v_x, v_y, 0] with unit linear velocity
+            # SE(2) screw for prismatic: [omega, v_x, v_y] (MR convention!)
             # Normalize to ensure unit velocity
             joint_dir_grasp_normalized = joint_dir_grasp / np.linalg.norm(joint_dir_grasp)
-            B = np.array([joint_dir_grasp_normalized[0], joint_dir_grasp_normalized[1], 0.0])
+            # MR convention: [0, vx, vy] (angular component first, which is 0 for prismatic!)
+            B = np.array([0.0, joint_dir_grasp_normalized[0], joint_dir_grasp_normalized[1]])
 
         else:
             B = np.zeros(3)
@@ -572,10 +576,12 @@ class ObjectManager:
         This is configuration-invariant kinematic constraint information.
         Returns body twist representation of joint axis as seen from each EE frame.
 
+        Following Modern Robotics convention: Screw = [sω, sx, sy]
+
         Returns:
             Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw
-                - For revolute: [r_y, -r_x, 1] (r is position to joint center)
-                - For prismatic: [v_x, v_y, 0] (v is unit sliding direction)
+                - For revolute: [1, r_y, -r_x] (r is position to joint center, MR convention)
+                - For prismatic: [0, v_x, v_y] (v is unit sliding direction, MR convention)
         """
         if self.object is None:
             raise RuntimeError("Object not initialized. Call reset() first.")

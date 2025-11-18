@@ -31,10 +31,12 @@ where $\hat{\omega}$ is the skew-symmetric matrix:
 \hat{\omega} = \begin{bmatrix} 0 & -\omega \\ \omega & 0 \end{bmatrix}
 \end{equation}
 
-We use the coordinate representation:
+We use the coordinate representation (Modern Robotics convention):
 \begin{equation}
-\xi = \begin{bmatrix} v_x \\ v_y \\ \omega \end{bmatrix} \in \mathbb{R}^3
+\xi = \begin{bmatrix} \omega \\ v_x \\ v_y \end{bmatrix} \in \mathbb{R}^3
 \end{equation}
+
+\noindent Angular velocity first, then linear velocities.
 
 \subsubsection{Exponential Map}
 
@@ -57,9 +59,9 @@ I & \text{if } \omega = 0
 
 \subsubsection{Logarithm Map}
 
-The logarithm map $\log: \text{SE}(2) \to \mathfrak{se}(2)$ is:
+The logarithm map $\log: \text{SE}(2) \to \mathfrak{se}(2)$ is (MR convention):
 \begin{equation}
-\log(T) = \begin{bmatrix} V^{-1}(\omega) p \\ \omega \end{bmatrix}
+\log(T) = \begin{bmatrix} \omega \\ V^{-1}(\omega) p \end{bmatrix} = \begin{bmatrix} \omega \\ v_x \\ v_y \end{bmatrix}
 \end{equation}
 
 where $\omega = \arctan2(R_{21}, R_{11})$ and:
@@ -81,17 +83,25 @@ The adjoint map transforms velocities between frames:
 \text{Ad}_T: \mathfrak{se}(2) \to \mathfrak{se}(2)
 \end{equation}
 
-For $T = (R, p)$:
+For $T = (R, p)$ where $p = [p_x, p_y]^T$ (Modern Robotics convention):
 \begin{equation}
-\text{Ad}_T = \begin{bmatrix} R & \hat{p} R \\ 0 & 1 \end{bmatrix} \in \mathbb{R}^{3 \times 3}
+\text{Ad}_T = \begin{bmatrix}
+1 & 0 & 0 \\
+p_y & R_{11} & R_{12} \\
+-p_x & R_{21} & R_{22}
+\end{bmatrix} \in \mathbb{R}^{3 \times 3}
 \end{equation}
 
-where $\hat{p}$ is the skew-symmetric matrix of $p$.
-
-In coordinate form:
+In coordinate form for $\xi = [\omega, v_x, v_y]^T$:
 \begin{equation}
-\text{Ad}_T \cdot \xi = \begin{bmatrix} R v + \hat{p} R \omega \\ \omega \end{bmatrix}
+\text{Ad}_T \cdot \xi = \begin{bmatrix}
+\omega \\
+R v + p_y \omega \\
+R v - p_x \omega
+\end{bmatrix}
 \end{equation}
+
+\noindent The angular velocity is frame-independent, while linear velocity includes the $p \times \omega$ coupling term.
 
 \textbf{Application}: Converts body frame velocity to spatial frame:
 \begin{equation}
@@ -108,50 +118,52 @@ In coordinate form:
 
 \paragraph{Body to Spatial (World)}
 Given:
-- Current pose: $T_{si} = (R, p)$
-- Body frame velocity: ${}^i V = [v_x^b, v_y^b, \omega]^T$
+- Current pose: $T_{si} = (R, p)$ where $p = [x, y]^T$
+- Body frame velocity: ${}^i V = [\omega, v_x^b, v_y^b]^T$ (MR convention!)
 
-Compute spatial velocity:
+Compute spatial velocity (includes $p \times \omega$ term):
 \begin{equation}
-{}^s V = \begin{bmatrix} R \cdot [v_x^b, v_y^b]^T \\ \omega \end{bmatrix} = \begin{bmatrix} \dot{x} \\ \dot{y} \\ \omega \end{bmatrix}
+{}^s V = \begin{bmatrix} \omega \\ R \cdot [v_x^b, v_y^b]^T + [y, -x]^T \omega \end{bmatrix} = \begin{bmatrix} \omega \\ \dot{x} \\ \dot{y} \end{bmatrix}
 \end{equation}
 
 \textbf{Implementation}:
 \begin{lstlisting}[language=Python]
 # src/se2_math.py
-def body_to_world_velocity(pose, body_velocity):
+def body_to_spatial_twist(pose, body_twist):
     x, y, theta = pose
-    v_b = body_velocity[:2]
-    omega = body_velocity[2]
+    omega, vx_b, vy_b = body_twist  # MR convention!
 
     R = rotation_matrix(theta)
-    v_s = R @ v_b
+    v_b = np.array([vx_b, vy_b])
+    # Include p x omega term!
+    v_s = R @ v_b + np.array([y, -x]) * omega
 
-    return np.array([v_s[0], v_s[1], omega])
+    return np.array([omega, v_s[0], v_s[1]])
 \end{lstlisting}
 
 \paragraph{Spatial to Body}
 Given:
-- Current pose: $T_{si} = (R, p)$
-- Spatial velocity: ${}^s V = [\dot{x}, \dot{y}, \omega]^T$
+- Current pose: $T_{si} = (R, p)$ where $p = [x, y]^T$
+- Spatial velocity: ${}^s V = [\omega, \dot{x}, \dot{y}]^T$ (MR convention!)
 
-Compute body velocity:
+Compute body velocity (subtract $p \times \omega$ term):
 \begin{equation}
-{}^i V = \begin{bmatrix} R^T \cdot [\dot{x}, \dot{y}]^T \\ \omega \end{bmatrix} = \begin{bmatrix} v_x^b \\ v_y^b \\ \omega \end{bmatrix}
+{}^i V = \begin{bmatrix} \omega \\ R^T \cdot ([\dot{x}, \dot{y}]^T - [y, -x]^T \omega) \end{bmatrix} = \begin{bmatrix} \omega \\ v_x^b \\ v_y^b \end{bmatrix}
 \end{equation}
 
 \textbf{Implementation}:
 \begin{lstlisting}[language=Python]
 # src/se2_math.py
-def world_to_body_velocity(pose, world_velocity):
+def spatial_to_body_twist(pose, spatial_twist):
     x, y, theta = pose
-    v_w = world_velocity[:2]
-    omega = world_velocity[2]
+    omega, vx_s, vy_s = spatial_twist  # MR convention!
 
     R = rotation_matrix(theta)
-    v_b = R.T @ v_w
+    v_s = np.array([vx_s, vy_s])
+    # Subtract p x omega term
+    v_b = R.T @ (v_s - np.array([y, -x]) * omega)
 
-    return np.array([v_b[0], v_b[1], omega])
+    return np.array([omega, v_b[0], v_b[1]])
 \end{lstlisting}
 
 \subsubsection{Acceleration Transformations}
@@ -161,12 +173,12 @@ Accelerations require additional Coriolis terms due to rotating frames.
 \paragraph{Spatial to Body}
 Given:
 - Current pose: $T_{si} = (R, p)$
-- Spatial velocity: ${}^s V = [\dot{x}, \dot{y}, \omega]^T$
-- Spatial acceleration: ${}^s \dot{V} = [\ddot{x}, \ddot{y}, \dot{\omega}]^T$
+- Spatial velocity: ${}^s V = [\omega, \dot{x}, \dot{y}]^T$ (MR convention!)
+- Spatial acceleration: ${}^s \dot{V} = [\alpha, \ddot{x}, \ddot{y}]^T$ (MR convention!)
 
 Compute body acceleration with Coriolis correction:
 \begin{equation}
-{}^i \dot{V} = \begin{bmatrix} R^T \cdot [\ddot{x}, \ddot{y}]^T - \omega \times (R^T \cdot [\dot{x}, \dot{y}]^T) \\ \dot{\omega} \end{bmatrix}
+{}^i \dot{V} = \begin{bmatrix} \alpha \\ R^T \cdot [\ddot{x}, \ddot{y}]^T - \omega \times (R^T \cdot [\dot{x}, \dot{y}]^T) \end{bmatrix}
 \end{equation}
 
 where the cross product in 2D is:
@@ -214,26 +226,26 @@ where:
     \item $J_b \in \mathbb{R}^{3 \times n}$: Body frame Jacobian
 \end{itemize}
 
-For a planar 2-DOF arm (translational joints in x, y):
+For a planar 2-DOF arm (translational joints in x, y), following MR convention where twist = $[\omega, v_x, v_y]^T$:
 \begin{equation}
-M = \begin{bmatrix} m & 0 \\ 0 & m \end{bmatrix}, \quad J_b = \begin{bmatrix} \cos\theta & 0 \\ \sin\theta & 0 \\ 0 & 1 \end{bmatrix}
+M = \begin{bmatrix} m & 0 \\ 0 & m \end{bmatrix}, \quad J_b = \begin{bmatrix} 0 & 1 \\ \cos\theta & 0 \\ \sin\theta & 0 \end{bmatrix}
 \end{equation}
 
-This simplifies to:
+This simplifies to (MR convention: rotational inertia first!):
 \begin{equation}
-\Lambda_b = \text{diag}(m, m, I_z)
+\Lambda_b = \text{diag}(I_z, m, m)
 \end{equation}
 
-where $I_z$ is the rotational inertia.
+where $I_z$ is the rotational inertia and $m$ is the translational mass.
 
 \textbf{Implementation}:
 \begin{lstlisting}[language=Python]
 # src/se2_dynamics.py
 def compute_task_space_inertia(self, current_pose):
-    # For planar translational arms
+    # For planar translational arms (MR convention!)
     m = self.params.mass
     I = self.params.inertia
-    Lambda_b = np.diag([m, m, I])
+    Lambda_b = np.diag([I, m, m])  # Angular inertia first!
     return Lambda_b
 \end{lstlisting}
 
@@ -265,18 +277,20 @@ In SE(2) planar setting with horizontal plane, gravity acts perpendicular to the
 
 A screw $\mathcal{S}$ represents an instantaneous rigid body motion (twist) as rotation about an axis combined with translation along that axis.
 
-In SE(2), a unit screw has the form:
+In SE(2), following Modern Robotics convention, a unit screw has the form:
 \begin{equation}
-\mathcal{S} = \begin{bmatrix} \omega \\ v \end{bmatrix} \in \mathfrak{se}(2), \quad \|\mathcal{S}\| = 1
+\mathcal{S} = \begin{bmatrix} s_\omega \\ s_x \\ s_y \end{bmatrix} = \begin{bmatrix} \omega \\ v_x \\ v_y \end{bmatrix} \in \mathfrak{se}(2)
 \end{equation}
+
+\noindent Angular component first, then linear components.
 
 \paragraph{Revolute Joint}
-For a revolute joint at position $p_j = [x_j, y_j]^T$ in the end-effector body frame:
+For a revolute joint at position $\mathbf{r} = [r_x, r_y]^T$ in the end-effector body frame:
 \begin{equation}
-\mathcal{S}^{\text{rev}} = \begin{bmatrix} 1 \\ -y_j \\ x_j \end{bmatrix} \quad \text{(normalized)}
+\mathcal{S}^{\text{rev}} = \begin{bmatrix} 1 \\ r_y \\ -r_x \end{bmatrix}
 \end{equation}
 
-The linear velocity component is perpendicular to the position vector, with magnitude equal to the distance from the joint.
+The linear velocity component $[r_y, -r_x]^T$ represents $\mathbf{r} \times \hat{z}$ (perpendicular to position vector).
 
 \paragraph{Prismatic Joint}
 For a prismatic joint with direction $\hat{v} = [v_x, v_y]^T$ (unit vector):
@@ -284,7 +298,7 @@ For a prismatic joint with direction $\hat{v} = [v_x, v_y]^T$ (unit vector):
 \mathcal{S}^{\text{pri}} = \begin{bmatrix} 0 \\ v_x \\ v_y \end{bmatrix}
 \end{equation}
 
-No angular component, pure translation along the joint direction.
+No angular component (first element = 0), pure translation along the joint direction.
 
 \subsubsection{Configuration Invariance}
 
