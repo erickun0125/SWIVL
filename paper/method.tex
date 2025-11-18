@@ -26,12 +26,14 @@ For each end-effector, we define two reference frames:
 
 \noindent \textbf{Body twist} (velocity in body frame):
 \begin{equation}
-{}^i V_i = \begin{bmatrix} v_{i,x}^b \\ v_{i,y}^b \\ \omega_i \end{bmatrix} \in \mathfrak{se}(2)
+{}^i V_i = \begin{bmatrix} \omega_i \\ v_{i,x}^b \\ v_{i,y}^b \end{bmatrix} \in \mathfrak{se}(2)
 \end{equation}
+
+\noindent Following Modern Robotics (Lynch \& Park) convention: angular velocity first, then linear velocities.
 
 \noindent \textbf{Spatial twist} (velocity in world frame):
 \begin{equation}
-{}^s V_i = \begin{bmatrix} \dot{x}_i \\ \dot{y}_i \\ \omega_i \end{bmatrix} = \text{Ad}_{T_{si}} \cdot {}^i V_i
+{}^s V_i = \begin{bmatrix} \omega_i \\ \dot{x}_i \\ \dot{y}_i \end{bmatrix} = \text{Ad}_{T_{si}} \cdot {}^i V_i
 \end{equation}
 
 \noindent where $\text{Ad}_{T_{si}}$ is the adjoint transformation.
@@ -40,26 +42,28 @@ For each end-effector, we define two reference frames:
 
 External forces and moments are measured at each end-effector via 6-axis F/T sensors. In SE(2), the wrench is:
 \begin{equation}
-{}^i F_i = \begin{bmatrix} f_{i,x}^b \\ f_{i,y}^b \\ \tau_i \end{bmatrix} \in \mathfrak{se}(2)^*
+{}^i F_i = \begin{bmatrix} \tau_i \\ f_{i,x}^b \\ f_{i,y}^b \end{bmatrix} \in \mathfrak{se}(2)^*
 \end{equation}
 
-\noindent measured in the body frame, representing forces along local x, y axes and moment about z-axis.
+\noindent measured in the body frame. Following Modern Robotics convention: torque first, then forces along local x, y axes.
 
 \subsubsection{Articulated Object Constraints}
 
 The manipulated object has a single revolute or prismatic joint characterized by a \textbf{unit screw axis} $B_i \in \mathfrak{se}(2)$ in each end-effector's body frame:
 \begin{equation}
-B_i = \begin{bmatrix} \omega_i \\ v_i \end{bmatrix} \in \mathfrak{se}(2), \quad \|B_i\| = 1
+B_i = \begin{bmatrix} s_{\omega,i} \\ s_{x,i} \\ s_{y,i} \end{bmatrix} \in \mathfrak{se}(2)
 \end{equation}
 
-For a revolute joint at distance $d$ from the end-effector:
+\noindent Following Modern Robotics convention: angular component first, then linear components.
+
+For a revolute joint at position $\mathbf{r} = [r_x, r_y]^T$ from the end-effector:
 \begin{equation}
-B_i^{\text{rev}} = \begin{bmatrix} 1 \\ 0 \\ d \end{bmatrix}
+B_i^{\text{rev}} = \begin{bmatrix} 1 \\ r_y \\ -r_x \end{bmatrix}
 \end{equation}
 
-For a prismatic joint along direction $\hat{v}$:
+For a prismatic joint along direction $\hat{v} = [v_x, v_y]^T$:
 \begin{equation}
-B_i^{\text{pri}} = \begin{bmatrix} 0 \\ \hat{v} \end{bmatrix}, \quad \|\hat{v}\| = 1
+B_i^{\text{pri}} = \begin{bmatrix} 0 \\ v_x \\ v_y \end{bmatrix}, \quad \|\hat{v}\| = 1
 \end{equation}
 
 This screw representation is \textbf{configuration-invariant}: $B_i$ remains constant in the body frame regardless of end-effector pose, enabling consistent constraint encoding across configurations.
@@ -130,10 +134,10 @@ This formulation ensures that the closed-loop system exhibits the target impedan
 
 In practice, we use diagonal damping and stiffness matrices:
 \begin{equation}
-D_d = \text{diag}(d_x, d_y, d_\theta), \quad K_d = \text{diag}(k_x, k_y, k_\theta)
+D_d = \text{diag}(d_\theta, d_x, d_y), \quad K_d = \text{diag}(k_\theta, k_x, k_y)
 \end{equation}
 
-This allows independent tuning of compliance along each degree of freedom in the body frame.
+\noindent Following Modern Robotics convention: angular parameter first, then linear parameters. This allows independent tuning of compliance along each degree of freedom in the body frame.
 
 
 \subsection{Screw-Decomposed Impedance Control}
@@ -285,14 +289,16 @@ The wrench signals provide critical information about inter-arm force coupling a
 \paragraph{SE(2) Impedance Controller}
 The policy outputs diagonal impedance parameters:
 \begin{equation}
-a_t = [d_x^L, d_y^L, d_\theta^L, k_x^L, k_y^L, k_\theta^L, d_x^R, d_y^R, d_\theta^R, k_x^R, k_y^R, k_\theta^R]
+a_t = [d_\theta^L, d_x^L, d_y^L, k_\theta^L, k_x^L, k_y^L, d_\theta^R, d_x^R, d_y^R, k_\theta^R, k_x^R, k_y^R]
 \label{eq:action_se2}
 \end{equation}
 
+\noindent Following Modern Robotics convention: angular parameters first, then linear parameters.
+
 Actions are normalized to $[-1, 1]$ and scaled to bounds:
 \begin{align}
-D_d &\in [D_{\min}, D_{\max}] = [1, 50] \text{ N·s/m (linear)}, [0.5, 20] \text{ N·m·s/rad (angular)} \\
-K_d &\in [K_{\min}, K_{\max}] = [10, 200] \text{ N/m (linear)}, [5, 100] \text{ N·m/rad (angular)}
+D_d &\in [D_{\min}, D_{\max}] = [0.5, 20] \text{ N·m·s/rad (angular)}, [1, 50] \text{ N·s/m (linear)} \\
+K_d &\in [K_{\min}, K_{\max}] = [5, 100] \text{ N·m/rad (angular)}, [10, 200] \text{ N/m (linear)}
 \end{align}
 
 \paragraph{Screw-Decomposed Controller}
