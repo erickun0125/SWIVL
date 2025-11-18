@@ -199,23 +199,45 @@ def se2_log(T: np.ndarray) -> np.ndarray:
     # Extract angle
     omega = np.arctan2(T[1, 0], T[0, 0])
 
-    if np.abs(omega) < 1e-6:
+    # Small angle threshold - be conservative near singularities
+    small_angle_threshold = 1e-6
+    near_pi_threshold = 1e-4  # Threshold for omega ≈ ±π
+
+    if np.abs(omega) < small_angle_threshold:
         # Small angle approximation: log([I, t; 0, 1]) = [0, t]
         return np.array([omega, t[0], t[1]])
 
-    # General case
-    c, s = np.cos(omega), np.sin(omega)
+    # Check if near ±π singularity (cot(ω/2) diverges when ω → ±π)
+    if np.abs(np.abs(omega) - np.pi) < near_pi_threshold:
+        # Near ±π: use stable alternative formulation
+        # When ω → ±π, half_omega → ±π/2, so tan(half_omega) → ±∞
+        # Use L'Hôpital or series expansion for stability
+        half_omega = omega / 2.0
+        sign_omega = np.sign(omega)
 
-    # Inverse of V matrix: V^{-1}(ω)
-    # V^{-1}(ω) = (ω/2) * cot(ω/2) * I - (ω/2) * [0, -1; 1, 0]
-    #           = [ω/2 * cot(ω/2), ω/2; -ω/2, ω/2 * cot(ω/2)]
-    half_omega = omega / 2.0
-    cot_half = 1.0 / np.tan(half_omega)
+        # Stable formula near singularity:
+        # cot(ω/2) ≈ (π/2 - |ω|/2) / tan(π/2 - |ω|/2) near ±π
+        # For small ε = π - |ω|, this gives stable computation
+        epsilon = np.pi - np.abs(omega)
+        # Use Taylor expansion: cot(π/2 - ε/2) ≈ ε/2 for small ε
+        cot_half_stable = sign_omega * epsilon / 2.0
 
-    V_inv = np.array([
-        [half_omega * cot_half, half_omega],
-        [-half_omega, half_omega * cot_half]
-    ])
+        V_inv = np.array([
+            [half_omega * cot_half_stable, half_omega],
+            [-half_omega, half_omega * cot_half_stable]
+        ])
+    else:
+        # General case - stable range
+        # Inverse of V matrix: V^{-1}(ω)
+        # V^{-1}(ω) = (ω/2) * cot(ω/2) * I - (ω/2) * [0, -1; 1, 0]
+        #           = [ω/2 * cot(ω/2), ω/2; -ω/2, ω/2 * cot(ω/2)]
+        half_omega = omega / 2.0
+        cot_half = 1.0 / np.tan(half_omega)
+
+        V_inv = np.array([
+            [half_omega * cot_half, half_omega],
+            [-half_omega, half_omega * cot_half]
+        ])
 
     # Linear velocity: [vx, vy] = V^{-1}(ω) * t
     v = V_inv @ t

@@ -18,6 +18,7 @@ Architecture:
 import collections
 import os
 import warnings
+from typing import Tuple
 
 import cv2
 import gymnasium as gym
@@ -198,6 +199,17 @@ class BiArtEnv(gym.Env):
                     ]),
                     dtype=np.float32
                 ),
+                'ee_body_twists': spaces.Box(
+                    low=np.array([
+                        [-max_angular_velocity, -max_velocity, -max_velocity],
+                        [-max_angular_velocity, -max_velocity, -max_velocity]
+                    ]),
+                    high=np.array([
+                        [max_angular_velocity, max_velocity, max_velocity],
+                        [max_angular_velocity, max_velocity, max_velocity]
+                    ]),
+                    dtype=np.float32
+                ),
                 'link_poses': spaces.Box(
                     low=np.array([[0, 0, -np.pi], [0, 0, -np.pi]]),
                     high=np.array([[512, 512, np.pi], [512, 512, np.pi]]),
@@ -205,12 +217,12 @@ class BiArtEnv(gym.Env):
                 ),
                 'external_wrenches': spaces.Box(
                     low=np.array([
-                        [-max_force, -max_force, -max_torque],
-                        [-max_force, -max_force, -max_torque]
+                        [-max_torque, -max_force, -max_force],  # MR convention: [tau, fx, fy]
+                        [-max_torque, -max_force, -max_force]
                     ]),
                     high=np.array([
-                        [max_force, max_force, max_torque],
-                        [max_force, max_force, max_torque]
+                        [max_torque, max_force, max_force],  # MR convention: [tau, fx, fy]
+                        [max_torque, max_force, max_force]
                     ]),
                     dtype=np.float32
                 )
@@ -343,8 +355,18 @@ class BiArtEnv(gym.Env):
             "bonus": reward_info["bonus"],
         }
 
-        # Check termination
-        terminated = reward_info["is_success"] or reward_info["is_failure"]
+        # Check safety constraints
+        is_safe, safety_message = self._check_safety()
+        if not is_safe:
+            # Safety violation - terminate episode
+            terminated = True
+            info["safety_violation"] = safety_message
+            # Add penalty to reward
+            reward_info["total_reward"] -= 100.0  # Large safety penalty
+        else:
+            # Check termination from reward manager
+            terminated = reward_info["is_success"] or reward_info["is_failure"]
+
         truncated = False
 
         if self.render_mode == "human":
@@ -403,14 +425,16 @@ class BiArtEnv(gym.Env):
         if self.obs_type == "state":
             # Get states from managers
             ee_poses = self.ee_manager.get_poses()  # (2, 3) - spatial frame
-            ee_twists = self.ee_manager.get_velocities()  # (2, 3) - spatial frame velocities
+            ee_twists_spatial = self.ee_manager.get_velocities()  # (2, 3) - spatial frame velocities [vx_s, vy_s, omega]
+            ee_body_twists = self.ee_manager.get_body_twists()  # (2, 3) - body frame twists [omega, vx_b, vy_b] (MR convention!)
             link_poses = self.object_manager.get_link_poses()  # (2, 3)
-            external_wrenches = self.ee_manager.get_external_wrenches()  # (2, 3)
+            external_wrenches = self.ee_manager.get_external_wrenches()  # (2, 3) - body frame [tau, fx, fy] (MR convention!)
 
             # Return dictionary observation
             obs = {
                 'ee_poses': ee_poses.astype(np.float32),
-                'ee_twists': ee_twists.astype(np.float32),
+                'ee_twists': ee_twists_spatial.astype(np.float32),  # Keep old name for compatibility
+                'ee_body_twists': ee_body_twists.astype(np.float32),  # New: proper body twists
                 'link_poses': link_poses.astype(np.float32),
                 'external_wrenches': external_wrenches.astype(np.float32)
             }
@@ -443,6 +467,51 @@ class BiArtEnv(gym.Env):
             >>> # with unit velocity in joint space
         """
         return self.object_manager.get_joint_axis_screws()
+
+    def _check_safety(self) -> Tuple[bool, str]:
+        """
+        Check safety constraints.
+
+        Returns:
+            Tuple of (is_safe, violation_message)
+        """
+        # 1. Workspace limits (with margin)
+        workspace_min = 10.0  # pixels
+        workspace_max = 502.0  # pixels
+
+        ee_poses = self.ee_manager.get_poses()
+        for i, pose in enumerate(ee_poses):
+            x, y = pose[0], pose[1]
+            if x < workspace_min or x > workspace_max or y < workspace_min or y > workspace_max:
+                return False, f"EE {i} out of workspace: ({x:.1f}, {y:.1f})"
+
+        # 2. Joint limits (for articulated object)
+        joint_state = self.object_manager.get_joint_state()
+        joint_type = self.object_manager.joint_type
+
+        if joint_type.value == "revolute":
+            # V-shape limits: -120° to -60°
+            min_angle = -2 * np.pi / 3  # -120°
+            max_angle = -np.pi / 3  # -60°
+            if joint_state < min_angle or joint_state > max_angle:
+                return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}° (limits: [{np.rad2deg(min_angle):.1f}°, {np.rad2deg(max_angle):.1f}°])"
+
+        elif joint_type.value == "prismatic":
+            # Sliding limits (relative to link length)
+            link_length = self.object_manager.object.link_length
+            min_slide = -link_length * 0.5
+            max_slide = link_length * 0.5
+            if joint_state < min_slide or joint_state > max_slide:
+                return False, f"Joint position out of limits: {joint_state:.1f} (limits: [{min_slide:.1f}, {max_slide:.1f}])"
+
+        # 3. Link poses within workspace
+        link_poses = self.object_manager.get_link_poses()
+        for i, pose in enumerate(link_poses):
+            x, y = pose[0], pose[1]
+            if x < workspace_min or x > workspace_max or y < workspace_min or y > workspace_max:
+                return False, f"Link {i} out of workspace: ({x:.1f}, {y:.1f})"
+
+        return True, ""
 
     def _draw(self):
         """Draw the environment."""
