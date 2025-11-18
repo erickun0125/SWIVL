@@ -8,6 +8,11 @@ Decomposes impedance behavior into:
 
 This allows independent impedance tuning for different directions.
 
+Following Modern Robotics (Lynch & Park) convention:
+- Twist: V = [ω, vx, vy]^T (angular velocity first!)
+- Wrench: F = [τ, fx, fy]^T (torque first!)
+- Screw axis: S = [sω, sx, sy]^T (angular component first!)
+
 Target dynamics:
 - Parallel:      M_∥ θ̈ + D_∥ θ̇ + K_∥ θ = τ_ext
 - Perpendicular: M_⊥ ë_⊥ + D_⊥ V_e,⊥ + K_⊥ e_⊥ = F_ext,⊥
@@ -16,6 +21,7 @@ where θ is generalized displacement along screw axis.
 
 Reference: Based on SE(3) screw decomposition theory
           Applied to SE(2) planar robotics
+          Modern Robotics, Lynch & Park, Chapter 3
 """
 
 import numpy as np
@@ -79,9 +85,16 @@ class SE2ScrewDecomposedImpedanceController:
         """
         Initialize screw-decomposed impedance controller.
 
+        Following Modern Robotics convention:
+        Screw axis has same ordering as twist: [sω, sx, sy]
+
         Args:
-            screw_axis: SE(2) screw axis [sx, sy, sω] ∈ R³
+            screw_axis: SE(2) screw axis [sω, sx, sy] ∈ R³ (MR convention: angular first!)
                        Should be a unit screw (normalized appropriately)
+                       Examples:
+                       - Pure rotation: [1, 0, 0]
+                       - Pure translation x: [0, 1, 0]
+                       - Pure translation y: [0, 0, 1]
             params: Screw impedance parameters
             robot_dynamics: SE2Dynamics object
             model_matching: If True, use M_d = Lambda_b
@@ -132,8 +145,10 @@ class SE2ScrewDecomposedImpedanceController:
         """
         Update screw axis (for configuration-dependent screws).
 
+        Following Modern Robotics convention: [sω, sx, sy]
+
         Args:
-            screw_axis: New screw axis [sx, sy, sω]
+            screw_axis: New screw axis [sω, sx, sy] (MR convention: angular first!)
         """
         self.screw_axis = screw_axis.copy()
         self.screw_norm_sq = np.dot(screw_axis, screw_axis)
@@ -195,16 +210,21 @@ class SE2ScrewDecomposedImpedanceController:
         """
         Compute screw-decomposed impedance control.
 
+        Following Modern Robotics convention:
+        - Twist: [ω, vx, vy]
+        - Wrench: [τ, fx, fy]
+        - Screw axis: [sω, sx, sy]
+
         Args:
             current_pose: Current pose [x, y, theta]
             desired_pose: Desired pose [x, y, theta]
-            body_twist_current: Current body twist [vx, vy, ω]
-            body_twist_desired: Desired body twist [vx, vy, ω]
-            body_accel_desired: Desired body acceleration [dvx, dvy, dω] [optional]
-            F_ext: External wrench [fx, fy, τ] [optional]
+            body_twist_current: Current body twist [ω, vx, vy] (MR convention!)
+            body_twist_desired: Desired body twist [ω, vx, vy]
+            body_accel_desired: Desired body acceleration [dω, dvx, dvy] [optional]
+            F_ext: External wrench [τ, fx, fy] (MR convention!) [optional]
 
         Returns:
-            F_cmd: Control wrench [3,]
+            F_cmd: Control wrench [τ, fx, fy] (MR convention!)
             info: Debug information dictionary
         """
         # Default values
@@ -344,21 +364,23 @@ class SE2ScrewDecomposedImpedanceController:
         """
         Saturate wrench to maximum limits.
 
+        Following Modern Robotics convention: [τ, fx, fy]
+
         Args:
-            wrench: Input wrench [fx, fy, τ]
+            wrench: Input wrench [τ, fx, fy] (MR convention!)
 
         Returns:
-            Saturated wrench
+            Saturated wrench [τ, fx, fy]
         """
         wrench_out = wrench.copy()
 
-        # Saturate force magnitude
-        force_mag = np.linalg.norm(wrench[:2])
-        if force_mag > self.max_force:
-            wrench_out[:2] = wrench[:2] / force_mag * self.max_force
+        # Saturate torque (first element in MR convention!)
+        wrench_out[0] = np.clip(wrench[0], -self.max_torque, self.max_torque)
 
-        # Saturate torque
-        wrench_out[2] = np.clip(wrench[2], -self.max_torque, self.max_torque)
+        # Saturate force magnitude (elements 1,2 in MR convention!)
+        force_mag = np.linalg.norm(wrench[1:3])
+        if force_mag > self.max_force:
+            wrench_out[1:3] = wrench[1:3] / force_mag * self.max_force
 
         return wrench_out
 
@@ -377,8 +399,10 @@ class SE2ScrewDecomposedImpedanceController:
         """
         Factory method to create controller from individual parameters.
 
+        Following Modern Robotics convention: screw axis [sω, sx, sy]
+
         Args:
-            screw_axis: Screw axis [sx, sy, sω]
+            screw_axis: Screw axis [sω, sx, sy] (MR convention: angular first!)
             M_parallel, D_parallel, K_parallel: Parallel impedance params
             M_perpendicular, D_perpendicular, K_perpendicular: Perpendicular impedance params
             robot_params: Robot physical parameters
@@ -460,15 +484,15 @@ if __name__ == "__main__":
     print("\nTest 1: Projection Operators")
     print("-" * 70)
 
-    # Pure translation screw
-    S_translation = np.array([1.0, 0.0, 0.0])  # Translation along x
+    # Pure translation screw (MR convention: [sω, sx, sy])
+    S_translation = np.array([0.0, 1.0, 0.0])  # Translation along x (no rotation, unit vx)
     controller_trans = SE2ScrewDecomposedImpedanceController(
         screw_axis=S_translation,
         params=ScrewImpedanceParams(),
         robot_dynamics=SE2Dynamics(SE2RobotParams(mass=1.0, inertia=0.1))
     )
 
-    print(f"Screw (translation): {S_translation}")
+    print(f"Screw (translation x, MR convention [ω, vx, vy]): {S_translation}")
     print(f"P_parallel:\n{controller_trans.P_parallel}")
     print(f"P_perpendicular:\n{controller_trans.P_perpendicular}")
 
@@ -476,15 +500,15 @@ if __name__ == "__main__":
                                            controller_trans.P_perpendicular)
     print(f"Projection properties verified: {verified}")
 
-    # Pure rotation screw (about origin)
-    S_rotation = np.array([0.0, 0.0, 1.0])  # Rotation about origin
+    # Pure rotation screw (MR convention: [sω, sx, sy])
+    S_rotation = np.array([1.0, 0.0, 0.0])  # Pure rotation (unit ω, no linear velocity)
     controller_rot = SE2ScrewDecomposedImpedanceController(
         screw_axis=S_rotation,
         params=ScrewImpedanceParams(),
         robot_dynamics=SE2Dynamics(SE2RobotParams(mass=1.0, inertia=0.1))
     )
 
-    print(f"\nScrew (rotation): {S_rotation}")
+    print(f"\nScrew (rotation, MR convention [ω, vx, vy]): {S_rotation}")
     print(f"P_parallel:\n{controller_rot.P_parallel}")
     print(f"P_perpendicular:\n{controller_rot.P_perpendicular}")
 
@@ -523,8 +547,9 @@ if __name__ == "__main__":
         K_perpendicular=100.0
     )
 
+    # MR convention: [sω, sx, sy] - compliant along x translation
     controller = SE2ScrewDecomposedImpedanceController(
-        screw_axis=np.array([1.0, 0.0, 0.0]),  # Compliant along x
+        screw_axis=np.array([0.0, 1.0, 0.0]),  # Compliant along x (no rotation, unit vx)
         params=screw_params,
         robot_dynamics=SE2Dynamics(robot_params),
         model_matching=True
@@ -533,8 +558,9 @@ if __name__ == "__main__":
     # Current and desired states
     current_pose = np.array([0.0, 0.0, 0.0])
     desired_pose = np.array([0.1, 0.05, 0.1])
-    current_twist = np.array([0.0, 0.0, 0.0])
-    desired_twist = np.array([0.2, 0.0, 0.0])
+    # MR convention: twist is [ω, vx, vy]
+    current_twist = np.array([0.0, 0.0, 0.0])  # [omega, vx, vy]
+    desired_twist = np.array([0.0, 0.2, 0.0])  # [omega, vx, vy]
 
     F_cmd, info = controller.compute_control(
         current_pose, desired_pose,
