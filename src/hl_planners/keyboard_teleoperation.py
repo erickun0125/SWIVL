@@ -14,51 +14,162 @@ Key features:
 
 import numpy as np
 import pygame
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, integrate_velocity
+from src.se2_math import normalize_angle, integrate_velocity, world_to_body_velocity
 # from src.envs.grasping_frames import GraspingFrameManager # Removed: Not available
 
 class KinematicConstraintSolver:
-    """Helper to compute required velocity for the secondary gripper."""
+    """Helper to compute required twists for both grippers."""
+
     def __init__(self, joint_type: str, link_length: float):
-        self.joint_type = joint_type
+        self.joint_type = joint_type.lower()
         self.link_length = link_length
 
-    def compute_desired_gripper_velocity(
+    @staticmethod
+    def _omega_cross_r(omega: float, r: np.ndarray) -> np.ndarray:
+        return omega * np.array([-r[1], r[0]])
+
+    def _point_velocity(
         self,
-        controlled_gripper: str,
-        controlled_velocity: np.ndarray,
+        link_twist: np.ndarray,
+        link_pose: np.ndarray,
+        point: np.ndarray
+    ) -> np.ndarray:
+        """Velocity of a point rigidly attached to the link (spatial frame)."""
+        r = point - link_pose[:2]
+        return link_twist[:2] + self._omega_cross_r(link_twist[2], r)
+
+    def _compute_joint_position(self, link1_pose: np.ndarray) -> np.ndarray:
+        """Joint position in world frame (link1 right end)."""
+        theta = link1_pose[2]
+        rot = np.array([[np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta),  np.cos(theta)]])
+        offset = rot @ np.array([self.link_length / 2.0, 0.0])
+        return link1_pose[:2] + offset
+
+    def compute_gripper_twists(
+        self,
+        controlled_idx: int,
+        primary_twist: np.ndarray,
         joint_velocity: float,
-        link1_pose: np.ndarray,
-        link2_pose: np.ndarray,
-        link1_velocity: np.ndarray,
-        link2_velocity: np.ndarray
+        ee_poses: np.ndarray,
+        link_poses: np.ndarray
     ) -> np.ndarray:
         """
-        Compute velocity for the follower gripper to maintain grasp constraint.
-        
-        Simplified logic: Assuming grippers are attached to links.
-        Velocity of follower EE = Velocity of follower Link at grasp point.
+        Compute spatial twists [vx, vy, omega] for both grippers.
         """
-        # 1. Determine which link is controlled and which is follower
-        if controlled_gripper == "left":
-            # Left EE -> Link 1 (usually)
-            follower_link_pose = link2_pose
-            follower_link_idx = 1
-        else:
-            # Right EE -> Link 2
-            follower_link_pose = link1_pose
-            follower_link_idx = 0
-            
-        # TODO: Implement full SE(2) Jacobian-based inverse kinematics here.
-        # For now, returning zero velocity for safety if logic is complex.
-        # In a real implementation, we would use the Jacobians J_left, J_right
-        # and the object Jacobian J_obj to solve:
-        # V_follower = J_follower * V_joint_space
-        
-        return np.zeros(3)
+        gripper_twists = np.zeros((2, 3))
+        gripper_twists[controlled_idx] = primary_twist
+
+        joint_pos = self._compute_joint_position(link_poses[0])
+        link_twists = [None, None]
+        ctrl_link_idx = controlled_idx
+        other_link_idx = 1 - controlled_idx
+
+        # Convert controlled gripper twist to link twist
+        link_twists[ctrl_link_idx] = self._link_twist_from_gripper(
+            primary_twist,
+            link_poses[ctrl_link_idx],
+            ee_poses[ctrl_link_idx]
+        )
+
+        # Determine joint/angular relationships
+        dq = joint_velocity
+        if self.joint_type != "revolute":
+            dq = joint_velocity  # interpreted as linear speed for prismatic
+
+        link_twists = self._solve_other_link(
+            link_twists,
+            ctrl_link_idx,
+            other_link_idx,
+            dq,
+            joint_pos,
+            link_poses
+        )
+
+        # Convert link twists back to gripper twists
+        for idx in range(2):
+            if link_twists[idx] is None:
+                continue
+            gripper_twists[idx] = self._gripper_spatial_from_link(
+                link_twists[idx],
+                link_poses[idx],
+                ee_poses[idx]
+            )
+        return gripper_twists
+
+    def _link_twist_from_gripper(
+        self,
+        gripper_spatial_twist: np.ndarray,
+        link_pose: np.ndarray,
+        gripper_pose: np.ndarray
+    ) -> np.ndarray:
+        """Convert gripper spatial twist [vx, vy, omega] to link spatial twist."""
+        omega = gripper_spatial_twist[2]
+        v_point = gripper_spatial_twist[:2]
+        r = gripper_pose[:2] - link_pose[:2]
+        v_link = v_point - self._omega_cross_r(omega, r)
+        return np.array([v_link[0], v_link[1], omega])
+
+    def _gripper_spatial_from_link(
+        self,
+        link_twist: np.ndarray,
+        link_pose: np.ndarray,
+        gripper_pose: np.ndarray
+    ) -> np.ndarray:
+        """Convert link spatial twist to gripper spatial twist [vx, vy, omega]."""
+        r = gripper_pose[:2] - link_pose[:2]
+        omega = link_twist[2]
+        v_point = link_twist[:2] + self._omega_cross_r(omega, r)
+        return np.array([v_point[0], v_point[1], omega])
+
+    def _solve_other_link(
+        self,
+        link_twists: List[Optional[np.ndarray]],
+        ctrl_link_idx: int,
+        other_link_idx: int,
+        joint_velocity: float,
+        joint_pos: np.ndarray,
+        link_poses: np.ndarray
+    ) -> List[Optional[np.ndarray]]:
+        """Solve for follower link twist using joint constraints."""
+        ctrl_twist = link_twists[ctrl_link_idx]
+        if ctrl_twist is None:
+            return link_twists
+
+        # Velocity at joint from controlled link
+        v_joint_ctrl = self._point_velocity(
+            ctrl_twist,
+            link_poses[ctrl_link_idx],
+            joint_pos
+        )
+
+        # Determine follower angular velocity
+        ctrl_omega = ctrl_twist[2]
+        if self.joint_type == "revolute":
+            if ctrl_link_idx == 0:
+                omega_other = ctrl_omega + joint_velocity
+            else:
+                omega_other = ctrl_omega - joint_velocity
+            v_joint_other = v_joint_ctrl
+        elif self.joint_type == "prismatic":
+            omega_other = ctrl_omega
+            axis = np.array([np.cos(link_poses[0, 2]), np.sin(link_poses[0, 2])])
+            shift = joint_velocity * axis
+            if ctrl_link_idx == 0:
+                v_joint_other = v_joint_ctrl + shift
+            else:
+                v_joint_other = v_joint_ctrl - shift
+        else:  # fixed
+            omega_other = ctrl_omega
+            v_joint_other = v_joint_ctrl
+
+        r_other = joint_pos - link_poses[other_link_idx][:2]
+        v_other = v_joint_other - self._omega_cross_r(omega_other, r_other)
+        link_twists[other_link_idx] = np.array([v_other[0], v_other[1], omega_other])
+        return link_twists
 
 
 @dataclass
@@ -95,7 +206,7 @@ class KeyboardTeleoperationPlanner:
         self.config = config if config is not None else TeleopConfig()
         self.joint_type = joint_type
         
-        # Use internal solver instead of missing manager
+        # Use internal solver to enforce grasp constraints
         self.constraint_solver = KinematicConstraintSolver(joint_type, link_length)
 
         # Current desired velocities
@@ -206,24 +317,15 @@ class KeyboardTeleoperationPlanner:
             controlled_vel_body[2]
         ])
 
-        # Compute other EE velocity based on object constraints
-        if current_link_velocities is None:
-            current_link_velocities = np.zeros((2, 3))
-
-        other_vel_world = self.constraint_solver.compute_desired_gripper_velocity(
-            controlled_gripper=self.config.controlled_gripper,
-            controlled_velocity=controlled_vel_world,
+        spatial_twists = self.constraint_solver.compute_gripper_twists(
+            controlled_idx=controlled_idx,
+            primary_twist=controlled_vel_world,
             joint_velocity=joint_vel,
-            link1_pose=current_link_poses[0],
-            link2_pose=current_link_poses[1],
-            link1_velocity=current_link_velocities[0],
-            link2_velocity=current_link_velocities[1]
+            ee_poses=current_ee_poses,
+            link_poses=current_link_poses
         )
 
-        # Build desired velocities array
-        desired_velocities = np.zeros((2, 3))
-        desired_velocities[controlled_idx] = controlled_vel_world
-        desired_velocities[other_idx] = other_vel_world
+        desired_body_twists = np.zeros_like(spatial_twists)
 
         # Integrate velocities to get desired poses
         # If this is first call, use current poses as baseline
@@ -232,10 +334,13 @@ class KeyboardTeleoperationPlanner:
 
         desired_poses = np.zeros((2, 3))
         for i in range(2):
-            # Integrate from previous desired pose
+            spatial = spatial_twists[i]
+            spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])  # [omega, vx, vy]
+            body_twist = world_to_body_velocity(current_ee_poses[i], spatial_mr)
+            desired_body_twists[i] = body_twist
             desired_poses[i] = integrate_velocity(
                 self.prev_desired_poses[i],
-                desired_velocities[i],
+                body_twist,
                 self.config.control_dt
             )
 
@@ -247,6 +352,8 @@ class KeyboardTeleoperationPlanner:
 
         return {
             'desired_poses': desired_poses,
-            'desired_velocities': desired_velocities,
+            'desired_velocities': desired_body_twists.copy(),
+            'desired_body_twists': desired_body_twists,
+            'desired_spatial_twists': spatial_twists,
             'desired_accelerations': desired_accelerations
         }

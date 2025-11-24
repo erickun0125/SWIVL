@@ -15,6 +15,7 @@ The policy outputs desired poses for both end-effectors at 10 Hz.
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 @dataclass
 class DiffusionPolicyConfig:
     """Configuration for diffusion policy."""
-    state_dim: int = 18  # 2 EE poses (6) + 2 link poses (6) + external wrenches (6)
+    state_dim: int = 24  # includes ee poses, link poses, external wrenches, body twists
     action_dim: int = 6  # 2 EE desired poses (3 each)
     action_horizon: int = 8  # Number of actions to predict
     obs_horizon: int = 2  # Number of past observations to condition on
@@ -150,7 +151,7 @@ class DiffusionNoisePredictor(nn.Module):
         return noise_pred
 
 
-class DiffusionPolicy:
+class DiffusionPolicy(nn.Module):
     """
     Diffusion policy for bimanual manipulation.
 
@@ -169,20 +170,22 @@ class DiffusionPolicy:
             config: Diffusion policy configuration
             device: Device for computation ('cpu' or 'cuda')
         """
+        super().__init__()
         self.config = config if config is not None else DiffusionPolicyConfig()
-        self.device = device
 
         # Create noise prediction network
-        self.noise_pred_net = DiffusionNoisePredictor(self.config).to(device)
+        self.noise_pred_net = DiffusionNoisePredictor(self.config)
 
-        # Initialize noise schedule
-        self.betas = self._get_noise_schedule()
-        self.alphas = 1.0 - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = torch.cat([
-            torch.ones(1, device=device),
-            self.alphas_cumprod[:-1]
-        ])
+        # Initialize noise schedule as buffers
+        betas = self._get_noise_schedule()
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod_prev = torch.cat([torch.ones(1), alphas_cumprod[:-1]])
+
+        self.register_buffer('betas', betas)
+        self.register_buffer('alphas', alphas)
+        self.register_buffer('alphas_cumprod', alphas_cumprod)
+        self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
 
         # Observation history
         self.obs_history: List[np.ndarray] = []
@@ -191,15 +194,20 @@ class DiffusionPolicy:
         self.action_buffer: Optional[np.ndarray] = None
         self.action_idx = 0
 
+        self.to(torch.device(device))
+
+    def _device(self) -> torch.device:
+        return next(self.parameters()).device
+
     def _get_noise_schedule(self) -> torch.Tensor:
         """Get noise schedule (beta values)."""
         if self.config.beta_schedule == 'linear':
-            return torch.linspace(1e-4, 0.02, self.config.num_diffusion_steps, device=self.device)
+            return torch.linspace(1e-4, 0.02, self.config.num_diffusion_steps)
         elif self.config.beta_schedule == 'squaredcos_cap_v2':
             # Improved cosine schedule
             steps = self.config.num_diffusion_steps
             s = 0.008
-            timesteps = torch.arange(steps + 1, device=self.device) / steps
+            timesteps = torch.arange(steps + 1) / steps
             alphas_cumprod = torch.cos((timesteps + s) / (1 + s) * np.pi * 0.5) ** 2
             alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
             betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
@@ -280,7 +288,7 @@ class DiffusionPolicy:
 
         # Stack observations
         obs_array = np.stack(self.obs_history[-self.config.obs_horizon:], axis=0)
-        obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0).to(self.device)
+        obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0).to(self._device())
 
         return obs_tensor
 
@@ -302,7 +310,7 @@ class DiffusionPolicy:
         # Start from random noise
         if goal is not None:
             # Can incorporate goal as initialization
-            noisy_action = torch.FloatTensor(goal).unsqueeze(0).to(self.device)
+            noisy_action = torch.as_tensor(goal, dtype=torch.float32, device=self._device()).unsqueeze(0)
             if noisy_action.shape[1] < self.config.action_horizon:
                 # Repeat goal for action horizon
                 noisy_action = noisy_action.repeat(1, self.config.action_horizon, 1)
@@ -311,7 +319,7 @@ class DiffusionPolicy:
                 1,
                 self.config.action_horizon,
                 self.config.action_dim,
-                device=self.device
+                device=self._device()
             )
 
         # DDIM sampling for faster inference
@@ -319,7 +327,7 @@ class DiffusionPolicy:
             self.config.num_diffusion_steps - 1,
             0,
             self.config.num_inference_steps,
-            device=self.device
+            device=self._device()
         ).long()
 
         for i, t in enumerate(timesteps):
@@ -333,7 +341,7 @@ class DiffusionPolicy:
             if i < len(timesteps) - 1:
                 alpha_t_prev = self.alphas_cumprod[timesteps[i + 1]]
             else:
-                alpha_t_prev = torch.tensor(1.0, device=self.device)
+                alpha_t_prev = torch.tensor(1.0, device=self._device())
 
             # Predict x0
             pred_x0 = (noisy_action - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
@@ -346,51 +354,33 @@ class DiffusionPolicy:
 
         return noisy_action.squeeze(0).cpu().numpy()
 
-    def train_step(
+    def compute_loss(
         self,
         states: torch.Tensor,
         actions: torch.Tensor
-    ) -> float:
+    ) -> torch.Tensor:
         """
-        Single training step.
-
-        Args:
-            states: Batch of observation sequences (batch_size, obs_horizon, state_dim)
-            actions: Batch of action sequences (batch_size, action_horizon, action_dim)
-
-        Returns:
-            Loss value
+        Compute diffusion loss.
         """
         batch_size = actions.shape[0]
+        device = states.device
 
-        # Sample random timesteps
         timesteps = torch.randint(
             0,
             self.config.num_diffusion_steps,
             (batch_size,),
-            device=self.device
+            device=device
         ).long()
 
-        # Sample noise
         noise = torch.randn_like(actions)
 
-        # Add noise to actions (forward diffusion)
-        sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod[timesteps])
-        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod[timesteps])
-
-        # Reshape for broadcasting
-        sqrt_alphas_cumprod = sqrt_alphas_cumprod[:, None, None]
-        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[:, None, None]
+        sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod[timesteps])[:, None, None]
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod[timesteps])[:, None, None]
 
         noisy_actions = sqrt_alphas_cumprod * actions + sqrt_one_minus_alphas_cumprod * noise
 
-        # Predict noise
         predicted_noise = self.noise_pred_net(noisy_actions, timesteps, states)
-
-        # Compute loss
-        loss = torch.mean((predicted_noise - noise) ** 2)
-
-        return loss.item()
+        return F.mse_loss(predicted_noise, noise)
 
     def save(self, path: str):
         """Save policy to file."""

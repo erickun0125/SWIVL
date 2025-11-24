@@ -24,7 +24,7 @@ import math
 @dataclass
 class ACTConfig:
     """Configuration for ACT policy."""
-    state_dim: int = 18  # 2 EE poses (6) + 2 link poses (6) + external wrenches (6)
+    state_dim: int = 24  # 2 EE poses + 2 link poses + external wrenches + body twists
     action_dim: int = 6  # 2 EE desired poses (3 each)
     chunk_size: int = 10  # Number of actions in a chunk
     obs_horizon: int = 1  # Number of past observations to condition on
@@ -311,7 +311,7 @@ class ACTCVAE(nn.Module):
         return reconstructed_actions, mu, logvar
 
 
-class ACTPolicy:
+class ACTPolicy(nn.Module):
     """
     ACT (Action Chunking with Transformers) policy for bimanual manipulation.
 
@@ -330,11 +330,11 @@ class ACTPolicy:
             config: ACT configuration
             device: Device for computation ('cpu' or 'cuda')
         """
+        super().__init__()
         self.config = config if config is not None else ACTConfig()
-        self.device = device
 
         # Create CVAE model
-        self.model = ACTCVAE(self.config).to(device)
+        self.model = ACTCVAE(self.config)
 
         # Observation history
         self.obs_history: List[np.ndarray] = []
@@ -342,6 +342,24 @@ class ACTPolicy:
         # Action buffer for temporal consistency
         self.action_buffer: Optional[np.ndarray] = None
         self.action_idx = 0
+
+        self.to(torch.device(device))
+
+    def _device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    def compute_loss(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute ACT CVAE loss (reconstruction + KL).
+        """
+        reconstructed_actions, mu, logvar = self.model(states, actions)
+        recon_loss = F.mse_loss(reconstructed_actions, actions, reduction='mean')
+        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.shape[0]
+        return recon_loss + self.config.kl_weight * kl_loss
 
     def reset(self):
         """Reset policy state."""
@@ -388,7 +406,7 @@ class ACTPolicy:
 
                 # Sample latent from prior
                 batch_size = 1
-                latent = torch.randn(batch_size, self.config.latent_dim).to(self.device)
+                latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
 
                 # Encode observations
                 encoder_output = self.model.encoder(obs_cond)
@@ -426,7 +444,7 @@ class ACTPolicy:
 
         # Stack observations
         obs_array = np.stack(self.obs_history[-self.config.obs_horizon:], axis=0)
-        obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0).to(self.device)
+        obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0).to(self._device())
 
         return obs_tensor
 
@@ -472,5 +490,5 @@ class ACTPolicy:
         """Load policy from file."""
         checkpoint = torch.load(path, map_location=self.device)
         self.config = checkpoint['config']
-        self.model = ACTCVAE(self.config).to(self.device)
+        self.model = ACTCVAE(self.config).to(self._device())
         self.model.load_state_dict(checkpoint['model_state_dict'])

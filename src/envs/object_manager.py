@@ -88,6 +88,17 @@ class ArticulatedObject:
         # Define grasping frames
         self.grasping_frames = self._define_grasping_frames()
 
+    def remove_from_space(self):
+        """Remove all pymunk entities for this object."""
+        components: List[pymunk.Shape] = []
+        components.extend(list(self.link1.shapes))
+        components.extend(list(self.link2.shapes))
+        components.extend(self.aux_joints)
+        components.append(self.joint)
+        components.append(self.link1)
+        components.append(self.link2)
+        self.space.remove(*components)
+
     def _create_link(
         self,
         position: Tuple[float, float],
@@ -572,11 +583,7 @@ class ObjectManager:
         """
         # Remove old object if exists
         if self.object is not None:
-            self.space.remove(self.object.link1)
-            self.space.remove(self.object.link2)
-            self.space.remove(self.object.joint)
-            for aux_joint in self.object.aux_joints:
-                self.space.remove(aux_joint)
+            self.object.remove_from_space()
 
         # Create new object
         self.object = ArticulatedObject(

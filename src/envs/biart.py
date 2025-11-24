@@ -18,7 +18,7 @@ Architecture:
 import collections
 import os
 import warnings
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import cv2
 import gymnasium as gym
@@ -36,8 +36,10 @@ from pymunk.vec2d import Vec2d
 
 from .pymunk_override import DrawOptions
 from .end_effector_manager import EndEffectorManager, GripperConfig
-from .object_manager import ObjectManager
+from .object_manager import ObjectManager, JointType
 from .reward_manager import RewardManager, RewardWeights
+
+ObservationType = Union[Dict[str, np.ndarray], np.ndarray]
 
 RENDER_MODES = ["rgb_array"]
 if os.environ.get("MUJOCO_GL") != "egl":
@@ -110,6 +112,13 @@ class BiArtEnv(gym.Env):
         physics_hz=100,
         grip_force=15.0,  # Configurable gripper grip force
     ):
+        """
+        Initialize BiArt environment and underlying physics.
+
+        NOTE: `_setup()` is invoked here to create the physics space once.
+        Always call `reset()` before interacting to randomize the initial
+        configuration and establish fresh grasps.
+        """
         super().__init__()
 
         # Environment configuration
@@ -132,7 +141,7 @@ class BiArtEnv(gym.Env):
         # Object parameters (for ObjectManager)
         self.link_length = 40.0
         self.link_width = 12.0
-        self.link_mass = 0.5
+        self.link_mass = 1.0
 
         # Gripper parameters (for EndEffectorManager)
         self.gripper_config = GripperConfig(
@@ -143,7 +152,8 @@ class BiArtEnv(gym.Env):
             jaw_length=20.0,
             jaw_thickness=4.0,
             max_opening=20.0,
-            grip_force=grip_force  # Use configurable parameter
+            grip_force=grip_force,  # Use configurable parameter
+            target_object_width=self.link_width
         )
 
         # Managers (initialized in _setup)
@@ -329,11 +339,15 @@ class BiArtEnv(gym.Env):
 
         # Physics simulation
         for _ in range(self.physics_steps_per_control):
-            # Apply grip forces
-            self.ee_manager.step()
+            # Apply commanded wrenches every physics substep
+            self.ee_manager.apply_wrenches(wrenches)
 
-            # Step physics
+            # Apply grip forces and step physics
+            self.ee_manager.apply_grip_forces()
             self.space.step(self.dt)
+
+        # Update external wrench measurements once per control step
+        self.ee_manager.update_external_wrenches()
 
         # Get current states
         current_ee_poses = self.ee_manager.get_poses()
@@ -343,15 +357,16 @@ class BiArtEnv(gym.Env):
         # Compute reward using RewardManager
         # Task is to manipulate the object, so we track object poses.
         # We primarily track Link 1 (base link) against goal_pose.
-        desired_link_poses = np.array([self.goal_pose, self.goal_pose]) # TODO: Compute proper Link 2 goal if needed
+        link2_goal = self._compute_link2_goal_pose(self.goal_pose)
+        desired_link_poses = np.array([self.goal_pose, link2_goal])
         
         applied_wrenches = wrenches
 
         reward_info = self.reward_manager.compute_reward(
-            current_ee_poses=current_link_poses, # Track object links!
-            desired_ee_poses=desired_link_poses,
-            current_ee_velocities=self.object_manager.get_link_velocities(), # Track object velocity
-            desired_ee_velocities=np.zeros((2, 3)), # Goal is static
+            current_poses=current_link_poses,  # Track object links!
+            desired_poses=desired_link_poses,
+            current_velocities=self.object_manager.get_link_velocities(),  # Track object velocity
+            desired_velocities=np.zeros((2, 3)),  # Goal is static
             applied_wrenches=applied_wrenches,
             external_wrenches=external_wrenches
         )
@@ -390,7 +405,11 @@ class BiArtEnv(gym.Env):
 
         return observation, reward_info["total_reward"], terminated, truncated, info
 
-    def reset(self, seed=None, options=None):
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[ObservationType, Dict[str, Any]]:
         """Reset the environment."""
         super().reset(seed=seed)
 
@@ -427,19 +446,20 @@ class BiArtEnv(gym.Env):
 
         # Settle grippers with grip forces
         for _ in range(50):
-            self.ee_manager.step()
+            self.ee_manager.apply_grip_forces()
             self.space.step(self.dt)
+        self.ee_manager.update_external_wrenches()
 
         # Get initial observation
-        observation = self.get_obs()
-        info = {"is_success": False}
+        observation: ObservationType = self.get_obs()
+        info: Dict[str, Any] = {"is_success": False}
 
         if self.render_mode == "human":
             self.render()
 
         return observation, info
 
-    def get_obs(self):
+    def get_obs(self) -> ObservationType:
         """
         Get observation.
         
@@ -514,14 +534,14 @@ class BiArtEnv(gym.Env):
         joint_state = self.object_manager.get_joint_state()
         joint_type = self.object_manager.joint_type
 
-        if joint_type.value == "revolute":
+        if joint_type == JointType.REVOLUTE:
             # Full range limits: -180° to 180°
             min_angle = -np.pi
             max_angle = np.pi
             if joint_state < min_angle or joint_state > max_angle:
                 return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}°"
 
-        elif joint_type.value == "prismatic":
+        elif joint_type == JointType.PRISMATIC:
             # Sliding limits (relative to link length)
             link_length = self.object_manager.object.link_length
             min_slide = -link_length * 0.5
@@ -537,6 +557,34 @@ class BiArtEnv(gym.Env):
                 return False, f"Link {i} out of workspace: ({x:.1f}, {y:.1f})"
 
         return True, ""
+
+    def _compute_link2_goal_pose(self, link1_goal: np.ndarray, desired_joint_state: float = 0.0) -> np.ndarray:
+        """
+        Compute goal pose for link 2 based on link 1 goal and desired joint state.
+        """
+        joint_type = self.object_manager.joint_type
+
+        if joint_type == JointType.REVOLUTE:
+            link2_theta = link1_goal[2] + desired_joint_state
+
+            joint_x = link1_goal[0] + (self.link_length / 2.0) * np.cos(link1_goal[2])
+            joint_y = link1_goal[1] + (self.link_length / 2.0) * np.sin(link1_goal[2])
+
+            link2_x = joint_x + (self.link_length / 2.0) * np.cos(link2_theta)
+            link2_y = joint_y + (self.link_length / 2.0) * np.sin(link2_theta)
+
+            return np.array([link2_x, link2_y, link2_theta])
+
+        if joint_type == JointType.PRISMATIC:
+            offset = desired_joint_state
+            link2_x = link1_goal[0] + offset * np.cos(link1_goal[2])
+            link2_y = link1_goal[1] + offset * np.sin(link1_goal[2])
+            return np.array([link2_x, link2_y, link1_goal[2]])
+
+        # Fixed joint: maintain rigid offset
+        offset_x = self.link_length * np.cos(link1_goal[2])
+        offset_y = self.link_length * np.sin(link1_goal[2])
+        return np.array([link1_goal[0] + offset_x, link1_goal[1] + offset_y, link1_goal[2]])
 
     def _draw(self):
         """Draw the environment."""

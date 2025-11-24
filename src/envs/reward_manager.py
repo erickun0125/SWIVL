@@ -66,10 +66,10 @@ class RewardManager:
 
     def compute_reward(
         self,
-        current_ee_poses: np.ndarray,
-        desired_ee_poses: np.ndarray,
-        current_ee_velocities: np.ndarray,
-        desired_ee_velocities: np.ndarray,
+        current_poses: np.ndarray,
+        desired_poses: np.ndarray,
+        current_velocities: np.ndarray,
+        desired_velocities: np.ndarray,
         applied_wrenches: np.ndarray,
         external_wrenches: Optional[np.ndarray] = None
     ) -> Dict[str, float]:
@@ -77,10 +77,10 @@ class RewardManager:
         Compute total reward and components.
 
         Args:
-            current_ee_poses: Current EE poses (num_ee, 3)
-            desired_ee_poses: Desired EE poses (num_ee, 3)
-            current_ee_velocities: Current EE velocities (num_ee, 3)
-            desired_ee_velocities: Desired EE velocities (num_ee, 3)
+            current_poses: Current tracked poses (num_items, 3)
+            desired_poses: Desired poses (num_items, 3)
+            current_velocities: Current velocities (num_items, 3)
+            desired_velocities: Desired velocities (num_items, 3)
             applied_wrenches: Applied control wrenches (num_ee, 3)
             external_wrenches: Optional external wrenches (num_ee, 3)
 
@@ -89,12 +89,12 @@ class RewardManager:
         """
         # 1. Pose tracking reward
         pose_reward = self._compute_pose_tracking_reward(
-            current_ee_poses, desired_ee_poses
+            current_poses, desired_poses
         )
 
         # 2. Velocity tracking reward
         velocity_reward = self._compute_velocity_tracking_reward(
-            current_ee_velocities, desired_ee_velocities
+            current_velocities, desired_velocities
         )
 
         # 3. Energy efficiency reward (penalize large control efforts)
@@ -106,7 +106,7 @@ class RewardManager:
         )
 
         # 5. Success/failure bonus
-        is_success = self._check_success(current_ee_poses, desired_ee_poses)
+        is_success = self._check_success(current_poses, desired_poses)
         is_failure = self._check_failure(applied_wrenches)
 
         bonus = 0.0

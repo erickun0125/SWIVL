@@ -13,7 +13,7 @@ This manager is used by BiArt environment for EE-related operations.
 import numpy as np
 import pymunk
 from pymunk import Vec2d
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 from dataclasses import dataclass
 import pygame
 
@@ -31,6 +31,7 @@ class GripperConfig:
     jaw_thickness: float = 4.0
     max_opening: float = 20.0
     grip_force: float = 15.0
+    target_object_width: float = 12.0
 
 
 class ParallelGripper:
@@ -56,7 +57,8 @@ class ParallelGripper:
         jaw_length: float = 20.0,
         jaw_thickness: float = 4.0,
         max_opening: float = 20.0,
-        grip_force: float = 15.0
+        grip_force: float = 15.0,
+        target_object_width: float = 12.0
     ):
         """
         Initialize parallel gripper.
@@ -85,6 +87,7 @@ class ParallelGripper:
         self.jaw_length = jaw_length
         self.jaw_thickness = jaw_thickness
         self.max_opening = max_opening
+        self.target_object_width = target_object_width
 
         # Color
         color = pygame.Color("RoyalBlue") if name == "left" else pygame.Color("Crimson")
@@ -109,6 +112,7 @@ class ParallelGripper:
         base_shape.collision_type = 1  # Gripper collision type
 
         space.add(self.base_body, base_shape)
+        self.base_shape = base_shape
 
         # Create left jaw
         left_jaw_verts = [
@@ -119,8 +123,12 @@ class ParallelGripper:
         ]
         left_jaw_inertia = pymunk.moment_for_poly(jaw_mass, left_jaw_verts)
         self.left_jaw = pymunk.Body(jaw_mass, left_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
-        # Initial opening: 60% of max opening to ensure object can be grasped
-        initial_half_opening = max_opening * 0.3
+        # Initial opening respects expected object width with safety margin
+        link_width = self.target_object_width
+        safety_margin = 1.2
+        required_opening = (link_width * safety_margin) / 2.0
+        default_opening = max_opening * 0.4
+        initial_half_opening = min(max_opening * 0.5, max(required_opening, default_opening))
         self.left_jaw.position = self.base_body.local_to_world((-initial_half_opening, base_height/2))
         self.left_jaw.angle = angle
 
@@ -131,6 +139,7 @@ class ParallelGripper:
         left_jaw_shape.collision_type = 1
 
         space.add(self.left_jaw, left_jaw_shape)
+        self.left_jaw_shape = left_jaw_shape
 
         # Create right jaw
         right_jaw_verts = left_jaw_verts
@@ -146,6 +155,7 @@ class ParallelGripper:
         right_jaw_shape.collision_type = 1
 
         space.add(self.right_jaw, right_jaw_shape)
+        self.right_jaw_shape = right_jaw_shape
 
         # Create prismatic joints (GrooveJoint)
         groove_start = Vec2d(-max_opening/2, base_height/2)
@@ -180,6 +190,25 @@ class ParallelGripper:
         # Following Modern Robotics convention: [tau, fx, fy]
         self.external_wrench = np.zeros(3)  # [tau, fx, fy] in body frame (MR convention!)
         self.contact_impulses = []  # Store contact impulses during step
+        self.space = space
+
+    def remove_from_space(self):
+        """Remove all pymunk entities associated with this gripper."""
+        components = [
+            self.base_shape,
+            self.left_jaw_shape,
+            self.right_jaw_shape,
+            self.base_body,
+            self.left_jaw,
+            self.right_jaw,
+            self.left_joint,
+            self.right_joint,
+            self.left_rotation,
+            self.right_rotation,
+        ]
+        # space.remove accepts duplicates gracefully; filter None just in case
+        self.space.remove(*[c for c in components if c is not None])
+        self.contact_impulses = []
 
     def apply_grip_force(self):
         """Apply constant closing force to both jaws."""
@@ -362,7 +391,8 @@ class EndEffectorManager:
             'jaw_length': config.jaw_length,
             'jaw_thickness': config.jaw_thickness,
             'max_opening': config.max_opening,
-            'grip_force': config.grip_force
+            'grip_force': config.grip_force,
+            'target_object_width': config.target_object_width
         }
 
         # Grippers will be created during reset
@@ -380,13 +410,7 @@ class EndEffectorManager:
         """
         # Remove old grippers if they exist
         for gripper in self.grippers:
-            self.space.remove(gripper.base_body)
-            self.space.remove(gripper.left_jaw)
-            self.space.remove(gripper.right_jaw)
-            self.space.remove(gripper.left_joint)
-            self.space.remove(gripper.right_joint)
-            self.space.remove(gripper.left_rotation)
-            self.space.remove(gripper.right_rotation)
+            gripper.remove_from_space()
 
         self.grippers = []
 
@@ -421,47 +445,45 @@ class EndEffectorManager:
             space: Pymunk space
             data: User data
         """
-        # Get contact information
+        # Shared contact normal for all points in this contact set
+        normal = arbiter.contact_point_set.normal
+        contact_normal = Vec2d(normal.x, normal.y)
+
         for contact in arbiter.contact_point_set.points:
             # Get the impulse (force * dt)
-            impulse = Vec2d(contact.normal.x, contact.normal.y) * contact.normal_impulse
+            impulse = contact_normal * contact.normal_impulse
             contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
 
-            # Check both shapes involved in collision
+            # Check both shapes involved in collision and only process gripper shapes
             for shape in arbiter.shapes:
+                if shape.collision_type != 1:
+                    continue
                 contact_body = shape.body
-                
-                # Determine if this body belongs to any gripper
+
+                # Determine which gripper this body belongs to
                 for gripper in self.grippers:
-                    gripper_part = None
-                    
-                    if contact_body == gripper.base_body:
-                        gripper_part = gripper.base_body
-                    elif contact_body == gripper.left_jaw:
-                        gripper_part = gripper.left_jaw
-                    elif contact_body == gripper.right_jaw:
-                        gripper_part = gripper.right_jaw
-                    
-                    if gripper_part is not None:
-                        # Record contact with body information
-                        gripper.add_contact_impulse(impulse, contact_point, gripper_part)
-                        # Found the gripper for this shape, move to next shape
+                    if contact_body in (gripper.base_body, gripper.left_jaw, gripper.right_jaw):
+                        gripper.add_contact_impulse(impulse, contact_point, contact_body)
                         break
 
         return True
 
-    def step(self):
-        """
-        Step end-effector physics.
-
-        Applies grip forces and computes external wrenches from contacts.
-        """
+    def apply_grip_forces(self):
+        """Apply grip forces for all grippers."""
         for gripper in self.grippers:
             gripper.apply_grip_force()
 
-        # Compute external wrenches from accumulated contact impulses
+    def update_external_wrenches(self):
+        """Compute external wrenches from accumulated contact impulses."""
         for gripper in self.grippers:
             gripper.compute_external_wrench(self.dt)
+
+    def step(self):
+        """
+        Backwards-compatible helper: apply grip forces and update wrenches.
+        """
+        self.apply_grip_forces()
+        self.update_external_wrenches()
 
     def get_poses(self) -> np.ndarray:
         """Get all gripper poses."""

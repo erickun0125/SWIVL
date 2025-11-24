@@ -13,6 +13,7 @@ The policy outputs desired poses for both end-effectors at 10 Hz.
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 @dataclass
 class FlowMatchingConfig:
     """Configuration for flow matching policy."""
-    state_dim: int = 18  # 2 EE poses (6) + 2 link poses (6) + external wrenches (6)
+    state_dim: int = 24  # 2 EE poses (6) + 2 link poses (6) + external wrenches (6) + body twists (6)
     action_dim: int = 6  # 2 EE desired poses (3 each)
     hidden_dim: int = 256
     num_layers: int = 4
@@ -117,7 +118,7 @@ class FlowMatchingNetwork(nn.Module):
         return velocity
 
 
-class FlowMatchingPolicy:
+class FlowMatchingPolicy(nn.Module):
     """
     Flow matching policy for bimanual manipulation.
 
@@ -136,14 +137,49 @@ class FlowMatchingPolicy:
             config: Flow matching configuration
             device: Device for computation ('cpu' or 'cuda')
         """
+        super().__init__()
         self.config = config if config is not None else FlowMatchingConfig()
-        self.device = device
 
         # Create network
-        self.network = FlowMatchingNetwork(self.config).to(device)
+        self.network = FlowMatchingNetwork(self.config)
 
         # State history for context
         self.state_history: List[np.ndarray] = []
+
+        self.to(torch.device(device))
+
+    def _device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    def forward(self, context: torch.Tensor, t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+        return self.network(x_t, t, context)
+
+    def compute_loss(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """
+        Compute flow matching loss.
+        """
+        batch_size = states.shape[0]
+        device = states.device
+
+        # Use most recent observation as context
+        if states.dim() == 3:
+            context = states[:, -1, :]
+        else:
+            context = states
+
+        # Use first action in chunk (or flatten)
+        if actions.dim() == 3:
+            target_actions = actions[:, 0, :]
+        else:
+            target_actions = actions
+
+        t = torch.rand(batch_size, 1, device=device)
+        noise = torch.randn_like(target_actions)
+        x_t = (1 - t) * noise + t * target_actions
+        target_velocity = target_actions - noise
+
+        pred_velocity = self.network(x_t, t, context)
+        return F.mse_loss(pred_velocity, target_velocity)
 
     def reset(self):
         """Reset policy state."""
@@ -204,7 +240,7 @@ class FlowMatchingPolicy:
             # Use most recent state as context (can be extended to use full history)
             context = self.state_history[-1]
 
-        return torch.FloatTensor(context).unsqueeze(0).to(self.device)
+        return torch.FloatTensor(context).unsqueeze(0).to(self._device())
 
     def _sample_flow(
         self,
@@ -222,16 +258,17 @@ class FlowMatchingPolicy:
             Sampled action
         """
         # Start from noise (or goal if provided)
+        device = self._device()
         if goal is not None:
-            x = torch.FloatTensor(goal).unsqueeze(0).to(self.device)
+            x = torch.as_tensor(goal, dtype=torch.float32, device=device).unsqueeze(0)
         else:
-            x = torch.randn(1, self.config.action_dim).to(self.device)
+            x = torch.randn(1, self.config.action_dim, device=device)
 
         # Integrate flow ODE using Euler method
         dt = 1.0 / self.config.num_diffusion_steps
 
         for step in range(self.config.num_diffusion_steps):
-            t = torch.FloatTensor([step * dt]).unsqueeze(0).to(self.device)
+            t = torch.full((1, 1), step * dt, dtype=torch.float32, device=device)
 
             # Predict velocity
             velocity = self.network(x, t, context)

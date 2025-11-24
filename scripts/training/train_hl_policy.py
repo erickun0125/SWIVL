@@ -49,7 +49,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def create_policy(policy_type: str, config: Dict[str, Any], device: str):
+def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device):
     """
     Create high-level policy based on type.
 
@@ -136,7 +136,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         # ... dummy dataset logic ... (kept as fallback)
         N = 100
         T = 50
-        state_dim = 18
+        state_dim = 24
         action_dim = 6
         
         obs = np.random.randn(N, T, state_dim).astype(np.float32)
@@ -181,24 +181,36 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
                     
                     g = f[demo_key]
                     # Load obs
-                    ee_poses = g['obs']['ee_poses'][:]  # (T, 2, 3)
-                    link_poses = g['obs']['link_poses'][:] # (T, 2, 3)
-                    wrenches = g['obs']['external_wrenches'][:] # (T, 2, 3)
+                    obs_group = g['obs']
+                    ee_poses = obs_group['ee_poses'][:]  # (T, 2, 3)
+                    link_poses = obs_group['link_poses'][:] # (T, 2, 3)
+                    wrenches = obs_group['external_wrenches'][:] # (T, 2, 3)
+                    body_twists = obs_group.get('ee_body_twists')
+                    if body_twists is not None:
+                        body_twists = body_twists[:]
+                    else:
+                        body_twists = np.zeros_like(ee_poses)
                     
                     # Flatten state: (T, 18)
                     T = ee_poses.shape[0]
                     state = np.concatenate([
                         ee_poses.reshape(T, -1), 
                         link_poses.reshape(T, -1), 
-                        wrenches.reshape(T, -1)
+                        wrenches.reshape(T, -1),
+                        body_twists.reshape(T, -1)
                     ], axis=1)
                     
                     # Load action: (T, 2, 3) -> (T, 6)
-                    action = g['action'][:].reshape(T, -1)
+                    action_group = g['action']
+                    desired_poses = action_group['desired_poses'][:]  # (T, 2, 3)
+                    action = desired_poses.reshape(T, -1)
                     
                     self.episodes.append({
                         'state': torch.from_numpy(state.astype(np.float32)),
-                        'action': torch.from_numpy(action.astype(np.float32))
+                        'action': torch.from_numpy(action.astype(np.float32)),
+                        'desired_body_twists': torch.from_numpy(
+                            action_group['desired_body_twists'][:].astype(np.float32)
+                        )
                     })
             
             # Create indices
@@ -259,7 +271,7 @@ def train_epoch(
     policy,
     train_loader,
     optimizer,
-    device: str,
+    device: torch.device,
     epoch: int,
     writer: Optional[SummaryWriter] = None,
     log_interval: int = 100
@@ -295,7 +307,7 @@ def train_epoch(
     return avg_loss
 
 
-def validate(policy, val_loader, device: str):
+def validate(policy, val_loader, device: torch.device):
     """Validate policy."""
     policy.eval()
     total_loss = 0.0
@@ -347,7 +359,8 @@ def train(
     # Determine device
     if device == 'auto':
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
+    torch_device = torch.device(device)
+    print(f"Using device: {torch_device}")
 
     # Override config with command-line arguments
     if dataset_path is None:
@@ -360,14 +373,14 @@ def train(
         checkpoint_dir = config.get('hl_training', {}).get('output', {}).get('checkpoint_dir', './checkpoints')
 
     # Create policy
-    policy = create_policy(policy_type, config, device)
+    policy = create_policy(policy_type, config, torch_device)
 
     # Resume from checkpoint if specified
     start_epoch = 0
     best_val_loss = float('inf')
     if resume_from is not None and os.path.exists(resume_from):
         print(f"Resuming from checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
+        checkpoint = torch.load(resume_from, map_location=torch_device)
         policy.load_state_dict(checkpoint['model_state_dict'])
         start_epoch = checkpoint.get('epoch', 0) + 1
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
@@ -414,13 +427,13 @@ def train(
 
         # Train
         train_loss = train_epoch(
-            policy, train_loader, optimizer, device, epoch, writer,
+            policy, train_loader, optimizer, torch_device, epoch, writer,
             log_interval=config.get('hl_training', {}).get('logging', {}).get('log_interval', 100)
         )
         print(f"  Train Loss: {train_loss:.6f}")
 
         # Validate
-        val_loss = validate(policy, val_loader, device)
+        val_loss = validate(policy, val_loader, torch_device)
         print(f"  Val Loss: {val_loss:.6f}")
 
         # Log to tensorboard

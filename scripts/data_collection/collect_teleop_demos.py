@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.envs.biart import BiArtEnv
 from src.hl_planners.keyboard_teleoperation import KeyboardTeleoperationPlanner, TeleopConfig
 from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController, SE2ImpedanceConfig
+from src.se2_math import world_to_body_velocity
 
 def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
     """
@@ -83,13 +84,17 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
         planner.reset(obs['ee_poses'], obs['link_poses'])
         
         # Episode storage
-        episode_obs = {
-            'ee_poses': [],
-            'link_poses': [],
-            'external_wrenches': [],
-            'images': [] # Optional: if pixels obs_type used
-        }
-        episode_actions = [] # Desired poses
+    episode_obs = {
+        'ee_poses': [],
+        'link_poses': [],
+        'external_wrenches': [],
+        'ee_body_twists': [],
+        'images': []  # Optional: if pixels obs_type used
+    }
+    episode_actions = {
+        'desired_poses': [],
+        'desired_body_twists': []
+    }
         
         step_count = 0
         done = False
@@ -140,13 +145,19 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
             
             # 3. Get Low-Level Action (Wrenches) from Controller
             # Desired velocity is also available from planner for feedforward D term
-            desired_velocities = hl_action['desired_velocities']
+            desired_body_twists = hl_action['desired_body_twists']
             
+            current_body_twists = np.zeros((2, 3))
+            for i in range(2):
+                spatial = obs['ee_twists'][i]
+                spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])
+                current_body_twists[i] = world_to_body_velocity(obs['ee_poses'][i], spatial_mr)
+
             wrenches = controller.compute_control(
                 current_poses=obs['ee_poses'],
-                current_velocities=obs['ee_twists'],
+                current_velocities=current_body_twists,
                 desired_poses=desired_poses,
-                desired_velocities=desired_velocities
+                desired_velocities=desired_body_twists
             )
             
             # 4. Step Environment
@@ -157,7 +168,12 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
             episode_obs['ee_poses'].append(obs['ee_poses'])
             episode_obs['link_poses'].append(obs['link_poses'])
             episode_obs['external_wrenches'].append(obs['external_wrenches'])
-            episode_actions.append(desired_poses)
+            if 'ee_body_twists' in obs:
+                episode_obs['ee_body_twists'].append(obs['ee_body_twists'])
+            else:
+                episode_obs['ee_body_twists'].append(np.zeros((2, 3)))
+            episode_actions['desired_poses'].append(desired_poses)
+            episode_actions['desired_body_twists'].append(desired_body_twists)
             
             obs = next_obs
             step_count += 1
@@ -174,7 +190,7 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
         if step_count > 10: # Only save meaningful episodes
             all_demos.append({
                 'obs': episode_obs,
-                'action': np.array(episode_actions)
+                'action': episode_actions
             })
         else:
             print("Episode too short, discarding.")
@@ -194,12 +210,15 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
             obs_g.create_dataset('ee_poses', data=np.array(demo['obs']['ee_poses']))
             obs_g.create_dataset('link_poses', data=np.array(demo['obs']['link_poses']))
             obs_g.create_dataset('external_wrenches', data=np.array(demo['obs']['external_wrenches']))
-            
-            # Actions dataset (Desired Poses)
-            g.create_dataset('action', data=demo['action'])
+            obs_g.create_dataset('ee_body_twists', data=np.array(demo['obs']['ee_body_twists']))
+
+            # Actions dataset (Desired Poses + Twists)
+            action_g = g.create_group('action')
+            action_g.create_dataset('desired_poses', data=np.array(demo['action']['desired_poses']))
+            action_g.create_dataset('desired_body_twists', data=np.array(demo['action']['desired_body_twists']))
             
             # Length
-            g.attrs['num_samples'] = len(demo['action'])
+            g.attrs['num_samples'] = len(demo['action']['desired_poses'])
             
     env.close()
     print("Done.")

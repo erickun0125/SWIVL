@@ -381,6 +381,22 @@ def body_to_spatial_twist(pose: np.ndarray, body_twist: np.ndarray) -> np.ndarra
     return np.array([omega_b, v_s[0], v_s[1]])
 
 
+def integrate_velocity(pose: np.ndarray, body_twist: np.ndarray, dt: float) -> np.ndarray:
+    """
+    Integrate body-frame twist over a timestep to obtain the updated pose.
+
+    Following Modern Robotics convention:
+    - pose: [x, y, theta] (spatial frame)
+    - body_twist: [omega, vx_b, vy_b]
+    - dt: time step (seconds)
+    """
+    xi = body_twist * dt  # se(2) element for this step
+    T_current = SE2Pose.from_array(pose).to_matrix()
+    T_delta = se2_exp(xi)
+    T_next = T_current @ T_delta
+    return SE2Pose.from_matrix(T_next).to_array()
+
+
 def spatial_to_body_twist(pose: np.ndarray, spatial_twist: np.ndarray) -> np.ndarray:
     """
     Transform twist from spatial (world) frame to body frame.
