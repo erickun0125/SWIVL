@@ -24,43 +24,16 @@ To this end, we focus on developing a low-level control stack for bimanual manip
 
 In this setting, high-level planners (behavior-cloned policies, teleoperation, or VLA) provide motion intentions as desired end-effector poses, without explicitly reasoning about object's physical information or inter-arm force interactions. Conventional high-stiffness position controllers that directly track these desired poses generate excessive contact forces and constraint violations when manipulating articulated objects, as they lack mechanisms to accommodate unforeseen contact dynamics or kinematic restrictions. This creates a fundamental challenge: translating high-level guidance into physically feasible bimanual coordination that simultaneously maintains kinematic consistency and suppresses harmful internal forces while ensuring compliant interaction in task space. 
 
-To address these problems, we require a control framework that satisfies four key requirements:
+\subsection{Our Approach : SWIVL}
 
-\begin{enumerate}[label=(\arabic*)]
-    \item \textbf{Dense, closed-loop reference generation}: Transform sparse, open-loop waypoints from high-level planners into continuous, feedback-driven reference trajectories that provide corrective guidance when the system deviates from desired paths.
-    
-    \item \textbf{Kinematic constraint satisfaction}: Ensure commanded motions respect the object's joint structure, preventing physically infeasible trajectories that violate holonomic constraints and cause grasp slippage or internal stress.
-    
-    \item \textbf{Screw-decomposed compliance modulation}: Enable independent impedance control for internal motion (joint articulation) versus bulk motion (overall transport), allowing task-appropriate compliance without manual tuning across the entire SE(3) manifold.
-    
-    \item \textbf{Wrench-feedback force regulation}: Identify and actively minimize non-productive internal wrenches arising from coordination errors, while maintaining necessary productive forces for manipulation.
-\end{enumerate}
-
-
-\subsection*{Our Approach: SWIVL}
-
-To address these requirements, we introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning), a \textbf{task-agnostic low-level control stack for bimanual manipulation of articulated objects} that operationalizes Physical Intelligence through explicit modeling of object kinematics and wrench feedback.
-
-SWIVL consists of three key learned components that directly address the four requirements above: (1) a \textbf{Reference Motion Field Generator} that transforms discrete high-level waypoints into dense, stable vector fields with corrective feedback (Requirement 1), (2) a \textbf{Screw-decomposed Impedance Controller} that structurally enforces kinematic constraints through orthogonal motion decomposition (Requirements 2 \& 3), and (3) a \textbf{Reinforcement Learning Policy} trained to modulate impedance variables based on object geometry and wrench feedback, minimizing internal forces while ensuring compliant manipulation (Requirements 3 \& 4).
-
-This policy is trained via \textbf{Reinforcement Learning}, which enables the agent to autonomously discover force-compliant behaviors by directly optimizing physical objectives---such as minimizing internal forces and satisfying kinematic constraints---through environmental interaction, rather than merely replicating demonstrated trajectories. By translating high-level trajectories into a \textbf{Reference Motion Field}, SWIVL allows cognitive planners to remain expressive while ensuring safety and compliance during manipulation, making it possible to operate underneath arbitrary high-level cognitive planners with any high-level task objectives.
-
-We construct the methodology of SWIVL on SE(3) that is the task space of manipulation task. Also, we evaluate SWIVL on SE(2) planar benchmark environment designed to isolate the core challenges of force coupling and constraint satisfaction. Our SE(2) experiments on bimanual manipulation tasks involving rigid transport, articulated object rotation, and insertion demonstrate that SWIVL: improves success rates, reduces inter-arm internal forces, and generalizes across planners, task objectives, and object geometries---outperforming LfD-based baselines. These results demonstrate that \textbf{physics-aware learning} is essential for robust cooperative manipulation and enables seamless integration with arbitrary high-level planners without task-specific retraining.
-
-\subsection*{Contributions}
-
-This work makes the following contributions:
+To address these problems, we introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning). SWIVL enables safe bimanual manipulation with object-aware decomposed impedance control via screw axes and adaptive impedance variable modulation via wrench feedback. This work makes the following contributions:
 
 \begin{enumerate}
-    \item \textbf{Stable Imitation Vector Field}: We propose a temporally-indexed contraction field that provides $O(1)$ reference motion generation with guaranteed exponential convergence, enabling real-time bimanual coordination at 50Hz. It enables decoupling of high-level planning from low-level force-compliant execution.
+    \item \textbf{Stable Imitation Vector Field}:  By generating a reference twist with the pose error, we enable twist-driven impedance control, thereby bypassing the nonlinearity of pose error based elastic wrenches in SE(3) impedance control.
 
-    \item \textbf{Screw-Decomposed Impedance Control}: We formulate an SE(3) impedance controller with orthogonal motion decomposition that structurally enforces kinematic constraints while enabling independent compliance modulation for bulk versus internal motion, addressing fundamental geometric limitations of classical SE(3) impedance control.
+    \item \textbf{Screw-Decomposed Impedance Control}: By decomposing impedance control with screw axes based orthogonal projection, we structurally enforces independent compliance modulation.
 
-    \item \textbf{Task-Agnostic RL Framework}: We introduce a reinforcement learning framework that learns adaptive impedance modulation conditioned on object geometry and wrench feedback, enabling generalization across joint types, task objectives, and novel object geometries without task-specific retraining.
+    \item \textbf{Impedance Variable Learning with RL Framework}: A reinforcement learning approach for adaptive impedance modulation conditioned on object geometry and wrench feedback, generalizing across joint types and task objectives.
 
-    \item \textbf{Object-Conditioned Policy Architecture}: We design a FiLM-conditioned neural network that injects object kinematic structure into all feature processing stages, enabling constraint-aware representation learning for articulated object manipulation.
-
-    \item \textbf{Comprehensive Evaluation Framework}: We establish a systematic SE(2) benchmark with controlled ablation studies, demonstrating the necessity of explicit physical modeling for robust bimanual manipulation (pending experimental validation).
+    \item \textbf{Systematic SE(2) Benchmark}: Demonstrating the necessity of SWIVL for robust bimanual manipulation of an articulated object.
 \end{enumerate}
-
-Overall, our work provides a principled framework toward dual-arm robotic systems for force-compliant articulated object manipulation.

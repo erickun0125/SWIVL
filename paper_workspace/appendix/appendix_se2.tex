@@ -83,7 +83,7 @@ $$
 {}^s\mathcal{V} = [Ad_{T_{si}}] \mathcal{V}_i, \quad \mathcal{V}_i = [Ad_{T_{si}^{-1}}] {}^s\mathcal{V}
 $$
 
-\subsection{Reference Motion Field Generator in SE(2)}
+\subsection{Reference Twist Field Generator in SE(2)}
 
 \subsubsection{SE(2) Trajectory Smoothing}
 
@@ -220,7 +220,7 @@ $$
 Internal wrench $\mathcal{F}_{i,\perp}$ represents non-productive contact forces that stress the grasp without contributing to joint motion. The RL reward explicitly penalizes $\|\mathcal{F}_{i,\perp}\|_2^2$ to minimize harmful internal forces (Section 3.3.2).
 
 \textbf{Output Summary:}
-The Reference Motion Field Generator produces at each timestep (50 Hz):
+The Reference Twist Field Generator produces at each timestep (50 Hz):
 
 $$
 \{\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}}, \mathcal{B}_l, \mathcal{B}_r\}
@@ -236,7 +236,7 @@ Following Method Section 3.2.3, the SE(2) policy observes:
 
 \textbf{1. Reference Twists} ($\mathbb{R}^{6}$):
 \begin{itemize}
-\item $\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}} \in \mathbb{R}^3$: Reference motions computed by the Reference Motion Field Generator (Layer 2) at the current time $t$ and current end-effector poses $T_{sb_l}, T_{sb_r}$ (6-dim)
+\item $\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}} \in \mathbb{R}^3$: Reference motions computed by the Reference Twist Field Generator (Layer 2) at the current time $t$ and current end-effector poses $T_{sb_l}, T_{sb_r}$ (6-dim)
 \end{itemize}
 
 \textbf{2. Object Constraints} ($\mathbb{R}^{6}$):
@@ -318,7 +318,7 @@ In our SE(2) simulation environment with direct body wrench control, the command
 
 \textbf{Kinematic Constraint Satisfaction:}
 
-By construction, the projection-based structure ensures the holonomic constraint is satisfied. The reference twists $\mathcal{V}_i^{\text{ref}}$ already respect the constraint through the Reference Motion Field Generator, and the damping matrix $K_{d_i}$ preserves the constraint subspace through its construction from $P_{i,\parallel}$ and $P_{i,\perp}$.
+By construction, the projection-based structure ensures the holonomic constraint is satisfied. The reference twists $\mathcal{V}_i^{\text{ref}}$ already respect the constraint through the Reference Twist Field Generator, and the damping matrix $K_{d_i}$ preserves the constraint subspace through its construction from $P_{i,\parallel}$ and $P_{i,\perp}$.
 
 \subsection{Controller Implementation}
 

@@ -2,7 +2,7 @@
 \section{Method}
 \label{sec:method}
 
-We present \textbf{SWIVL}, a hierarchical control framework that bridges high-level cognitive planning with physically grounded bimanual execution. SWIVL consists of three key components: (1) a Stable Imitation Vector Field based \textbf{Reference Motion Field Generator} that transforms discrete high-level waypoints into dense, continuous vector fields defined over the entire task space---providing stable reference motions even when the system deviates from the desired trajectory,  (2) Screw Axes Decomposition based \textbf{Twist-driven Impedance Controller} that enables practical impedance control with pose error and twist error, and (3) a Reinforcement Learning based \textbf{Wrench-feedback and Object-conditioned Impedance Variable Learning Policy} that modulates the reference motions in a physically feasible manner by explicitly incorporating object information and end-effector wrench feedback.
+We present \textbf{SWIVL}, a hierarchical control framework that bridges high-level cognitive planning with physically grounded bimanual execution. SWIVL consists of three key components: (1) a Stable Imitation Vector Field based \textbf{Reference Twist Field Generator} that transforms discrete high-level waypoints into dense, continuous vector fields defined over the entire task space---providing stable reference motions even when the system deviates from the desired trajectory,  (2) Screw Axes Decomposition based \textbf{Twist-driven Impedance Controller} that enables practical impedance control with pose error and twist error, and (3) a Reinforcement Learning based \textbf{Wrench-feedback and Object-conditioned Impedance Variable Learning Policy} that modulates the reference motions in a physically feasible manner by explicitly incorporating object information and end-effector wrench feedback.
 
 \textbf{Notation.} We use the following frame conventions throughout:
 \begin{itemize}
@@ -16,92 +16,40 @@ We present \textbf{SWIVL}, a hierarchical control framework that bridges high-le
 \subsection{Problem Formulation}
 \label{sec:problem_formulation}
 
-We address the problem of \textbf{bimanual manipulation of articulated objects} where two robot arms cooperatively manipulate a shared articulated object (e.g., rotating pan-tilt camera, pumping with an air pump). Our goal is to develop SWIVL, a control framework that tracks high-level motion plans while ensuring physical feasibility, stable grasping, and damage prevention during bimanual interaction. 
+We address the problem of \textbf{bimanual manipulation of articulated objects} where two robot arms cooperatively manipulate a shared articulated object. Our goal is to develop SWIVL, a control framework that tracks high-level motion plans while ensuring physical feasibility, stable grasping, and damage prevention during bimanual interaction. This problem presents four core challenges that directly motivate SWIVL's architectural components.
 
-This problem presents four core challenges that directly motivate SWIVL's architectural components: (1) \textbf{generating dense, closed-loop references} from sparse high-level waypoints, (2) \textbf{satisfying kinematic constraints} imposed by the object's joint structure, (3) \textbf{decomposing and modulating compliance} for bulk versus internal motions on the SE(3) manifold, and (4) \textbf{regulating inter-arm forces} to minimize harmful internal wrenches. These challenges are addressed respectively by SWIVL's Reference Motion Field Generator (Section 3.2.2), Screw-decomposed Controller structure (Section 3.2.4), learned impedance variables (Section 3.2.3), and wrench-based reward design (Section 3.3.2).
+\textbf{Framework Scope.} We develop the theoretical framework in \textbf{SE(3) environment} with \textbf{multi-DoF articulated objects} for generality and real-world applicability, while experimental validation is conducted in \textbf{SE(2) planar environments} with \textbf{1-DoF articulated objects} to isolate core challenges of force coupling and constraint satisfaction. The formulation targets the Franka FR3 dual-arm platform for future real-world deployment.
 
-\textbf{Framework Scope.} We develop the theoretical framework in \textbf{SE(3)} for generality and real-world applicability, while experimental validation (Section~\ref{sec:experiments}) is conducted in \textbf{SE(2)} planar environments to isolate core challenges of force coupling and constraint satisfaction. The formulation targets the Franka FR3 dual-arm platform for future real-world deployment and focuses on objects with revolute and prismatic joints, which constitute the majority of practical articulated object manipulation tasks.
+\subsubsection{Challenge 1: From Discrete Poses to Dense Twist References}
 
-\subsubsection{Challenge 1: From Sparse Waypoints to Dense, Closed-Loop Control}
+Modern learning-based manipulation policies---including VLAs and behavior cloning architectures---predominantly output actions in the form of \textbf{action chunks}: sequences of waypoints that specify desired end-effector trajectories over a finite horizon. This action chunking paradigm enables temporal consistency and multi-step reasoning in high-level planning.
 
-Modern high-level policies---including vision-language-action (VLA) models, behavior cloning architectures, and teleoperation interfaces---predominantly output actions in the form of action chunks: sequences of waypoints that specify desired end-effector trajectories over a finite horizon. Regardless of the internal mechanisms of these diverse planners, SWIVL operates on a unified interface that accepts action chunks as input.
+\textbf{The Challenge.} These action chunks present critical gaps for low-level execution. First, waypoints are inherently \textbf{sparse}, providing discrete snapshots while control requires continuous dense references at high frequency. Second, their \textbf{open-loop nature} becomes particularly problematic in bimanual manipulation: while single-arm tasks like pick-and-place typically track action chunks reliably, dual-arm coordination introduces inter-arm forces and complex contact dynamics that cause significant trajectory deviations, requiring corrective feedback to guide the system back.
 
-\textbf{Action Chunk Representation.} We assume that the high-level policy outputs discrete end-effector pose sequences for both arms:
+More fundamentally, there exists a \textbf{configuration space versus velocity space mismatch}. High-level planners naturally output poses $T \in \mathrm{SE}(3)$, but kinematic constraints and impedance control are fundamentally more tractable in the twist space $\mathfrak{se}(3)$. Kinematic constraints are linear in twist space (${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathbf{J}_s \dot{\mathbf{q}}_{\text{obj}}$) but nonlinear in SE(3). Similarly, SE(3) impedance control involves nonlinear Jacobians $J_{\mathcal{E}}$ that introduce configuration-dependent coupling. This mismatch motivates transforming pose commands into twist-space representations where constraints are linear and impedance modulation is geometrically consistent.
 
+\textbf{Solution Preview.} The \textbf{Reference Twist Field Generator} addresses this challenge through three operations: (1) SE(3) trajectory smoothing to generate dense pose trajectories, (2) body twist computation to transform poses into velocity space where constraints and impedance are tractable, and (3) stable imitation vector field construction that provides continuous reference twists $\mathcal{V}^{\text{ref}}$ with pose-error-driven corrective feedback.
+
+\subsubsection{Challenge 2: Kinematic Constraints and Compliant Coordination}
+
+When two arms grasp and manipulate an articulated object, their motions are coupled through the object's kinematic structure. Let $T_{sb_l}, T_{sb_r} \in \mathrm{SE}(3)$ denote the end-effector poses and $\mathbf{q}_{\text{obj}} \in \mathbb{R}^k$ represent the object's internal joint configuration. The kinematic structure is characterized by the spatial Jacobian $\mathbf{J}_s(\mathbf{q}_{\text{obj}}) \in \mathbb{R}^{6 \times k}$, whose columns are spatial screw axes $\mathcal{S}_j \in \mathbb{R}^6$ for each joint.
+
+\textbf{Holonomic Constraint.} Since both end-effectors rigidly grasp the articulated object, the relative motion between them must exactly match the motion generated by the object's internal joints:
 \begin{equation}
-\mathcal{T}_{\text{des}} = \lbrace (T_{sd_l}[\tau], T_{sd_r}[\tau]) \rbrace_{\tau=0}^{H},
+{}^s\mathcal{V}_{b_l} - {}^s\mathcal{V}_{b_r} = \mathbf{J}_s(\mathbf{q}_{\text{obj}}) \dot{\mathbf{q}}_{\text{obj}},
 \end{equation}
+where ${}^s\mathcal{V}_{b_l}, {}^s\mathcal{V}_{b_r} \in \mathbb{R}^6$ are the spatial twists and $\dot{\mathbf{q}}_{\text{obj}} \in \mathbb{R}^k$ is the joint velocity vector.
 
-where $T_{sd_l}[\tau], T_{sd_r}[\tau] \in SE(3)$ represent the desired left and right end-effector poses (from spatial frame $\{s\}$ to desired frame $\{d_i\}$) at discrete time index $\tau$, and $H$ is the action chunk horizon. This action chunking paradigm, widely adopted in diffusion policies and autoregressive generative models, enables temporal consistency and multi-step reasoning in high-level planning.
+\textbf{The Challenge.} A seemingly natural solution is to structurally enforce this constraint in the action space---for example, by commanding $\mathcal{V}_r$ and $\dot{\mathbf{q}}_{\text{obj}}$ as actions and automatically computing $\mathcal{V}_l = \mathcal{V}_r + \mathbf{J}_s \dot{\mathbf{q}}_{\text{obj}}$. However, this \textbf{hard constraint approach is brittle}: any small error in $\mathbf{J}_s$ due to perception noise, calibration errors, or object model mismatch directly translates to physically infeasible commanded motions. When executed via high-stiffness position or velocity control, these infeasible commands generate large internal forces that risk grasp slippage, object damage, or hardware failure.
 
-\textbf{The Challenge.} These action chunks serve as desired waypoint trajectories, but present three critical gaps for low-level execution: (1) \textbf{sparsity}---waypoints are discrete while control requires continuous dense references at high frequency, (2) \textbf{open-loop nature}---when the system deviates from the desired trajectory due to tracking errors or disturbances, fixed waypoints cannot provide corrective feedback to guide the system back, and (3) \textbf{physical infeasibility}---high-level planners often generate trajectories without explicit knowledge of object constraints or force considerations, potentially violating kinematic constraints or inducing excessive internal forces. 
+\textbf{Solution Preview.} Rather than enforcing hard kinematic constraints, SWIVL adopts a \textbf{compliant approach} through impedance control. This enables soft regulation of constraint violations through compliance rather than rigid enforcement, providing robustness to model uncertainties while minimizing harmful internal forces.
 
-\textbf{Solution Preview.} This challenge is addressed by the \textbf{Reference Motion Field Generator} (Section 3.2.2), which performs SE(3) trajectory smoothing, computes body twists, and constructs a stable imitation vector field that provides dense, continuous reference motions with corrective feedback capabilities.
+\subsubsection{Challenge 3: Impedance Control on SE(3) and Large Trajectory Deviations}
 
-\subsubsection{Challenge 2: Kinematic Constraints in Bimanual Manipulation}
+Impedance control---regulating the dynamic relationship between motion and force---is a natural paradigm for achieving compliant manipulation. In Euclidean spaces, impedance control is straightforward: pose errors naturally define potential energy, and elastic forces emerge through simple differentiation. However, extending impedance control to the SE(3) manifold presents fundamental mathematical challenges.
 
-When two arms grasp and manipulate an articulated object, their motions are no longer independent but coupled through the object's kinematic structure. This coupling fundamentally constrains what motions are physically feasible and must be explicitly modeled for successful bimanual control.
-
-\textbf{System Configuration.} We consider a dual-arm system manipulating articulated objects with $k$ internal degrees of freedom. Let $T_{sb_l}, T_{sb_r} \in SE(3)$ denote the left and right end-effector poses (from spatial frame $\{s\}$ to body frame $\{b_i\}$) in the spatial (world) frame, and $\mathbf{q}_{\text{obj}} \in \mathbb{R}^k$ represent the object's internal joint configuration vector (e.g., multi-link scissor angles, cabinet with multiple drawers, or complex mechanisms with multiple revolute and prismatic joints).
-
-\textbf{Spatial Jacobian.} The kinematic structure of the articulated object is characterized by its \textbf{spatial Jacobian} $J_s(\mathbf{q}_{\text{obj}}) \in \mathbb{R}^{6 \times k}$, which encodes the relationship between the object's internal joint velocities and the resulting relative motion between the two grasp points. Each column of $J_s$ represents a spatial screw axis $\mathcal{S}_j \in \mathbb{R}^6$ corresponding to the $j$-th joint:
-
-\begin{equation}
-J_s(\mathbf{q}_{\text{obj}}) = \begin{bmatrix} \mathcal{S}_1(\mathbf{q}_{\text{obj}}) & \mathcal{S}_2(\mathbf{q}_{\text{obj}}) & \cdots & \mathcal{S}_k(\mathbf{q}_{\text{obj}}) \end{bmatrix},
-\end{equation}
-
-where each screw axis $\mathcal{S}_j = \begin{bmatrix} \omega_j \\ v_j \end{bmatrix}$ describes the instantaneous motion induced by unit velocity of joint $j$, expressed in the spatial frame. For revolute joints, $\mathcal{S}_j$ represents the axis of rotation and a point on the axis; for prismatic joints, it represents the direction of translation.
-
-\textbf{Holonomic Constraint.} The object's kinematic structure imposes a holonomic constraint that couples the end-effectors' velocities. Since both end-effectors are rigidly grasping the articulated object, the \textbf{relative motion} between them must exactly match the motion generated by the object's internal joints:
-
-\begin{equation}
-{}^s\mathcal{V}_{b_l} - {}^s\mathcal{V}_{b_r} = J_s(\mathbf{q}_{\text{obj}}) \dot{\mathbf{q}}_{\text{obj}},
-\end{equation}
-
-where ${}^s\mathcal{V}_{b_l}, {}^s\mathcal{V}_{b_r} \in \mathbb{R}^6$ are the spatial twists (6D velocities) of each end-effector, and $\dot{\mathbf{q}}_{\text{obj}} \in \mathbb{R}^k$ is the object's joint velocity vector. This constraint specifies that the relative motion between the two arms must lie in the range space of $J_s$, aligning precisely with the object's allowable internal motions along its kinematic chain.
-
-\textbf{The Challenge.} Any control policy for bimanual manipulation must ensure that commanded motions satisfy this holonomic constraint. Violating the constraint leads to physically infeasible trajectories that cause grasp slippage, internal stress accumulation, and potential task failure. 
-
-\textbf{Solution Preview.} This challenge is addressed by the \textbf{Screw-decomposed Controller} (Section 3.2.4), which uses orthogonal projection operators based on the object Jacobian to structurally decompose commanded motions into components that lie in the range of $J_i$ (constraint-satisfying internal motion) and its orthogonal complement (bulk motion), guaranteeing kinematic feasibility by construction.
-
-\subsubsection{Challenge 3: Decomposing and Modulating Compliance on SE(3)}
-
-To enable task-agnostic control, the low-level policy must interpret high-level intentions directly from trajectory structure without task-specific annotations. We observe that bimanual manipulation of articulated objects inherently involves two distinct motion intentions: moving the object as a whole through space, and actuating its internal joint.
-
-\textbf{Semantic Motion Decomposition.} For task semantics, we want to decompose each end-effector's reference motion into two semantically meaningful components:
-
-\begin{itemize}
-    \item \textbf{Bulk motion} (orthogonal to screw axis): Drives the object's \textbf{overall motion} through space---transport, reorientation, and gross positioning. The term is borrowed from fluid dynamics, where ``bulk motion'' refers to macroscopic flow of the entire fluid body.
-    \item \textbf{Internal motion} (parallel to screw axis): Drives the object's \textbf{joint articulation}---opening, closing, rotating, or extending the internal degree of freedom. This represents productive motion that directly actuates the object's constrained joint.
-\end{itemize}
-
-By explicitly providing both components to the policy, we enable it to infer task semantics from trajectory structure: tasks emphasizing bulk motion (e.g., transporting a closed scissor) vs. tasks emphasizing internal motion (e.g., cutting with stationary scissors) vs. coordinated tasks (e.g., simultaneously moving and actuating). This decomposition enables generalization across diverse manipulation objectives without explicit task labels.
-
-\textbf{Orthogonality and Metric Definition.} Performing this decomposition requires separating parallel and orthogonal components relative to the screw axis, which necessitates defining an inner product on the Lie algebra $\mathfrak{se}(3)$. However, in a purely kinematic sense, there is no natural inner product that defines orthogonality between two twists in terms of rigid body motion. This is fundamentally because purely kinematic formulations lack a natural physical scale to compare rotations (dimensionless) with translations (length), making any choice of inner product physically arbitrary. Standard candidates—Euclidean product on $\mathbb{R}^6$ (mixes incompatible units, not frame-invariant), reciprocal product (requires dual space pairing), Killing form (degenerate for SE(3))—all present difficulties for physically meaningful rigid body motion decomposition (see Appendix~\ref{app:orthogonal_decomposition} for detailed analysis).
-
-\textbf{SE(3) Impedance Control Limitations.} Impedance control---regulating the dynamic relationship between motion and force---is a natural paradigm for compliant bimanual manipulation. However, implementing impedance control on the SE(3) manifold presents fundamental mathematical challenges. Classical Cartesian impedance control derives elastic wrenches from potential energy via differentiation, which for SE(3) introduces a nonlinear Jacobian-like operator $J_{\mathcal{E}}$ (detailed in Section 3.1.5 below). This nonlinearity fundamentally limits the design freedom of the stiffness matrix $K$: achieving desired compliance behavior in one region of the configuration space may produce unintended, potentially unstable behavior elsewhere due to the varying geometric structure.
-
-\textbf{The Challenge.} The core challenge arises when attempting to integrate impedance control with task-semantic decomposition. For effective bimanual manipulation, we require \textbf{independent compliance modulation} along bulk versus internal motion directions. However, the nonlinear coupling in $J_{\mathcal{E}}$ prevents straightforward decomposition-aware stiffness design. Additionally, the choice of metric for orthogonal decomposition directly affects which motions are considered "parallel" or "orthogonal" to the constraint, yet no single choice is universally optimal across all tasks and object geometries.
-
-\textbf{Solution Preview.} These challenges are addressed through three coupled mechanisms: (1) the \textbf{Learned Impedance Variables} (Section 3.2.3), where the policy outputs separate damping coefficients $d_{i,\parallel}$ and $d_{i,\perp}$ for independent compliance modulation, and critically, a \textbf{learnable characteristic length scale} $\alpha$ that adaptively defines the metric tensor $G = \mathrm{diag}(\alpha^2 I_3, I_3)$, allowing the policy to discover task-appropriate notions of orthogonality; (2) the \textbf{Screw-decomposed Controller} (Section 3.2.4), which constructs projection operators using this learned metric to decompose control actions into bulk and internal components; and (3) the \textbf{Reference Motion Field} (Section 3.2.2), which incorporates the stability term $k_{p_i} \mathcal{E}_i$ directly into the reference twist, sidestepping the explicit nonlinear Jacobian $J_{\mathcal{E}}$ while maintaining SE(3) impedance behavior.
-
-\subsubsection{Challenge 4: Force Coupling and Internal Wrenches}
-
-In bimanual manipulation, when both arms rigidly grasp the same object, their force interactions become coupled. Any coordination error that violates the kinematic constraint generates \textbf{internal wrenches}---forces and torques that stress the object and grasps without contributing to productive manipulation.
-
-\textbf{Internal Wrenches.} Let $\mathcal{F}_l, \mathcal{F}_r \in \mathbb{R}^6$ denote body wrenches measured at the end-effectors: $\mathcal{F}_i = \begin{bmatrix} m_i \\ f_i \end{bmatrix}$ (moment and force). When the two arms' motions deviate from the kinematic constraint (Eq.~3), they ``fight'' each other, generating internal wrenches that: (1) increase contact stress and risk grasp failure, (2) waste energy through non-productive internal loading, and (3) potentially damage the object or robot hardware. 
-
-\textbf{The Challenge.} For compliant manipulation, we must distinguish between force components that contribute to desired object motion versus those that only create internal stress. The control framework needs to identify and actively minimize non-productive internal forces while maintaining necessary productive forces for manipulation. This requires decomposing measured wrenches into components aligned with (productive) and orthogonal to (internal) the object's allowable motion direction. 
-
-\textbf{Solution Preview.} This challenge is addressed through the \textbf{Wrench-based Reward Design} (Section 3.3.2), which decomposes measured wrenches using the transpose of twist projection operators $\mathcal{F}_{i,\perp} = P_{i,\perp}^T \mathcal{F}_i$ to identify internal wrenches orthogonal to the object's allowable motion, and explicitly penalizes $\|\mathcal{F}_{i,\perp}\|_2^2$ to train the policy to minimize non-productive forces. This wrench decomposition is fully consistent with the twist decomposition framework, exploiting the duality between twist and wrench spaces under the reciprocal product (virtual power).
-
-\subsubsection{Mathematical Background: SE(3) Impedance Control Geometry}
-
-For completeness, we provide the geometric details underlying Challenge 3. Impedance control---regulating the dynamic relationship between motion and force---is a natural paradigm for compliant bimanual manipulation. However, implementing impedance control on the SE(3) manifold presents fundamental mathematical challenges that motivate our learning-based approach.
-
-\textbf{Kinetic Energy Metric and Distance Problem.} Unlike Euclidean spaces, SE(3) is a manifold where defining meaningful error metrics is non-trivial. The most physically natural metric on SE(3) is the \textbf{kinetic energy-based Riemannian metric} induced by the spatial inertia matrix $M \in \mathbb{R}^{6 \times 6}$. For tracking control, we need to measure the "distance" between the current pose $T$ and desired pose $T_{\text{des}}$, typically represented by the error pose $T_{\text{err}} = T_{\text{des}}^{-1} T$. However, SE(3) lacks a \textbf{bi-invariant Riemannian metric}---a metric that remains consistent under both left and right group actions. The exponential map follows screw motions (constant-twist trajectories), while geodesics under the kinetic energy metric follow more complex, inertia-weighted paths. This mismatch means that the natural logarithm map $\log(T_{\text{err}})^\vee \in \mathfrak{se}(3)$, commonly used to define pose errors, does not correspond to minimal-energy paths under the physically meaningful metric.
-
-\textbf{Nonlinear Stiffness and Design Constraints.} In classical Cartesian impedance control, elastic wrenches are derived from potential energy via differentiation. For SE(3), a nonlinear Jacobian-like operator emerges:
+\textbf{SE(3) Impedance Difficulties.} Unlike Euclidean spaces, SE(3) is a manifold where defining meaningful error metrics is non-trivial. The most physically natural metric on SE(3) is the \textbf{kinetic energy-based Riemannian metric} induced by the spatial inertia matrix $M \in \mathbb{R}^{6 \times 6}$. For tracking control, we need to measure the "distance" between the current pose $T$ and desired pose $T_{\text{des}}$, typically represented by the error pose $T_{\text{err}} = T_{\text{des}}^{-1} T$. However, SE(3) lacks a \textbf{bi-invariant Riemannian metric}---a metric that remains consistent under both left and right group actions. The exponential map follows screw motions (constant-twist trajectories), while geodesics under the kinetic energy metric follow more complex, inertia-weighted paths. This mismatch means that the natural logarithm map $\log(T_{\text{err}})^\vee \in \mathfrak{se}(3)$, commonly used to define pose errors, does not correspond to minimal-energy paths under the physically meaningful metric.
+For SE(3), a nonlinear Jacobian-like operator emerges:
 
 \begin{equation}
 {\mathcal{F}_{\mathrm{elastic}} = -J_{\mathcal{E}}^\top K \mathcal{E}} \, ,
@@ -115,7 +63,38 @@ Here, $J_l(\theta)$ is the left Jacobian of SO(3):
 \begin{equation}
 J_l(\theta) = I + \frac{1 - \cos \|\theta\|}{\|\theta\|^2} [\theta] + \frac{\|\theta\| - \sin \|\theta\|}{\|\theta\|^3} [\theta]^2 \, .
 \end{equation} 
-$J_{\mathcal{E}}$ is configuration-dependent and couples rotational and translational components in complex, state-dependent ways. This nonlinearity fundamentally limits the design freedom of the stiffness matrix $K$: achieving desired compliance behavior in one region of the configuration space may produce unintended, potentially unstable behavior elsewhere due to the varying geometric structure. These mathematical constraints motivate our learning-based approach described in Challenge 3 above.
+$J_{\mathcal{E}}$ is configuration-dependent and couples rotational and translational components in complex, state-dependent ways. This nonlinearity fundamentally limits the design freedom of the stiffness matrix $K$
+
+\textbf{Practical Approximations and Their Breakdown.} Commonly used impedance control formulations circumvent these issues through two assumptions: (1) \textbf{small orientation errors}, and (2) \textbf{diagonal stiffness matrices}, allowing $ J_{\mathcal{E}}^\top K \mathcal{E} \approx K \mathcal{E}$, of avoiding cross-coupling between rotation and translation. Under these assumptions, the nonlinear Jacobian's effects become negligible.
+
+\textbf{The Challenge.} These assumptions break down in our setting. First, articulated object constraints cause \textbf{large trajectory deviations}: when high-level planners generate commands without explicit constraint awareness, the resulting pose errors can be substantial, violating the small-error assumption. Second, our motion decomposition framework (separating bulk and internal motions) requires \textbf{non-diagonal stiffness matrices} to enable independent compliance modulation along different subspaces, making diagonal-only designs insufficient.
+
+\textbf{Solution Preview.} Rather than directly computing elastic wrenches from pose errors through the problematic $J_{\mathcal{E}}$, SWIVL adopts a \textbf{twist-driven impedance control} approach. The \textbf{Reference Twist Field} incorporates pose error $\mathcal{E}_i$ directly into the reference twist through the stability term $k_{p_i} \mathcal{E}_i$, converting pose deviations into corrective velocity commands. The controller then performs impedance regulation in twist space, where damping naturally relates velocity errors to wrenches through linear operators, sidestepping the nonlinear Jacobian while maintaining compliant tracking behavior.
+
+\subsubsection{Challenge 4: Motion Decomposition and Wrench-Based Coordination}
+
+For task-agnostic control, the low-level policy must be trained solely on trajectory tracking rewards rather than task-specific success metrics, enabling the same policy to track diverse high-level commands without retraining for each task objective.
+
+\textbf{Object-Centric Motion Decomposition.} In articulated object bimanual manipulation, tracking is fundamentally object-centric. Rather than independently tracking each arm's reference motion $\mathcal{V}_l^{\text{ref}}$ and $\mathcal{V}_r^{\text{ref}}$, it is advantageous to decompose these into:
+\begin{itemize}
+    \item \textbf{Internal motion}: Drives joint articulation, lies in $\text{range}(\mathbf{J}_s(\mathbf{q}_{\text{obj}}))$
+    \item \textbf{Bulk motion}: Drives the object's overall motion through space, orthogonal to  $\text{range}(\mathbf{J}_s(\mathbf{q}_{\text{obj}}))$
+\end{itemize}
+Tracking these components separately provides clearer learning signals aligned with the object's kinematic structure.
+\begin{align}
+\mathcal{V}_{i,\parallel}^{\text{ref}} &= P_{i,\parallel} \mathcal{V}_i^{\text{ref}}, \quad \mathcal{V}_{i,\parallel} = P_{i,\parallel} \mathcal{V}_i \quad \text{(internal motion)}, \\
+\mathcal{V}_{i,\perp}^{\text{ref}} &= P_{i,\perp} \mathcal{V}_i^{\text{ref}}, \quad \mathcal{V}_{i,\perp} = P_{i,\perp} \mathcal{V}_i \quad \text{(bulk motion)},
+\end{align}
+
+\textbf{The Challenge: Bulk Motion Ambiguity.} If the high-level policy generated kinematically consistent commands, then after decomposing each arm's motion, their bulk components would naturally agree. However, high-level planners lack explicit constraint awareness, resulting in $\mathcal{V}_l^{\text{ref}}$ and $\mathcal{V}_r^{\text{ref}}$ whose bulk motions \textbf{do not match}. This creates a fundamental ambiguity: which arm's bulk motion should the policy track?
+
+This ambiguity manifests as \textbf{inter-arm force coupling}. Internal motion components naturally satisfy kinematic constraints and generate minimal internal forces. However, bulk motion mismatch directly translates into inter-arm wrenches measured by force-torque sensors. Specifically, wrench components orthogonal to the screw axes---the non-productive components that do not contribute to joint actuation---directly reflect the magnitude of bulk motion disagreement. By decomposing measured wrenches as:
+\begin{equation}
+\mathcal{F}_{i,\perp} = \mathbf{P}_{i,\perp}^T \mathcal{F}_i, \quad \mathcal{F}_{i,\parallel} = \mathbf{P}_{i,\parallel}^T \mathcal{F}_i,
+\end{equation}
+we can quantify internal forces $\mathcal{F}_{i,\perp}$ arising from coordination errors. Minimizing $\|\mathcal{F}_{i,\perp}\|^2$ implicitly resolves the bulk motion ambiguity: the policy learns to track reference motions in a manner that achieves coordinated bulk motion while maintaining compliant internal motion.
+
+\textbf{Solution Preview.} This challenge is addressed through \textbf{wrench-feedback conditioned RL} combined with \textbf{learned impedance variable modulation}. The \textbf{Impedance Variable Learning Policy} receives wrench decompositions and learns to adaptively modulate damping coefficients $d_{i,\parallel}$ and $d_{i,\perp}$ for internal versus bulk motions. The \textbf{Reward Design} explicitly penalizes internal wrenches $\|\mathcal{F}_{i,\perp}\|^2$, training the policy to minimize non-productive forces while tracking reference trajectories. This approach enables simple reference tracking to implicitly achieve decomposed motion coordination through force-compliant behavior.
 
 \subsection{SWIVL Architecture}
 
@@ -123,7 +102,7 @@ SWIVL adopts a \textbf{four-layer hierarchical architecture} that directly addre
 
 \begin{itemize}
     \item \textbf{Layer 1 (High-Level Policy)}: Provides task-level guidance through sparse waypoint generation
-    \item \textbf{Layer 2 (Reference Motion Field Generator)}: Addresses Challenge 1 by transforming sparse waypoints into dense, closed-loop reference trajectories
+    \item \textbf{Layer 2 (Reference Twist Field Generator)}: Addresses Challenge 1 by transforming sparse waypoints into dense, closed-loop reference trajectories
     \item \textbf{Layer 3 (Impedance Variable Modulation Policy)}: Addresses Challenges 3 \& 4 by learning adaptive compliance modulation based on object geometry and wrench feedback
     \item \textbf{Layer 4 (Screw-decomposed Controller)}: Addresses Challenges 2 \& 3 by structurally enforcing kinematic constraints through orthogonal motion decomposition
 \end{itemize}
@@ -141,9 +120,9 @@ The top layer generates goal-directed behavior in action chunk. This layer can b
 
 \textbf{Interface:} Outputs discrete end-effector pose waypoints $\lbrace T_{sd_l}[\tau], T_{sd_r}[\tau] \rbrace_{\tau=0}^{H}$ at low frequency.
 
-\subsubsection{Layer 2: Reference Motion Field Generator}
+\subsubsection{Layer 2: Reference Twist Field Generator}
 
-This layer addresses Challenge 1 by bridging the gap between discrete high-level waypoints and continuous low-level control. High-level policies provide sparse waypoints at low frequency ($\sim$10Hz), while the low-level controller requires smooth, dense reference trajectories at high frequency ($\sim$50Hz) with corrective feedback capabilities. The Reference Motion Field Generator performs three steps to achieve this transformation:
+This layer addresses Challenge 1 by bridging the gap between discrete high-level waypoints and continuous low-level control. High-level policies provide sparse waypoints at low frequency ($\sim$10Hz), while the low-level controller requires smooth, dense reference trajectories at high frequency ($\sim$50Hz) with corrective feedback capabilities. The Reference Twist Field Generator performs three steps to achieve this transformation:
 
 \paragraph{Step 1: SE(3) Trajectory Smoothing.} To address the sparsity gap, we perform smooth interpolation in $SE(3)$ to obtain dense desired trajectories at the Low-Level Policy frequency $\Delta t_{LL} \ll \Delta t_{HL}$:
 
@@ -201,7 +180,7 @@ This layer addresses Challenges 3 and 4 by learning adaptive impedance modulatio
 
 \begin{enumerate}
     \item \textbf{Reference twists}: $\lbrace \mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}} \rbrace \in \mathfrak{se}(3) \times \mathfrak{se}(3)$
-    These are the reference motions computed by the Reference Motion Field Generator (Layer 2) at the current time $t$ and current end-effector poses $T_{sb_l}, T_{sb_r}$.
+    These are the reference motions computed by the Reference Twist Field Generator (Layer 2) at the current time $t$ and current end-effector poses $T_{sb_l}, T_{sb_r}$.
 
     \item \textbf{Object constraints}: $\lbrace \mathcal{B}_l, \mathcal{B}_r \rbrace \in \mathfrak{se}(3) \times \mathfrak{se}(3)$
     These encode the kinematic constraint of the manipulated object. $\mathcal{B}_l, \mathcal{B}_r$ are the body-frame screw axes defining the object's allowable internal motion directions at each end-effector. For articulated objects, these correspond to the columns of the object Jacobian $J_i$, related to the spatial screw axis via $\mathcal{B}_i = \mathrm{Ad}_{T_{b_is}} \mathcal{S}$ where $\mathrm{Ad}_{T_{b_is}}$ transforms spatial twists to body frame.
@@ -487,7 +466,7 @@ where $V_\phi: \mathcal{O} \to \mathbb{R}$ is the value function approximated by
             \IF{$t \mod f_{HL}^{-1} == 0$}
                 \STATE Generate action chunk: $\{T_{sd_i}[\tau]\}_{\tau=0}^{H_{\text{chunk}}} \gets \pi_{HL}$
             \ENDIF
-            \STATE \textbf{Reference Motion Field Generator}
+            \STATE \textbf{Reference Twist Field Generator}
             \STATE Interpolate action chunk $\to$ dense trajectory $T_{sd_i}(t)$
             \STATE Compute desired body twists $\mathcal{V}_i^{\text{des}}(t)$ via Eq.~\ref{eq:body_twist}
             \STATE Apply stable vector field $\to$ reference twists $\mathcal{V}_i^{\text{ref}}$ via Eq.~\ref{eq:vector_field}
