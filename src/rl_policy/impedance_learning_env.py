@@ -81,7 +81,7 @@ class ImpedanceLearningConfig:
 
     # Control frequency
     control_dt: float = 0.01  # 100 Hz
-    policy_dt: float = 0.1  # 10 Hz (RL policy updates at 10 Hz)
+    policy_dt: float = 0.01  # 100 Hz (Same as control_dt)
 
     # Episode settings
     max_episode_steps: int = 1000
@@ -118,8 +118,21 @@ class ImpedanceLearningEnv(gym.Env):
         self.hl_policy = hl_policy
         self.render_mode = render_mode
 
+        # HL Update settings
+        # HL Policy outputs 1.0s chunk, update every 1.0s
+        self.hl_period = 1.0
+        self.elapsed_time_in_chunk = 0.0
+
         # Create base environment
-        self.base_env = BiArtEnv(render_mode=render_mode)
+        # CRITICAL: BiArtEnv must run at same frequency as Low-Level Controller (100Hz)
+        # Physics runs at 100Hz. If control_hz=100, then step() advances 0.01s (1 physics step)
+        # This allows LL controller to compute wrenches every 0.01s.
+        base_control_hz = int(1.0 / self.config.control_dt)
+        self.base_env = BiArtEnv(
+            render_mode=render_mode,
+            control_hz=base_control_hz,
+            physics_hz=100  # Ensure physics matches control for 1:1 stepping
+        )
 
         # Create impedance controllers for both arms based on controller type
         if self.config.controller_type == 'se2_impedance':
@@ -168,14 +181,22 @@ class ImpedanceLearningEnv(gym.Env):
         # Previous impedance parameters (for smoothness penalty)
         self.prev_impedance_params = None
 
+        # Normalization constants
+        self.NORM_POS_SCALE = 512.0
+        self.NORM_ANGLE_SCALE = np.pi
+        self.NORM_WRENCH_SCALE = 100.0
+        self.NORM_TWIST_LINEAR = 500.0
+        self.NORM_TWIST_ANGULAR = 10.0
+
         # Define observation space
         # Per arm: external_wrench (3) + current_pose (3) + current_twist (3) +
         #          desired_pose (3) + desired_twist (3) = 15
         # Bimanual: 15 * 2 = 30
+        # Observations are normalized to roughly [-1, 1]
         obs_dim = 30
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-5.0,  # Allow some range beyond [-1, 1]
+            high=5.0,
             shape=(obs_dim,),
             dtype=np.float32
         )
@@ -192,6 +213,49 @@ class ImpedanceLearningEnv(gym.Env):
             shape=(action_dim,),
             dtype=np.float32
         )
+
+    def _normalize_obs(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Normalize observation vector to roughly [-1, 1].
+        
+        Obs structure (30 dims):
+        [ext_wrenches(6), cur_poses(6), cur_twists(6), des_poses(6), des_twists(6)]
+        Per block of 6: [arm0(3), arm1(3)]
+        Per arm(3): MR convention (Angular first!)
+        Wrench: [tau, fx, fy]
+        Pose: [x, y, theta]  <- Note: Pose is usually [x, y, theta], not MR twist convention
+        Twist: [omega, vx, vy]
+        """
+        normalized = obs.copy()
+        
+        # Helper indices
+        # 0-5: Wrenches [tau, fx, fy] * 2
+        # 6-11: Current Poses [x, y, theta] * 2
+        # 12-17: Current Twists [omega, vx, vy] * 2
+        # 18-23: Desired Poses [x, y, theta] * 2
+        # 24-29: Desired Twists [omega, vx, vy] * 2
+        
+        # 1. Wrenches [tau, fx, fy]
+        # Scale torque
+        normalized[[0, 3]] /= self.NORM_WRENCH_SCALE * 0.5 # Torque usually smaller
+        # Scale forces
+        normalized[[1, 2, 4, 5]] /= self.NORM_WRENCH_SCALE
+        
+        # 2. Poses [x, y, theta] (Current 6-11, Desired 18-23)
+        for start_idx in [6, 18]:
+            # Position x, y
+            normalized[[start_idx, start_idx+1, start_idx+3, start_idx+4]] /= self.NORM_POS_SCALE
+            # Angle theta
+            normalized[[start_idx+2, start_idx+5]] /= self.NORM_ANGLE_SCALE
+
+        # 3. Twists [omega, vx, vy] (Current 12-17, Desired 24-29)
+        for start_idx in [12, 24]:
+            # Angular velocity
+            normalized[[start_idx, start_idx+3]] /= self.NORM_TWIST_ANGULAR
+            # Linear velocity
+            normalized[[start_idx+1, start_idx+2, start_idx+4, start_idx+5]] /= self.NORM_TWIST_LINEAR
+            
+        return normalized
 
     def reset(
         self,
@@ -249,14 +313,22 @@ class ImpedanceLearningEnv(gym.Env):
         self.control_step_counter = 0
         self.trajectory_time = 0.0
         self.prev_impedance_params = None
+        
+        # Reset HL Chunk timer
+        # Force update on first step
+        self.elapsed_time_in_chunk = self.hl_period
 
         # Initialize trajectories
+        # We call _update_trajectories logic inside reset or step will handle it
+        # But to get initial observation we need targets.
+        # So we manually trigger update here.
         self._update_trajectories(obs)
 
         # Get initial RL observation
         rl_obs = self._get_rl_observation(obs)
+        norm_obs = self._normalize_obs(rl_obs)
 
-        return rl_obs, info
+        return norm_obs, info
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
@@ -274,106 +346,104 @@ class ImpedanceLearningEnv(gym.Env):
         # Update controller gains
         self._update_controller_gains(impedance_params)
 
-        # Execute multiple control steps per RL policy step
-        total_reward = 0.0
-        for _ in range(self.steps_per_policy_update):
-            # Get current observation
+        # Check if we need to update HL trajectory
+        # Logic: if elapsed_time_in_chunk >= 1.0s, get new chunk
+        if self.elapsed_time_in_chunk >= self.hl_period:
+            # Get current observation for HL policy
             obs = self.base_env.get_obs()
+            self._update_trajectories(obs)
+            self.elapsed_time_in_chunk = 0.0
 
-            # Get desired poses, twists, and accelerations from trajectories
-            desired_poses, desired_twists, desired_accels = self._get_trajectory_targets()
+        # Get current observation
+        obs = self.base_env.get_obs()
 
-            # Compute control wrenches using impedance controllers
-            wrenches = []
-            for i in range(2):  # For each arm
-                if self.config.controller_type == 'se2_impedance':
-                    # Use proper current body twist from observation
-                    if 'ee_body_twists' in obs:
-                        current_body_twist = obs['ee_body_twists'][i]
-                    else:
-                        # Fallback conversion
-                        from src.se2_math import world_to_body_velocity
-                        spatial_twist = obs['ee_twists'][i]
-                        spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
-                        current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+        # Get desired poses, twists, and accelerations from trajectories
+        # Evaluate at current chunk time
+        desired_poses, desired_twists, desired_accels = self._get_trajectory_targets(self.elapsed_time_in_chunk)
 
-                    wrench, _ = self.controllers[i].compute_control(
-                        current_pose=obs['ee_poses'][i],
-                        desired_pose=desired_poses[i],
-                        body_twist_current=current_body_twist,
-                        body_twist_desired=desired_twists[i],
-                        body_accel_desired=desired_accels[i],
-                        F_ext=obs['external_wrenches'][i]
-                    )
-                elif self.config.controller_type == 'screw_decomposed':
-                    # Use proper current body twist from observation
-                    if 'ee_body_twists' in obs:
-                        current_body_twist = obs['ee_body_twists'][i]
-                    else:
-                        # Fallback: Convert spatial twist to body twist
-                        import warnings
-                        from src.se2_math import world_to_body_velocity
-                        
-                        # ee_twists is [vx, vy, omega] in spatial frame
-                        spatial_twist = obs['ee_twists'][i]
-                        # Convert to MR convention [omega, vx, vy]
-                        spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
-                        current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+        # Compute control wrenches using impedance controllers
+        wrenches = []
+        for i in range(2):  # For each arm
+            if self.config.controller_type == 'se2_impedance':
+                # Use proper current body twist from observation
+                if 'ee_body_twists' in obs:
+                    current_body_twist = obs['ee_body_twists'][i]
+                else:
+                    # Fallback conversion
+                    from src.se2_math import world_to_body_velocity
+                    spatial_twist = obs['ee_twists'][i]
+                    spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
+                    current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
 
-                    # compute_control returns (wrench, info)
-                    wrench, _ = self.controllers[i].compute_control(
-                        current_pose=obs['ee_poses'][i],
-                        desired_pose=desired_poses[i],
-                        body_twist_current=current_body_twist,  # ✅ Current body twist (MR convention!)
-                        body_twist_desired=desired_twists[i],   # Desired body twist
-                        body_accel_desired=desired_accels[i],   # Desired body acceleration (feedforward)
-                        F_ext=obs['external_wrenches'][i]       # External wrench for impedance modulation
-                    )
-                wrenches.append(wrench)
+                wrench, _ = self.controllers[i].compute_control(
+                    current_pose=obs['ee_poses'][i],
+                    desired_pose=desired_poses[i],
+                    body_twist_current=current_body_twist,
+                    body_twist_desired=desired_twists[i],
+                    body_accel_desired=desired_accels[i],
+                    F_ext=obs['external_wrenches'][i]
+                )
+            elif self.config.controller_type == 'screw_decomposed':
+                # Use proper current body twist from observation
+                if 'ee_body_twists' in obs:
+                    current_body_twist = obs['ee_body_twists'][i]
+                else:
+                    # Fallback: Convert spatial twist to body twist
+                    import warnings
+                    from src.se2_math import world_to_body_velocity
+                    
+                    # ee_twists is [vx, vy, omega] in spatial frame
+                    spatial_twist = obs['ee_twists'][i]
+                    # Convert to MR convention [omega, vx, vy]
+                    spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
+                    current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
 
-            wrenches = np.array(wrenches)
+                # compute_control returns (wrench, info)
+                wrench, _ = self.controllers[i].compute_control(
+                    current_pose=obs['ee_poses'][i],
+                    desired_pose=desired_poses[i],
+                    body_twist_current=current_body_twist,  # ✅ Current body twist (MR convention!)
+                    body_twist_desired=desired_twists[i],   # Desired body twist
+                    body_accel_desired=desired_accels[i],   # Desired body acceleration (feedforward)
+                    F_ext=obs['external_wrenches'][i]       # External wrench for impedance modulation
+                )
+            wrenches.append(wrench)
 
-            # Step base environment with wrenches
-            obs, _, terminated, truncated, info = self.base_env.step(wrenches)
+        wrenches = np.array(wrenches)
 
-            # Compute reward
-            reward = self._compute_reward(
-                obs,
-                desired_poses,
-                desired_twists,
-                impedance_params
-            )
-            total_reward += reward
+        # Step base environment with wrenches
+        # This advances physics by 0.01s (100Hz)
+        obs, _, terminated, truncated, info = self.base_env.step(wrenches)
 
-            # Update trajectory time
-            self.trajectory_time += self.config.control_dt
+        # Compute reward
+        reward = self._compute_reward(
+            obs,
+            desired_poses,
+            desired_twists,
+            impedance_params
+        )
 
-            # Check termination
-            if terminated or truncated:
-                break
+        # Update trajectory time
+        # self.trajectory_time is now local to the chunk
+        self.elapsed_time_in_chunk += self.config.control_dt
 
         # Update episode counter
+        # Since policy step == control step, we increment by 1
         self.episode_steps += 1
-        self.control_step_counter += self.steps_per_policy_update
+        self.control_step_counter += 1
 
         # Check episode timeout
         if self.episode_steps >= self.config.max_episode_steps:
             truncated = True
 
-        # Generate new trajectories periodically
-        if self.control_step_counter % 100 == 0:  # Every 1 second
-            self._update_trajectories(obs)
-
         # Get RL observation
         rl_obs = self._get_rl_observation(obs)
+        norm_obs = self._normalize_obs(rl_obs)
 
         # Store impedance params for next step
         self.prev_impedance_params = impedance_params
 
-        # Average reward over control steps
-        avg_reward = total_reward / self.steps_per_policy_update
-
-        return rl_obs, avg_reward, terminated, truncated, info
+        return norm_obs, reward, terminated, truncated, info
 
     def _decode_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
         """
@@ -562,44 +632,62 @@ class ImpedanceLearningEnv(gym.Env):
             self.controllers[i].params = new_params
 
     def _update_trajectories(self, obs: Dict[str, np.ndarray]):
-        """Update trajectories using high-level policy."""
+        """Update trajectories using high-level policy (1.0s chunk)."""
+        from src.trajectory_generator import CubicSplineTrajectory
+
         if self.hl_policy is None:
             # Use current poses as desired poses (hold position)
             for i in range(2):
                 current_pose = obs['ee_poses'][i]
-                # Small perturbation for exploration
-                target_pose = current_pose + np.random.randn(3) * 0.01
-
+                # Create a holding trajectory for 1.0s
+                # Just start and end at same point
                 self.trajectories[i] = MinimumJerkTrajectory(
                     start_pose=current_pose,
-                    end_pose=target_pose,
-                    duration=1.0
+                    end_pose=current_pose,
+                    duration=self.hl_period
                 )
         else:
-            # Get desired poses from high-level policy
+            # Get desired pose chunk from high-level policy
+            # HL Policy should return (10, 2, 3) for 10 steps
             hl_obs = {
                 'ee_poses': obs['ee_poses'],
                 'link_poses': obs['link_poses'],
                 'external_wrenches': obs['external_wrenches']
             }
-            desired_poses = self.hl_policy.get_action(hl_obs)
-
+            
+            # Expecting action_chunk: (10, 2, 3)
+            # 10 steps, 2 arms, 3 dims [x, y, theta]
+            action_chunk = self.hl_policy.get_action_chunk(hl_obs)
+            
             # Create trajectories for both arms
+            num_steps = action_chunk.shape[0]
+            
+            # Time points for the chunk: 0.1, 0.2, ... 1.0
+            # We also include current pose at t=0.0 for smooth interpolation
+            chunk_dt = 0.1 # As per requirement
+            times = np.linspace(0.0, num_steps * chunk_dt, num_steps + 1)
+            
             for i in range(2):
                 current_pose = obs['ee_poses'][i]
-                target_pose = desired_poses[i]
-
-                self.trajectories[i] = MinimumJerkTrajectory(
-                    start_pose=current_pose,
-                    end_pose=target_pose,
-                    duration=1.0
+                
+                # Waypoints: [current_pose, p1, p2, ..., p10]
+                waypoints = np.vstack([current_pose[np.newaxis, :], action_chunk[:, i, :]])
+                
+                # Create Cubic Spline Trajectory
+                self.trajectories[i] = CubicSplineTrajectory(
+                    waypoints=waypoints,
+                    times=times,
+                    boundary_conditions='natural'
                 )
+                # Ensure duration is set (though CubicSpline handles it via times)
+                self.trajectories[i].set_duration(self.hl_period)
 
-        self.trajectory_time = 0.0
-
-    def _get_trajectory_targets(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_trajectory_targets(self, t: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Get desired poses, twists, and accelerations from trajectories.
+        Get desired poses, twists, and accelerations from trajectories at time t.
+
+        Args:
+            t: Time within the chunk [0, 1.0]. If None, uses self.elapsed_time_in_chunk
 
         Returns:
             Tuple of (desired_poses, desired_twists, desired_accelerations) where:
@@ -608,6 +696,9 @@ class ImpedanceLearningEnv(gym.Env):
                 - desired_accelerations: (2, 3) array in body frame (i^dV_i^des)
         """
         from src.se2_math import world_to_body_acceleration
+
+        if t is None:
+            t = self.elapsed_time_in_chunk
 
         desired_poses = []
         desired_twists = []
@@ -620,7 +711,11 @@ class ImpedanceLearningEnv(gym.Env):
                 desired_twists.append(np.zeros(3))
                 desired_accelerations.append(np.zeros(3))
             else:
-                traj_point = self.trajectories[i].evaluate(self.trajectory_time)
+                # Evaluate trajectory at time t
+                # Trajectory handles clamping internally or we clamp here
+                eval_t = np.clip(t, 0.0, self.hl_period)
+                traj_point = self.trajectories[i].evaluate(eval_t)
+                
                 # Pose in spatial frame
                 desired_poses.append(traj_point.pose)
                 # Twist in BODY frame (this is what we want!)

@@ -193,8 +193,13 @@ class DiffusionPolicy(nn.Module):
         # Action buffer for temporal consistency
         self.action_buffer: Optional[np.ndarray] = None
         self.action_idx = 0
+        self.normalizer = None
 
         self.to(torch.device(device))
+
+    def set_normalizer(self, normalizer):
+        """Set normalizer for input/output scaling."""
+        self.normalizer = normalizer
 
     def _device(self) -> torch.device:
         return next(self.parameters()).device
@@ -230,10 +235,7 @@ class DiffusionPolicy(nn.Module):
         Get action (desired poses) from current observation.
 
         Args:
-            observation: Current observation dict with keys:
-                - 'ee_poses': (2, 3) array of EE poses
-                - 'link_poses': (2, 3) array of link poses
-                - 'external_wrenches': (2, 3) array of wrenches
+            observation: Current observation dict
             goal: Optional goal specification
 
         Returns:
@@ -241,6 +243,10 @@ class DiffusionPolicy(nn.Module):
         """
         # Construct state vector
         state = self._construct_state(observation)
+
+        # Normalize state if normalizer is present
+        if self.normalizer is not None:
+            state = self.normalizer.normalize(state, 'state')
 
         # Add to history
         self.obs_history.append(state)
@@ -259,6 +265,9 @@ class DiffusionPolicy(nn.Module):
                 action_sequence = self._denoise(obs_cond, goal)
 
             # Buffer actions
+            if self.normalizer is not None:
+                action_sequence = self.normalizer.denormalize(action_sequence, 'action')
+
             self.action_buffer = action_sequence
             self.action_idx = 1  # Use first action now
             action = action_sequence[0]
@@ -267,6 +276,47 @@ class DiffusionPolicy(nn.Module):
         desired_poses = action.reshape(2, 3)
 
         return desired_poses
+
+    def get_action_chunk(
+        self,
+        observation: Dict[str, np.ndarray],
+        goal: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Get full action chunk (sequence of desired poses) from current observation.
+
+        Args:
+            observation: Current observation dict
+            goal: Optional goal specification
+
+        Returns:
+            Action chunk (action_horizon, 2, 3)
+        """
+        # Construct state vector
+        state = self._construct_state(observation)
+
+        # Normalize state if normalizer is present
+        if self.normalizer is not None:
+            state = self.normalizer.normalize(state, 'state')
+
+        # Add to history
+        self.obs_history.append(state)
+        if len(self.obs_history) > self.config.obs_horizon:
+            self.obs_history.pop(0)
+
+        # Generate new action sequence via diffusion
+        obs_cond = self._get_obs_condition()
+
+        with torch.no_grad():
+            action_sequence = self._denoise(obs_cond, goal)
+
+        # Denormalize actions if normalizer is present
+        if self.normalizer is not None:
+            action_sequence = self.normalizer.denormalize(action_sequence, 'action')
+
+        # Reshape to (action_horizon, 2, 3)
+        horizon = action_sequence.shape[0]
+        return action_sequence.reshape(horizon, 2, 3)
 
     def _construct_state(self, observation: Dict[str, np.ndarray]) -> np.ndarray:
         """Construct state vector from observation."""

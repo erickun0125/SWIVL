@@ -167,6 +167,7 @@ class ParallelGripper:
             groove_start, Vec2d(0, base_height/2),
             left_anchor
         )
+        self.left_joint.collide_bodies = False
         space.add(self.left_joint)
 
         right_anchor = Vec2d(jaw_thickness/2, 0)
@@ -175,15 +176,18 @@ class ParallelGripper:
             Vec2d(0, base_height/2), groove_end,
             right_anchor
         )
+        self.right_joint.collide_bodies = False
         space.add(self.right_joint)
 
         # Rotation constraint for jaws
         self.left_rotation = pymunk.GearJoint(self.base_body, self.left_jaw, 0, 1)
         self.left_rotation.max_force = 1e10
+        self.left_rotation.collide_bodies = False
         space.add(self.left_rotation)
 
         self.right_rotation = pymunk.GearJoint(self.base_body, self.right_jaw, 0, 1)
         self.right_rotation.max_force = 1e10
+        self.right_rotation.collide_bodies = False
         space.add(self.right_rotation)
 
         # External wrench tracking
@@ -297,7 +301,7 @@ class ParallelGripper:
         from jaw contact points correctly.
 
         Args:
-            dt: Physics timestep (to convert impulses to forces)
+            dt: Time duration over which impulses were accumulated (control_dt)
 
         Returns:
             External wrench [tau, fx, fy] in body frame (MR convention!)
@@ -310,17 +314,20 @@ class ParallelGripper:
         total_torque = 0.0
 
         for impulse, contact_point, contact_body in self.contact_impulses:
-            # Convert impulse to force: F = impulse / dt
-            force = impulse / dt
-            total_force_world += force
+            # Add impulse directly (will divide by dt at the end)
+            total_force_world += impulse
 
             # Compute torque about base body center
             # Note: Even if contact is on jaw, we compute torque w.r.t. base center
             # because jaw forces are transmitted to base through prismatic joint
             r = contact_point - self.base_body.position
-            # Torque = r × F (cross product in 2D)
-            torque = r.x * force.y - r.y * force.x
+            # Torque = r × Impulse (Angular impulse)
+            torque = r.x * impulse.y - r.y * impulse.x
             total_torque += torque
+
+        # Convert accumulated impulses to average force/torque over dt
+        total_force_world /= dt
+        total_torque /= dt
 
         # Transform force from world frame to body frame
         cos_theta = np.cos(self.base_body.angle)
@@ -473,17 +480,23 @@ class EndEffectorManager:
         for gripper in self.grippers:
             gripper.apply_grip_force()
 
-    def update_external_wrenches(self):
-        """Compute external wrenches from accumulated contact impulses."""
+    def update_external_wrenches(self, dt: float):
+        """
+        Compute external wrenches from accumulated contact impulses.
+        
+        Args:
+            dt: Time duration to average forces over (control_dt)
+        """
         for gripper in self.grippers:
-            gripper.compute_external_wrench(self.dt)
+            gripper.compute_external_wrench(dt)
 
     def step(self):
         """
         Backwards-compatible helper: apply grip forces and update wrenches.
+        Uses internal dt (physics timestep) as default.
         """
         self.apply_grip_forces()
-        self.update_external_wrenches()
+        self.update_external_wrenches(self.dt)
 
     def get_poses(self) -> np.ndarray:
         """Get all gripper poses."""

@@ -347,7 +347,9 @@ class BiArtEnv(gym.Env):
             self.space.step(self.dt)
 
         # Update external wrench measurements once per control step
-        self.ee_manager.update_external_wrenches()
+        # We pass the total control duration to correctly scale accumulated impulses into average forces
+        control_dt = self.dt * self.physics_steps_per_control
+        self.ee_manager.update_external_wrenches(control_dt)
 
         # Get current states
         current_ee_poses = self.ee_manager.get_poses()
@@ -448,7 +450,8 @@ class BiArtEnv(gym.Env):
         for _ in range(50):
             self.ee_manager.apply_grip_forces()
             self.space.step(self.dt)
-        self.ee_manager.update_external_wrenches()
+        # Update wrenches with correct accumulation time (settling duration)
+        self.ee_manager.update_external_wrenches(self.dt * 50)
 
         # Get initial observation
         observation: ObservationType = self.get_obs()

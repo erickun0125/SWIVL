@@ -42,6 +42,48 @@ from src.hl_planners.diffusion_policy import DiffusionPolicy
 from src.hl_planners.act import ACTPolicy
 
 
+class LinearNormalizer:
+    """
+    Min-Max Normalizer for input and output data.
+    Scales data to [0, 1] or [-1, 1].
+    """
+    def __init__(self):
+        self.stats = {}
+
+    def fit(self, data: np.ndarray, key: str):
+        """Compute min/max stats."""
+        self.stats[key] = {
+            'min': np.min(data, axis=0),
+            'max': np.max(data, axis=0)
+        }
+
+    def normalize(self, data: np.ndarray, key: str) -> np.ndarray:
+        """Normalize data using stored stats."""
+        if key not in self.stats:
+            return data
+        stats = self.stats[key]
+        # Scale to [-1, 1] which is better for neural nets than [0, 1]
+        # x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
+        denominator = stats['max'] - stats['min']
+        denominator[denominator == 0] = 1.0
+        return 2 * (data - stats['min']) / denominator - 1
+
+    def denormalize(self, data: np.ndarray, key: str) -> np.ndarray:
+        """Denormalize data using stored stats."""
+        if key not in self.stats:
+            return data
+        stats = self.stats[key]
+        # x = (x_norm + 1) / 2 * (x_max - x_min) + x_min
+        denominator = stats['max'] - stats['min']
+        return (data + 1) / 2 * denominator + stats['min']
+    
+    def state_dict(self):
+        return self.stats
+    
+    def load_state_dict(self, state_dict):
+        self.stats = state_dict
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""
     with open(config_path, 'r') as f:
@@ -62,13 +104,46 @@ def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device
         Policy instance
     """
     print(f"Creating {policy_type} policy...")
+    
+    # Extract horizons from config or use defaults
+    # These must match the dataset generation parameters
+    obs_horizon = config.get('hl_training', {}).get('obs_horizon', 1)
+    action_horizon = config.get('hl_training', {}).get('action_horizon', 10) # Default 1.0s chunk
 
     if policy_type == 'flow_matching':
-        policy = FlowMatchingPolicy(device=device)
+        from src.hl_planners.flow_matching import FlowMatchingConfig
+        policy_config = FlowMatchingConfig(
+            context_length=obs_horizon,
+            # Use flattened action dim for flow matching to support chunks
+            # Or keep action_dim=6 but handle shapes internally.
+            # Ideally, FlowMatching should treat (chunk, dim) as the data.
+            # We'll update FlowMatchingPolicy to handle this.
+            action_dim=6, 
+            # We add a new field or reuse action_dim?
+            # Let's update the Config class in the file instead.
+        )
+        # Manually set horizon attribute if not in Config dataclass yet
+        policy_config.pred_horizon = action_horizon 
+        policy = FlowMatchingPolicy(config=policy_config, device=device)
+        
     elif policy_type == 'diffusion':
-        policy = DiffusionPolicy(device=device)
+        from src.hl_planners.diffusion_policy import DiffusionPolicyConfig
+        policy_config = DiffusionPolicyConfig(
+            obs_horizon=obs_horizon,
+            action_horizon=action_horizon,
+            action_dim=6
+        )
+        policy = DiffusionPolicy(config=policy_config, device=device)
+        
     elif policy_type == 'act':
-        policy = ACTPolicy(device=device)
+        from src.hl_planners.act import ACTConfig
+        policy_config = ACTConfig(
+            obs_horizon=obs_horizon,
+            chunk_size=action_horizon, # ACT calls it chunk_size
+            action_dim=6
+        )
+        policy = ACTPolicy(config=policy_config, device=device)
+        
     else:
         raise ValueError(f"Unknown policy type: {policy_type}")
 
@@ -152,7 +227,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         dataset = DummyDataset(obs, action)
         train_size = int(0.8 * len(dataset))
         val_size = len(dataset) - train_size
-        return random_split(dataset, [train_size, val_size])
+        return random_split(dataset, [train_size, val_size]), LinearNormalizer()
 
     import h5py
     
@@ -168,9 +243,15 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             self.file_path = hdf5_path
             self.obs_horizon = obs_horizon
             self.pred_horizon = pred_horizon
+            self.normalizer = LinearNormalizer()
             
             # Load all data into memory (for simplicity)
             self.episodes = []
+            
+            # Temporary buffers for computing stats
+            all_states = []
+            all_actions = []
+            
             with h5py.File(self.file_path, 'r') as f:
                 num_demos = f.attrs.get('num_demos', 0)
                 print(f"Found {num_demos} demos in file.")
@@ -206,12 +287,27 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
                     action = desired_poses.reshape(T, -1)
                     
                     self.episodes.append({
-                        'state': torch.from_numpy(state.astype(np.float32)),
-                        'action': torch.from_numpy(action.astype(np.float32)),
-                        'desired_body_twists': torch.from_numpy(
-                            action_group['desired_body_twists'][:].astype(np.float32)
-                        )
+                        'state': state, # Keep as numpy for now
+                        'action': action
                     })
+                    all_states.append(state)
+                    all_actions.append(action)
+            
+            # Compute stats
+            all_states_concat = np.concatenate(all_states, axis=0)
+            all_actions_concat = np.concatenate(all_actions, axis=0)
+            self.normalizer.fit(all_states_concat, 'state')
+            self.normalizer.fit(all_actions_concat, 'action')
+            print("Normalization stats computed.")
+            
+            # Normalize data in memory
+            for ep in self.episodes:
+                ep['state'] = torch.from_numpy(
+                    self.normalizer.normalize(ep['state'], 'state').astype(np.float32)
+                )
+                ep['action'] = torch.from_numpy(
+                    self.normalizer.normalize(ep['action'], 'action').astype(np.float32)
+                )
             
             # Create indices
             self.indices = []
@@ -248,13 +344,14 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
 
     # Determine horizons based on config/policy type
     # For generic compatibility, default to horizons that match the policies
-    # FlowMatching: state_dim (18) -> action_dim (6) (usually 1->1 mapping in basic form)
-    # But diffusion/ACT use history.
-    # We need to look at the config passed in.
     
     # Safe defaults
     obs_h = config.get('hl_training', {}).get('obs_horizon', 1)
-    pred_h = config.get('hl_training', {}).get('action_horizon', 1)
+    pred_h = config.get('hl_training', {}).get('action_horizon', 10) # Default 10 for 1s chunk
+    
+    print(f"Dataset Configuration:")
+    print(f"  Observation Horizon: {obs_h}")
+    print(f"  Prediction Horizon (Chunk Size): {pred_h}")
     
     # Create dataset
     full_dataset = BiArtHDF5Dataset(dataset_path, obs_horizon=obs_h, pred_horizon=pred_h)
@@ -264,7 +361,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
     val_size = int(val_ratio * len(full_dataset))
     train_size = len(full_dataset) - val_size
     
-    return random_split(full_dataset, [train_size, val_size])
+    return random_split(full_dataset, [train_size, val_size]), full_dataset.normalizer
 
 
 def train_epoch(
@@ -375,6 +472,17 @@ def train(
     # Create policy
     policy = create_policy(policy_type, config, torch_device)
 
+    # Load dataset first to compute normalization stats
+    train_dataset, val_dataset, normalizer = load_dataset(dataset_path, config)
+
+    if train_dataset is None:
+        # ... error handling ...
+        return
+
+    # Set normalizer to policy if applicable
+    if hasattr(policy, 'set_normalizer'):
+        policy.set_normalizer(normalizer)
+
     # Resume from checkpoint if specified
     start_epoch = 0
     best_val_loss = float('inf')
@@ -382,25 +490,15 @@ def train(
         print(f"Resuming from checkpoint: {resume_from}")
         checkpoint = torch.load(resume_from, map_location=torch_device)
         policy.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load normalizer if available
+        if 'normalizer' in checkpoint and hasattr(policy, 'set_normalizer'):
+             normalizer.load_state_dict(checkpoint['normalizer'])
+             policy.set_normalizer(normalizer)
+
         start_epoch = checkpoint.get('epoch', 0) + 1
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         print(f"Resumed from epoch {start_epoch}")
-
-    # Load dataset
-    train_dataset, val_dataset = load_dataset(dataset_path, config)
-
-    if train_dataset is None:
-        print("\n" + "=" * 80)
-        print("ERROR: Dataset loading not implemented!")
-        print("=" * 80)
-        print("\nTo complete the implementation:")
-        print("1. Implement load_dataset() function in this script")
-        print("2. Dataset should return (states, actions) pairs")
-        print("3. States: Current observation (ee_poses, link_poses, external_wrenches)")
-        print("4. Actions: Desired poses for both end-effectors")
-        print("\nFor now, training is skipped.")
-        print("=" * 80)
-        return
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -452,28 +550,36 @@ def train(
                 checkpoint_dir,
                 f"{policy_type}_epoch_{epoch+1}.pth"
             )
-            torch.save({
+            save_dict = {
                 'epoch': epoch,
                 'model_state_dict': policy.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'best_val_loss': best_val_loss
-            }, checkpoint_path)
+            }
+            if hasattr(policy, 'normalizer'):
+                save_dict['normalizer'] = policy.normalizer.state_dict()
+                
+            torch.save(save_dict, checkpoint_path)
             print(f"  Saved checkpoint: {checkpoint_path}")
 
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_path = os.path.join(checkpoint_dir, f"{policy_type}_best.pth")
-            torch.save({
+            save_dict = {
                 'epoch': epoch,
                 'model_state_dict': policy.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'best_val_loss': best_val_loss
-            }, best_model_path)
+            }
+            if hasattr(policy, 'normalizer'):
+                save_dict['normalizer'] = policy.normalizer.state_dict()
+
+            torch.save(save_dict, best_model_path)
             print(f"  ✓ New best model saved (val_loss: {val_loss:.6f})")
 
     print("\n" + "=" * 80)

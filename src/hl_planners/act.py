@@ -342,8 +342,13 @@ class ACTPolicy(nn.Module):
         # Action buffer for temporal consistency
         self.action_buffer: Optional[np.ndarray] = None
         self.action_idx = 0
+        self.normalizer = None
 
         self.to(torch.device(device))
+
+    def set_normalizer(self, normalizer):
+        """Set normalizer for input/output scaling."""
+        self.normalizer = normalizer
 
     def _device(self) -> torch.device:
         return next(self.parameters()).device
@@ -376,10 +381,7 @@ class ACTPolicy(nn.Module):
         Get action (desired poses) from current observation.
 
         Args:
-            observation: Current observation dict with keys:
-                - 'ee_poses': (2, 3) array of EE poses
-                - 'link_poses': (2, 3) array of link poses
-                - 'external_wrenches': (2, 3) array of wrenches
+            observation: Current observation dict
             goal: Optional goal specification
 
         Returns:
@@ -387,6 +389,10 @@ class ACTPolicy(nn.Module):
         """
         # Construct state vector
         state = self._construct_state(observation)
+        
+        # Normalize state if normalizer is present
+        if self.normalizer is not None:
+            state = self.normalizer.normalize(state, 'state')
 
         # Add to history
         self.obs_history.append(state)
@@ -415,7 +421,13 @@ class ACTPolicy(nn.Module):
                 action_chunk = self.model.decode(latent, encoder_output)
 
             # Buffer actions
-            self.action_buffer = action_chunk.squeeze(0).cpu().numpy()
+            action_chunk = action_chunk.squeeze(0).cpu().numpy()
+            
+            # Denormalize actions if normalizer is present
+            if self.normalizer is not None:
+                action_chunk = self.normalizer.denormalize(action_chunk, 'action')
+                
+            self.action_buffer = action_chunk
             self.action_idx = 1  # Use first action now
             action = self.action_buffer[0]
 
@@ -423,6 +435,54 @@ class ACTPolicy(nn.Module):
         desired_poses = action.reshape(2, 3)
 
         return desired_poses
+
+    def get_action_chunk(
+        self,
+        observation: Dict[str, np.ndarray],
+        goal: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Get full action chunk (sequence of desired poses) from current observation.
+
+        Args:
+            observation: Current observation dict
+            goal: Optional goal specification
+
+        Returns:
+            Action chunk (chunk_size, 2, 3) containing desired poses for both EEs
+        """
+        # Construct state vector
+        state = self._construct_state(observation)
+        
+        # Normalize state if normalizer is present
+        if self.normalizer is not None:
+            state = self.normalizer.normalize(state, 'state')
+
+        # Add to history
+        self.obs_history.append(state)
+        if len(self.obs_history) > self.config.obs_horizon:
+            self.obs_history.pop(0)
+
+        # Generate new action chunk
+        obs_cond = self._get_obs_condition()
+
+        with torch.no_grad():
+            self.model.eval()
+            batch_size = 1
+            latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
+            encoder_output = self.model.encoder(obs_cond)
+            action_chunk = self.model.decode(latent, encoder_output)
+
+        action_chunk = action_chunk.squeeze(0).cpu().numpy()
+        
+        # Denormalize actions if normalizer is present
+        if self.normalizer is not None:
+            action_chunk = self.normalizer.denormalize(action_chunk, 'action')
+            
+        # Reshape to (chunk_size, 2, 3)
+        # Assuming action_dim is 6 (2 EEs * 3 dims)
+        chunk_size = action_chunk.shape[0]
+        return action_chunk.reshape(chunk_size, 2, 3)
 
     def _construct_state(self, observation: Dict[str, np.ndarray]) -> np.ndarray:
         """Construct state vector from observation."""
