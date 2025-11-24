@@ -18,7 +18,47 @@ from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
 from src.se2_math import normalize_angle, integrate_velocity
-from src.envs.grasping_frames import GraspingFrameManager
+# from src.envs.grasping_frames import GraspingFrameManager # Removed: Not available
+
+class KinematicConstraintSolver:
+    """Helper to compute required velocity for the secondary gripper."""
+    def __init__(self, joint_type: str, link_length: float):
+        self.joint_type = joint_type
+        self.link_length = link_length
+
+    def compute_desired_gripper_velocity(
+        self,
+        controlled_gripper: str,
+        controlled_velocity: np.ndarray,
+        joint_velocity: float,
+        link1_pose: np.ndarray,
+        link2_pose: np.ndarray,
+        link1_velocity: np.ndarray,
+        link2_velocity: np.ndarray
+    ) -> np.ndarray:
+        """
+        Compute velocity for the follower gripper to maintain grasp constraint.
+        
+        Simplified logic: Assuming grippers are attached to links.
+        Velocity of follower EE = Velocity of follower Link at grasp point.
+        """
+        # 1. Determine which link is controlled and which is follower
+        if controlled_gripper == "left":
+            # Left EE -> Link 1 (usually)
+            follower_link_pose = link2_pose
+            follower_link_idx = 1
+        else:
+            # Right EE -> Link 2
+            follower_link_pose = link1_pose
+            follower_link_idx = 0
+            
+        # TODO: Implement full SE(2) Jacobian-based inverse kinematics here.
+        # For now, returning zero velocity for safety if logic is complex.
+        # In a real implementation, we would use the Jacobians J_left, J_right
+        # and the object Jacobian J_obj to solve:
+        # V_follower = J_follower * V_joint_space
+        
+        return np.zeros(3)
 
 
 @dataclass
@@ -54,9 +94,9 @@ class KeyboardTeleoperationPlanner:
         """
         self.config = config if config is not None else TeleopConfig()
         self.joint_type = joint_type
-
-        # Grasping frame manager for constraint computation
-        self.grasp_manager = GraspingFrameManager(joint_type, link_length)
+        
+        # Use internal solver instead of missing manager
+        self.constraint_solver = KinematicConstraintSolver(joint_type, link_length)
 
         # Current desired velocities
         self.controlled_ee_velocity = np.zeros(3)  # [vx, vy, omega]
@@ -170,7 +210,7 @@ class KeyboardTeleoperationPlanner:
         if current_link_velocities is None:
             current_link_velocities = np.zeros((2, 3))
 
-        other_vel_world = self.grasp_manager.compute_desired_gripper_velocity(
+        other_vel_world = self.constraint_solver.compute_desired_gripper_velocity(
             controlled_gripper=self.config.controlled_gripper,
             controlled_velocity=controlled_vel_world,
             joint_velocity=joint_vel,

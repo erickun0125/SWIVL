@@ -20,7 +20,7 @@ import numpy as np
 from typing import Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle
+from src.se2_math import normalize_angle, spatial_to_body_twist
 
 
 @dataclass
@@ -117,26 +117,31 @@ class PDController:
         error_angle = normalize_angle(theta_d - theta)
 
         # Transform desired velocity to body frame
-        vx_d, vy_d, omega_d = desired_velocity
-        desired_vel_body = np.array([
-            cos_theta * vx_d + sin_theta * vy_d,
-            -sin_theta * vx_d + cos_theta * vy_d
-        ])
+        # desired_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
+        desired_vel_spatial_mr = np.array([desired_velocity[2], desired_velocity[0], desired_velocity[1]])
+        # Use proper adjoint map to get body twist [omega, vx_b, vy_b]
+        desired_twist_body = spatial_to_body_twist(desired_pose, desired_vel_spatial_mr)
+        
+        # MR convention to PD internal convention (linear first for calculation convenience)
+        # PD uses: [vx_b, vy_b, omega]
+        desired_vel_body = np.array([desired_twist_body[1], desired_twist_body[2], desired_twist_body[0]])
 
         # Compute velocity error
         if current_velocity is not None:
             # Use provided velocity for error computation
-            vx, vy, omega = current_velocity
-
-            # Transform current velocity to body frame
-            vel_body = np.array([
-                cos_theta * vx + sin_theta * vy,
-                -sin_theta * vx + cos_theta * vy
-            ])
+            # current_velocity is [vx_s, vy_s, omega]
+            
+            # Convert to MR [omega, vx_s, vy_s]
+            current_vel_spatial_mr = np.array([current_velocity[2], current_velocity[0], current_velocity[1]])
+            # Convert to body twist [omega, vx_b, vy_b]
+            current_twist_body = spatial_to_body_twist(current_pose, current_vel_spatial_mr)
+            
+            # Convert to internal PD convention [vx_b, vy_b, omega]
+            vel_body = np.array([current_twist_body[1], current_twist_body[2], current_twist_body[0]])
 
             # Velocity error in body frame
             error_vel_body = desired_vel_body - vel_body
-            error_omega = omega_d - omega
+            error_omega = desired_twist_body[0] - current_twist_body[0]
 
         else:
             # Estimate velocity error from finite differences

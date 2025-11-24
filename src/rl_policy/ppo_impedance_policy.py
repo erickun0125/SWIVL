@@ -70,26 +70,32 @@ class ImpedanceFeatureExtractor(BaseFeaturesExtractor):
         # Bimanual: 30
 
         obs_dim = observation_space.shape[0]
-
-        # Wrench encoder (6 dimensions for both arms)
+        
+        # Determine dimensions dynamically
+        # Assume standard structure: [wrench, current_pose, current_twist, desired_pose, desired_twist]
+        # Each component is 3 * NUM_ARMS
+        self.NUM_COMPONENTS = 5
+        self.input_dim_per_component = obs_dim // self.NUM_COMPONENTS
+        
+        # Wrench encoder
         self.wrench_encoder = nn.Sequential(
-            nn.Linear(6, 64),
+            nn.Linear(self.input_dim_per_component, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU()
         )
 
-        # Pose encoder (12 dimensions: current + desired for both arms)
+        # Pose encoder (current + desired)
         self.pose_encoder = nn.Sequential(
-            nn.Linear(12, 128),
+            nn.Linear(self.input_dim_per_component * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU()
         )
 
-        # Twist encoder (12 dimensions: current + desired for both arms)
+        # Twist encoder (current + desired)
         self.twist_encoder = nn.Sequential(
-            nn.Linear(12, 128),
+            nn.Linear(self.input_dim_per_component * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU()
@@ -114,12 +120,15 @@ class ImpedanceFeatureExtractor(BaseFeaturesExtractor):
         Returns:
             (batch_size, features_dim) features
         """
-        # Split observations using class constants for maintainability
-        wrenches = observations[:, self.WRENCH_START:self.WRENCH_END]
-        current_poses = observations[:, self.POSE_CURRENT_START:self.POSE_CURRENT_END]
-        current_twists = observations[:, self.TWIST_CURRENT_START:self.TWIST_CURRENT_END]
-        desired_poses = observations[:, self.POSE_DESIRED_START:self.POSE_DESIRED_END]
-        desired_twists = observations[:, self.TWIST_DESIRED_START:self.TWIST_DESIRED_END]
+        # Split observations dynamically
+        # Structure: [Wrenches | Cur Poses | Cur Twists | Des Poses | Des Twists]
+        dim = self.input_dim_per_component
+        
+        wrenches = observations[:, 0:dim]
+        current_poses = observations[:, dim:2*dim]
+        current_twists = observations[:, 2*dim:3*dim]
+        desired_poses = observations[:, 3*dim:4*dim]
+        desired_twists = observations[:, 4*dim:5*dim]
 
         # Encode wrenches
         wrench_features = self.wrench_encoder(wrenches)

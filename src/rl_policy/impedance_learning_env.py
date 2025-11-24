@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 from src.envs.biart import BiArtEnv
 from src.trajectory_generator import MinimumJerkTrajectory, TrajectoryPoint
-from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController, ImpedanceGains
+from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController
 from src.ll_controllers.se2_screw_decomposed_impedance import (
     SE2ScrewDecomposedImpedanceController,
     ScrewImpedanceParams
@@ -123,10 +123,23 @@ class ImpedanceLearningEnv(gym.Env):
 
         # Create impedance controllers for both arms based on controller type
         if self.config.controller_type == 'se2_impedance':
-            self.controllers = [
-                TaskSpaceImpedanceController(),
-                TaskSpaceImpedanceController()
-            ]
+            # Initialize SE2 Impedance Controller
+            robot_params = SE2RobotParams(
+                mass=self.config.robot_mass,
+                inertia=self.config.robot_inertia
+            )
+            # Create with default gains (will be updated by action)
+            # MR convention: angular first
+            self.controllers = []
+            for _ in range(2):
+                controller = SE2ImpedanceController.create_diagonal_impedance(
+                    I_d=self.config.robot_inertia, m_d=self.config.robot_mass,
+                    d_theta=5.0, d_x=10.0, d_y=10.0,
+                    k_theta=20.0, k_x=50.0, k_y=50.0,
+                    robot_params=robot_params
+                )
+                self.controllers.append(controller)
+                
             self.action_dim_per_arm = 6  # damping (3) + stiffness (3)
         elif self.config.controller_type == 'screw_decomposed':
             # For screw decomposed, we need joint axis screws
@@ -274,13 +287,23 @@ class ImpedanceLearningEnv(gym.Env):
             wrenches = []
             for i in range(2):  # For each arm
                 if self.config.controller_type == 'se2_impedance':
-                    wrench = self.controllers[i].compute_wrench(
+                    # Use proper current body twist from observation
+                    if 'ee_body_twists' in obs:
+                        current_body_twist = obs['ee_body_twists'][i]
+                    else:
+                        # Fallback conversion
+                        from src.se2_math import world_to_body_velocity
+                        spatial_twist = obs['ee_twists'][i]
+                        spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
+                        current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+
+                    wrench, _ = self.controllers[i].compute_control(
                         current_pose=obs['ee_poses'][i],
                         desired_pose=desired_poses[i],
-                        measured_wrench=obs['external_wrenches'][i],
-                        current_velocity=obs['ee_twists'][i],  # Spatial frame velocity
-                        desired_velocity=desired_twists[i],  # Body frame twist
-                        desired_acceleration=desired_accels[i]  # Body frame acceleration (feedforward)
+                        body_twist_current=current_body_twist,
+                        body_twist_desired=desired_twists[i],
+                        body_accel_desired=desired_accels[i],
+                        F_ext=obs['external_wrenches'][i]
                     )
                 elif self.config.controller_type == 'screw_decomposed':
                     # Use proper current body twist from observation
@@ -289,17 +312,15 @@ class ImpedanceLearningEnv(gym.Env):
                     else:
                         # Fallback: Convert spatial twist to body twist
                         import warnings
-                        warnings.warn(
-                            "Using deprecated 'ee_twists' field. Please update environment to provide 'ee_body_twists'.",
-                            DeprecationWarning
-                        )
                         from src.se2_math import world_to_body_velocity
+                        
                         # ee_twists is [vx, vy, omega] in spatial frame
                         spatial_twist = obs['ee_twists'][i]
                         # Convert to MR convention [omega, vx, vy]
                         spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
                         current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
 
+                    # compute_control returns (wrench, info)
                     wrench, _ = self.controllers[i].compute_control(
                         current_pose=obs['ee_poses'][i],
                         desired_pose=desired_poses[i],
@@ -508,21 +529,21 @@ class ImpedanceLearningEnv(gym.Env):
         Following Modern Robotics convention:
         - damping: [D_angular, D_linear_x, D_linear_y]
         - stiffness: [K_angular, K_linear_x, K_linear_y]
-
-        Note: TaskSpaceImpedanceController uses isotropic linear gains (same for x and y).
-        We average the x and y components to maintain backward compatibility.
         """
         for i in range(2):
             damping = impedance_params['damping'][i]
             stiffness = impedance_params['stiffness'][i]
 
-            # Update gains (MR convention: angular at index 0, linear at indices 1,2)
-            self.controllers[i].gains.kd_angular = damping[0]  # MR: angular first!
-            # Average x and y damping for isotropic controller
-            self.controllers[i].gains.kd_linear = (damping[1] + damping[2]) / 2.0
-            self.controllers[i].gains.kp_angular = stiffness[0]  # MR: angular first!
-            # Average x and y stiffness for isotropic controller
-            self.controllers[i].gains.kp_linear = (stiffness[1] + stiffness[2]) / 2.0
+            # Update matrices directly (MR convention: angular first!)
+            # D_d = diag(d_theta, d_x, d_y)
+            D_d = np.diag(damping)
+            
+            # K_d = diag(k_theta, k_x, k_y)
+            K_d = np.diag(stiffness)
+            
+            # M_d remains default (model matching) or could be updated if action space allowed
+            
+            self.controllers[i].set_impedance_parameters(D_d=D_d, K_d=K_d)
 
     def _update_screw_gains(self, impedance_params: Dict[str, np.ndarray]):
         """Update screw-decomposed controller gains."""

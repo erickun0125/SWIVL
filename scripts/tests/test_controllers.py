@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 import numpy as np
 
 from src.ll_controllers.pd_controller import PDController, PDGains
-from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController, ImpedanceGains
+from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController
 from src.ll_controllers.se2_screw_decomposed_impedance import (
     SE2ScrewDecomposedImpedanceController,
     ScrewImpedanceParams
@@ -49,26 +49,37 @@ def test_impedance_controller():
     print("\n=== Testing SE(2) Task Space Impedance Controller (Controller #2) ===")
     print("Proper impedance control with robot dynamics (Lambda_b, C_b, eta_b)")
 
-    controller = TaskSpaceImpedanceController(ImpedanceGains())
-    controller.set_timestep(0.01)
+    # Robot parameters
+    robot_params = SE2RobotParams(mass=1.0, inertia=0.1)
+
+    # Create controller using factory method
+    controller = SE2ImpedanceController.create_diagonal_impedance(
+        I_d=0.1, m_d=1.0,           # Inertia (match robot)
+        d_theta=5.0, d_x=10.0, d_y=10.0,  # Damping
+        k_theta=20.0, k_x=50.0, k_y=50.0, # Stiffness
+        robot_params=robot_params
+    )
 
     current_pose = np.array([0.0, 0.0, 0.0])
     desired_pose = np.array([10.0, 5.0, 0.5])
     measured_wrench = np.array([15.0, 10.0, 2.0])
-    current_velocity = np.array([0.0, 0.0, 0.0])  # Spatial frame
-    desired_velocity = np.array([1.0, 0.5, 0.1])  # Body frame
+    
+    # Velocity inputs (MR convention: [omega, vx, vy])
+    current_body_twist = np.array([0.0, 0.0, 0.0])
+    desired_body_twist = np.array([0.1, 1.0, 0.5])  # [omega, vx, vy]
 
-    wrench = controller.compute_wrench(
-        current_pose, desired_pose, measured_wrench,
-        current_velocity=current_velocity,
-        desired_velocity=desired_velocity
+    wrench, _ = controller.compute_control(
+        current_pose, desired_pose, 
+        body_twist_current=current_body_twist,
+        body_twist_desired=desired_body_twist,
+        F_ext=measured_wrench
     )
 
     print(f"Current pose: {current_pose}")
     print(f"Desired pose: {desired_pose}")
     print(f"Measured wrench: {measured_wrench}")
     print(f"Computed wrench: {wrench}")
-    print("✅ Task Space Impedance Controller test passed")
+    print("✅ SE(2) Impedance Controller test passed")
 
     return True
 

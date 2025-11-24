@@ -146,12 +146,12 @@ class BiArtEnv(gym.Env):
             grip_force=grip_force  # Use configurable parameter
         )
 
-        # Managers (initialized in reset)
+        # Managers (initialized in _setup)
         self.ee_manager = None
         self.object_manager = None
         self.reward_manager = None
 
-        # Physics space (initialized in reset)
+        # Physics space (initialized in _setup)
         self.space = None
 
         # Action and observation spaces
@@ -164,6 +164,9 @@ class BiArtEnv(gym.Env):
         # State tracking
         self._last_action = None
         self.goal_pose = None  # Set in reset
+
+        # Initialize physics and managers once
+        self._setup()
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces."""
@@ -240,10 +243,13 @@ class BiArtEnv(gym.Env):
 
     def _setup(self):
         """Setup the physics simulation."""
+        if self.space is not None:
+            return
+
         # Create physics space
         self.space = pymunk.Space()
         self.space.gravity = 0, 0  # No gravity in SE(2)
-        self.space.damping = 0.99  # Higher damping for better stability
+        self.space.damping = 0.95  # Adjusted damping for better dynamics (was 0.99)
 
         # Add walls
         walls = [
@@ -284,8 +290,8 @@ class BiArtEnv(gym.Env):
             max_wrench_threshold=200.0
         )
 
-        # Goal pose for the object
-        self.goal_pose = np.array([256, 200, np.pi / 4])  # [x, y, theta]
+        # Goal pose will be set in reset
+
 
     def _add_segment(self, a, b, radius):
         """Add a static segment (wall) to the environment."""
@@ -301,15 +307,22 @@ class BiArtEnv(gym.Env):
         Following Modern Robotics convention:
         Args:
             action: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy] (MR convention!)
+                   OR shape (2, 3) array
         """
         # Store action
         self._last_action = action
 
         # Parse wrenches from action (MR convention: [tau, fx, fy])
-        wrenches = np.array([
-            action[:3],   # Left gripper wrench [tau, fx, fy]
-            action[3:]    # Right gripper wrench [tau, fx, fy]
-        ])
+        action = np.asarray(action)
+        if action.shape == (2, 3):
+            wrenches = action
+        elif action.shape == (6,):
+            wrenches = np.array([
+                action[:3],   # Left gripper wrench [tau, fx, fy]
+                action[3:]    # Right gripper wrench [tau, fx, fy]
+            ])
+        else:
+            raise ValueError(f"Invalid action shape: {action.shape}. Expected (6,) or (2, 3).")
 
         # Apply wrenches to grippers
         self.ee_manager.apply_wrenches(wrenches)
@@ -328,16 +341,17 @@ class BiArtEnv(gym.Env):
         external_wrenches = self.ee_manager.get_external_wrenches()
 
         # Compute reward using RewardManager
-        # For now, use link1 pose as current, goal pose as desired
-        desired_ee_poses = np.array([self.goal_pose, self.goal_pose])  # Dummy for now
-        desired_ee_velocities = np.zeros((2, 3))
+        # Task is to manipulate the object, so we track object poses.
+        # We primarily track Link 1 (base link) against goal_pose.
+        desired_link_poses = np.array([self.goal_pose, self.goal_pose]) # TODO: Compute proper Link 2 goal if needed
+        
         applied_wrenches = wrenches
 
         reward_info = self.reward_manager.compute_reward(
-            current_ee_poses=current_ee_poses,
-            desired_ee_poses=desired_ee_poses,
-            current_ee_velocities=np.zeros((2, 3)),  # Not tracked yet
-            desired_ee_velocities=desired_ee_velocities,
+            current_ee_poses=current_link_poses, # Track object links!
+            desired_ee_poses=desired_link_poses,
+            current_ee_velocities=self.object_manager.get_link_velocities(), # Track object velocity
+            desired_ee_velocities=np.zeros((2, 3)), # Goal is static
             applied_wrenches=applied_wrenches,
             external_wrenches=external_wrenches
         )
@@ -380,13 +394,16 @@ class BiArtEnv(gym.Env):
         """Reset the environment."""
         super().reset(seed=seed)
 
-        # Setup physics and managers
-        self._setup()
+        # Randomize goal pose
+        goal_x = self.np_random.integers(200, 312)
+        goal_y = self.np_random.integers(200, 312)
+        goal_theta = self.np_random.uniform(-np.pi/2, np.pi/2)
+        self.goal_pose = np.array([goal_x, goal_y, goal_theta])
 
         # Randomize object position and orientation
-        obj_x = self.np_random.integers(220, 292) if seed is not None else 256
-        obj_y = self.np_random.integers(220, 292) if seed is not None else 256
-        obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4) if seed is not None else 0.0
+        obj_x = self.np_random.integers(220, 292)
+        obj_y = self.np_random.integers(220, 292)
+        obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)
 
         initial_pose = np.array([obj_x, obj_y, obj_angle])
 
@@ -423,7 +440,13 @@ class BiArtEnv(gym.Env):
         return observation, info
 
     def get_obs(self):
-        """Get observation."""
+        """
+        Get observation.
+        
+        Note on Twists:
+        - 'ee_twists': Spatial frame twist [vx, vy, omega] (standard order)
+        - 'ee_body_twists': Body frame twist [omega, vx, vy] (Modern Robotics convention)
+        """
         if self.obs_type == "state":
             # Get states from managers
             ee_poses = self.ee_manager.get_poses()  # (2, 3) - spatial frame
@@ -492,11 +515,11 @@ class BiArtEnv(gym.Env):
         joint_type = self.object_manager.joint_type
 
         if joint_type.value == "revolute":
-            # V-shape limits: -120° to -60°
-            min_angle = -2 * np.pi / 3  # -120°
-            max_angle = -np.pi / 3  # -60°
+            # Full range limits: -180° to 180°
+            min_angle = -np.pi
+            max_angle = np.pi
             if joint_state < min_angle or joint_state > max_angle:
-                return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}° (limits: [{np.rad2deg(min_angle):.1f}°, {np.rad2deg(max_angle):.1f}°])"
+                return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}°"
 
         elif joint_type.value == "prismatic":
             # Sliding limits (relative to link length)

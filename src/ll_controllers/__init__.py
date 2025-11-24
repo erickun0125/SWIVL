@@ -1,17 +1,16 @@
 """
 Low-Level Controllers for SE(2) Manipulation
 
-This package provides three main low-level controllers for wrench-based control:
+This package provides main low-level controllers for wrench-based control:
 
 1. PD Controller: Position & Orientation decomposed PD control
-2. SE(2) Task Space Impedance Controller: Proper impedance control with robot dynamics
+2. SE(2) Impedance Controller: Proper impedance control with robot dynamics
 3. Screw-Decomposed Impedance Controller: Directional compliance along/perpendicular to screw
 
 All controllers output wrench commands in body frame.
 """
 
 from src.ll_controllers.pd_controller import PDController, PDGains
-from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController, ImpedanceGains
 from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController
 from src.ll_controllers.se2_screw_decomposed_impedance import (
     SE2ScrewDecomposedImpedanceController,
@@ -24,8 +23,6 @@ __all__ = [
     'PDGains',
 
     # Controller #2: SE(2) task space impedance
-    'TaskSpaceImpedanceController',  # Wrapper for backward compatibility
-    'ImpedanceGains',
     'SE2ImpedanceController',  # Core implementation
 
     # Controller #3: Screw-decomposed impedance

@@ -160,16 +160,37 @@ class ArticulatedObject:
 
         # Determine link2 initial configuration
         if self.joint_type == JointType.REVOLUTE:
-            # Start aligned, joint will control relative angle
-            link2_angle = link1_pose[2]
+            # Start at random relative angle within limits
+            # Since limits are -pi to pi, we can start anywhere, e.g. -90 deg for V-shape
+            initial_relative_angle = -np.pi / 2
+            link2_angle = link1_pose[2] + initial_relative_angle
             link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
             link2_center = connection_point + link2_start_to_center
 
         elif self.joint_type == JointType.PRISMATIC:
             # Links stay aligned
             link2_angle = link1_pose[2]
-            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
-            link2_center = connection_point + link2_start_to_center
+            # Start at center of range (state = 0)
+            # Link2 left end aligns with Link1 center? No, that's -L/2 limit.
+            # Let's say state 0 means Link2 left end is at Link1 right end (fully extended).
+            # No, usually 0 is a neutral position.
+            # Let's define 0 as Link2 left end is at Link1 right end (L/2).
+            # Range [-L/2, L/2] -> Link2 left end from 0 to L.
+            
+            # Let's stick to the Groove definition below:
+            # Groove: [-L/2, L/2] relative to Link1 center.
+            # Anchor: Link2 left end.
+            # So Link2 left end moves from -L/2 to L/2 in Link1 frame.
+            
+            # Initial pos: state = 0 -> Link2 left end at 0 (Link1 center)
+            link2_left_end_in_link1 = Vec2d(0, 0)
+            
+            # Convert to world to find Link2 center
+            # Link2 center is L/2 away from its left end
+            link2_center_in_link1 = link2_left_end_in_link1 + Vec2d(self.link_length/2, 0)
+            
+            # Transform to world
+            link2_center = link1_body.local_to_world(link2_center_in_link1)
 
         else:  # FIXED
             # Rigidly aligned
@@ -192,11 +213,11 @@ class ArticulatedObject:
             primary_joint = pymunk.PivotJoint(link1_body, link2_body, connection_point)
             primary_joint.collide_bodies = False
 
-            # Add rotary limit to enforce V-shape (-120° to -60°)
+            # Add rotary limit: full range -180 to 180 degrees
             angle_limit = pymunk.RotaryLimitJoint(
                 link1_body, link2_body,
-                -2*np.pi/3,  # -120°
-                -np.pi/3     # -60°
+                -np.pi,  # -180°
+                np.pi    # 180°
             )
             angle_limit.collide_bodies = False
             self.space.add(angle_limit)
@@ -204,8 +225,9 @@ class ArticulatedObject:
 
         elif self.joint_type == JointType.PRISMATIC:
             # GrooveJoint: allows sliding along link1's x-axis
-            groove_start = Vec2d(0, 0)  # Center of link1 in link1's frame
-            groove_end = Vec2d(self.link_length, 0)  # Along link1's x-axis
+            # Define range: [-L/2, L/2] relative to Link1 center
+            groove_start = Vec2d(-self.link_length / 2, 0)
+            groove_end = Vec2d(self.link_length / 2, 0)
             anchor = Vec2d(-self.link_length / 2, 0)  # Link2's left end
 
             primary_joint = pymunk.GrooveJoint(
@@ -215,12 +237,13 @@ class ArticulatedObject:
             )
             primary_joint.collide_bodies = False
 
-            # PinJoint to prevent rotation (keeps links parallel)
-            pin_joint = pymunk.PinJoint(link1_body, link2_body, connection_point, connection_point)
-            pin_joint.distance = 0
-            pin_joint.collide_bodies = False
-            self.space.add(pin_joint)
-            auxiliary_joints.append(pin_joint)
+            # GearJoint to prevent rotation (keeps links parallel)
+            # Phase 0, Ratio 1 means link2 angle = link1 angle
+            rotational_constraint = pymunk.GearJoint(link1_body, link2_body, 0, 1)
+            rotational_constraint.max_force = 1e10
+            rotational_constraint.collide_bodies = False
+            self.space.add(rotational_constraint)
+            auxiliary_joints.append(rotational_constraint)
 
         else:  # FIXED
             # DampedRotarySpring: very stiff rotational constraint
@@ -464,9 +487,14 @@ class ArticulatedObject:
 
         elif self.joint_type == JointType.PRISMATIC:
             # Distance along link1's axis
-            # Connection point in link1's frame
-            connection_in_link1 = self.link1.world_to_local(self.link2.position)
-            return connection_in_link1.x - self.link_length / 2
+            # Link2's left end in Link1's frame
+            link2_left_end_local = Vec2d(-self.link_length / 2, 0)
+            link2_left_end_world = self.link2.local_to_world(link2_left_end_local)
+            pos_in_link1 = self.link1.world_to_local(link2_left_end_world)
+            
+            # Our groove is defined from -L/2 to L/2 relative to Link1 center
+            # pos_in_link1.x corresponds to the joint state directly
+            return pos_in_link1.x
 
         else:  # FIXED
             return 0.0
@@ -527,7 +555,7 @@ class ObjectManager:
         default_params = {
             'link_length': 40.0,
             'link_width': 12.0,
-            'link_mass': 0.5
+            'link_mass': 1.0  # Increased from 0.5 for better stability vs gripper
         }
 
         self.object_params = {**default_params, **(object_params or {})}

@@ -1,0 +1,214 @@
+"""
+Teleoperation Data Collection Script for BiArtEnv
+
+This script allows a user to control the BiArtEnv using keyboard inputs and saves
+the resulting trajectories to an HDF5 file for training high-level policies.
+
+Usage:
+    python scripts/data_collection/collect_teleop_demos.py --output data/demos.h5 --num_demos 10
+
+Controls:
+    Arrow Keys: Move controlled EE (Linear)
+    Q / W: Rotate controlled EE (Angular)
+    1 / 2: Switch controlled EE (Left / Right)
+    Space: Stop
+    ESC: Quit / Finish Episode
+"""
+
+import os
+import sys
+import argparse
+import time
+import numpy as np
+import h5py
+import pygame
+import cv2
+
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from src.envs.biart import BiArtEnv
+from src.hl_planners.keyboard_teleoperation import KeyboardTeleoperationPlanner, TeleopConfig
+from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController, SE2ImpedanceConfig
+
+def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
+    """
+    Collect teleoperation demonstrations.
+
+    Args:
+        output_path: Path to save HDF5 file
+        num_demos: Number of demonstrations to collect
+        max_steps: Maximum steps per episode
+    """
+    # Create output directory
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Initialize Environment
+    env = BiArtEnv(render_mode="human", control_hz=10)
+    
+    # Initialize Planner (High-Level)
+    teleop_config = TeleopConfig(
+        linear_speed=50.0,
+        angular_speed=1.5,
+        joint_speed=0.5,
+        control_dt=1.0/env.control_hz,
+        controlled_gripper="left"
+    )
+    planner = KeyboardTeleoperationPlanner(
+        config=teleop_config,
+        joint_type="revolute", # Default
+        link_length=env.link_length
+    )
+
+    # Initialize Controller (Low-Level)
+    # We use impedance controller to track the desired poses from teleop
+    controller_config = SE2ImpedanceConfig(
+        stiffness_linear=np.array([500.0, 500.0]), # High stiffness for tracking
+        stiffness_angular=50.0,
+        damping_linear=np.array([20.0, 20.0]),
+        damping_angular=2.0
+    )
+    controller = SE2ImpedanceController(num_grippers=2, config=controller_config, dt=env.dt)
+
+    # Data buffer
+    all_demos = []
+
+    print(f"Starting data collection. Target: {num_demos} demos.")
+    print("Controls: Arrows (Move), Q/W (Rotate), 1/2 (Switch Hand), ESC (Finish Demo)")
+
+    for demo_idx in range(num_demos):
+        print(f"\n=== Recording Demo {demo_idx + 1}/{num_demos} ===")
+        
+        obs, _ = env.reset()
+        planner.reset(obs['ee_poses'], obs['link_poses'])
+        
+        # Episode storage
+        episode_obs = {
+            'ee_poses': [],
+            'link_poses': [],
+            'external_wrenches': [],
+            'images': [] # Optional: if pixels obs_type used
+        }
+        episode_actions = [] # Desired poses
+        
+        step_count = 0
+        done = False
+        
+        while not done and step_count < max_steps:
+            # 1. Handle Pygame Events (Keyboard)
+            events = pygame.event.get()
+            keys = pygame.key.get_pressed()
+            
+            # Quit check
+            for event in events:
+                if event.type == pygame.QUIT:
+                    print("Collection aborted.")
+                    return
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        done = True # Finish this episode manually
+                    elif event.key == pygame.K_1:
+                        planner.config.controlled_gripper = "left"
+                        print("Controlling Left Gripper")
+                    elif event.key == pygame.K_2:
+                        planner.config.controlled_gripper = "right"
+                        print("Controlling Right Gripper")
+
+            # 2. Get High-Level Action (Desired Poses) from Teleop Planner
+            # Note: planner expects dict {keycode: bool} for keys usually, but process_keyboard_input uses internal map
+            # Let's construct the key map expected by the planner
+            key_map = {
+                pygame.K_UP: keys[pygame.K_UP],
+                pygame.K_DOWN: keys[pygame.K_DOWN],
+                pygame.K_LEFT: keys[pygame.K_LEFT],
+                pygame.K_RIGHT: keys[pygame.K_RIGHT],
+                pygame.K_q: keys[pygame.K_q],
+                pygame.K_w: keys[pygame.K_w],
+                pygame.K_a: keys[pygame.K_a],
+                pygame.K_d: keys[pygame.K_d],
+            }
+            
+            hl_action = planner.get_action(
+                keyboard_events=key_map,
+                current_ee_poses=obs['ee_poses'],
+                current_link_poses=obs['link_poses'],
+                current_ee_velocities=obs['ee_twists'], # Note: using spatial twist here
+                current_link_velocities=None # Optional
+            )
+            
+            desired_poses = hl_action['desired_poses'] # (2, 3)
+            
+            # 3. Get Low-Level Action (Wrenches) from Controller
+            # Desired velocity is also available from planner for feedforward D term
+            desired_velocities = hl_action['desired_velocities']
+            
+            wrenches = controller.compute_control(
+                current_poses=obs['ee_poses'],
+                current_velocities=obs['ee_twists'],
+                desired_poses=desired_poses,
+                desired_velocities=desired_velocities
+            )
+            
+            # 4. Step Environment
+            next_obs, _, terminated, truncated, _ = env.step(wrenches)
+            
+            # 5. Record Data (s_t, a_t) -> We record OBSERVATION and HIGH-LEVEL ACTION (Desired Pose)
+            # Ideally we record the observation used to generate the action
+            episode_obs['ee_poses'].append(obs['ee_poses'])
+            episode_obs['link_poses'].append(obs['link_poses'])
+            episode_obs['external_wrenches'].append(obs['external_wrenches'])
+            episode_actions.append(desired_poses)
+            
+            obs = next_obs
+            step_count += 1
+            
+            if terminated or truncated:
+                done = True
+                
+            # Render
+            env.render()
+            
+        # End of episode
+        print(f"Episode finished. Steps: {step_count}")
+        
+        if step_count > 10: # Only save meaningful episodes
+            all_demos.append({
+                'obs': episode_obs,
+                'action': np.array(episode_actions)
+            })
+        else:
+            print("Episode too short, discarding.")
+            
+    # Save to HDF5
+    print(f"\nSaving {len(all_demos)} demos to {output_path}...")
+    with h5py.File(output_path, 'w') as f:
+        # Metadata
+        f.attrs['env_name'] = 'BiArtEnv'
+        f.attrs['num_demos'] = len(all_demos)
+        
+        for i, demo in enumerate(all_demos):
+            g = f.create_group(f'demo_{i}')
+            
+            # Observations group
+            obs_g = g.create_group('obs')
+            obs_g.create_dataset('ee_poses', data=np.array(demo['obs']['ee_poses']))
+            obs_g.create_dataset('link_poses', data=np.array(demo['obs']['link_poses']))
+            obs_g.create_dataset('external_wrenches', data=np.array(demo['obs']['external_wrenches']))
+            
+            # Actions dataset (Desired Poses)
+            g.create_dataset('action', data=demo['action'])
+            
+            # Length
+            g.attrs['num_samples'] = len(demo['action'])
+            
+    env.close()
+    print("Done.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=str, default='data/teleop_demos.h5')
+    parser.add_argument('--num_demos', type=int, default=5)
+    args = parser.parse_args()
+    
+    collect_demos(args.output, args.num_demos)
+

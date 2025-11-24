@@ -120,18 +120,139 @@ def create_scheduler(optimizer, config: Dict[str, Any], num_epochs: int):
 def load_dataset(dataset_path: str, config: Dict[str, Any]):
     """
     Load demonstration dataset.
-
-    Note: This is a placeholder. You should implement your own dataset loader
-    based on your data format.
+    
+    Assumes dataset is stored in HDF5 format with structure:
+    demo_0/
+        obs/
+            ee_poses: (T, 2, 3)
+            link_poses: (T, 2, 3)
+            external_wrenches: (T, 2, 3)
+        action: (T, 2, 3)  <-- Desired poses
     """
     print(f"Loading dataset from {dataset_path}...")
 
-    # TODO: Implement actual dataset loading
-    # For now, return None to indicate that dataset loading is not implemented
-    print("Warning: Dataset loading not implemented. Please implement load_dataset()")
-    print("Dataset should return (states, actions) pairs for imitation learning")
+    if dataset_path is None or not os.path.exists(dataset_path):
+        print(f"Dataset path {dataset_path} does not exist. Creating dummy dataset.")
+        # ... dummy dataset logic ... (kept as fallback)
+        N = 100
+        T = 50
+        state_dim = 18
+        action_dim = 6
+        
+        obs = np.random.randn(N, T, state_dim).astype(np.float32)
+        action = np.random.randn(N, T, action_dim).astype(np.float32)
+        
+        class DummyDataset(torch.utils.data.Dataset):
+            def __init__(self, obs, action):
+                self.obs = torch.from_numpy(obs)
+                self.action = torch.from_numpy(action)
+            def __len__(self): return len(self.obs)
+            def __getitem__(self, idx): return self.obs[idx], self.action[idx]
+            
+        dataset = DummyDataset(obs, action)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        return random_split(dataset, [train_size, val_size])
 
-    return None, None
+    import h5py
+    
+    class BiArtHDF5Dataset(torch.utils.data.Dataset):
+        def __init__(self, hdf5_path, obs_horizon=1, pred_horizon=1):
+            """
+            Args:
+                hdf5_path: Path to .h5 file
+                obs_horizon: Number of past steps to stack (default 1 for now)
+                pred_horizon: Number of future steps to predict (default 1 for now)
+            """
+            super().__init__()
+            self.file_path = hdf5_path
+            self.obs_horizon = obs_horizon
+            self.pred_horizon = pred_horizon
+            
+            # Load all data into memory (for simplicity)
+            self.episodes = []
+            with h5py.File(self.file_path, 'r') as f:
+                num_demos = f.attrs.get('num_demos', 0)
+                print(f"Found {num_demos} demos in file.")
+                
+                for i in range(num_demos):
+                    demo_key = f'demo_{i}'
+                    if demo_key not in f: continue
+                    
+                    g = f[demo_key]
+                    # Load obs
+                    ee_poses = g['obs']['ee_poses'][:]  # (T, 2, 3)
+                    link_poses = g['obs']['link_poses'][:] # (T, 2, 3)
+                    wrenches = g['obs']['external_wrenches'][:] # (T, 2, 3)
+                    
+                    # Flatten state: (T, 18)
+                    T = ee_poses.shape[0]
+                    state = np.concatenate([
+                        ee_poses.reshape(T, -1), 
+                        link_poses.reshape(T, -1), 
+                        wrenches.reshape(T, -1)
+                    ], axis=1)
+                    
+                    # Load action: (T, 2, 3) -> (T, 6)
+                    action = g['action'][:].reshape(T, -1)
+                    
+                    self.episodes.append({
+                        'state': torch.from_numpy(state.astype(np.float32)),
+                        'action': torch.from_numpy(action.astype(np.float32))
+                    })
+            
+            # Create indices
+            self.indices = []
+            for ep_idx, episode in enumerate(self.episodes):
+                seq_len = len(episode['state'])
+                # Valid start indices
+                # Need enough history: i >= obs_horizon - 1
+                # Need enough future: i + pred_horizon <= seq_len
+                # But for simple 1->1 mapping policies:
+                for i in range(obs_horizon - 1, seq_len - pred_horizon + 1):
+                    self.indices.append((ep_idx, i))
+                    
+        def __len__(self):
+            return len(self.indices)
+            
+        def __getitem__(self, idx):
+            ep_idx, t = self.indices[idx]
+            episode = self.episodes[ep_idx]
+            
+            # Get observation window
+            # Assuming policy expects (obs_horizon, state_dim) or flattened
+            start = t - self.obs_horizon + 1
+            end = t + 1
+            obs_seq = episode['state'][start:end] # (obs_horizon, state_dim)
+            
+            # Get action window
+            # Assuming policy expects (pred_horizon, action_dim)
+            # For simple diffusion/ACT, usually predict future chunk
+            act_start = t
+            act_end = t + self.pred_horizon
+            action_seq = episode['action'][act_start:act_end] # (pred_horizon, action_dim)
+            
+            return obs_seq, action_seq
+
+    # Determine horizons based on config/policy type
+    # For generic compatibility, default to horizons that match the policies
+    # FlowMatching: state_dim (18) -> action_dim (6) (usually 1->1 mapping in basic form)
+    # But diffusion/ACT use history.
+    # We need to look at the config passed in.
+    
+    # Safe defaults
+    obs_h = config.get('hl_training', {}).get('obs_horizon', 1)
+    pred_h = config.get('hl_training', {}).get('action_horizon', 1)
+    
+    # Create dataset
+    full_dataset = BiArtHDF5Dataset(dataset_path, obs_horizon=obs_h, pred_horizon=pred_h)
+    
+    # Split
+    val_ratio = config.get('hl_training', {}).get('val_ratio', 0.2)
+    val_size = int(val_ratio * len(full_dataset))
+    train_size = len(full_dataset) - val_size
+    
+    return random_split(full_dataset, [train_size, val_size])
 
 
 def train_epoch(

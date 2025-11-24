@@ -119,7 +119,9 @@ class ParallelGripper:
         ]
         left_jaw_inertia = pymunk.moment_for_poly(jaw_mass, left_jaw_verts)
         self.left_jaw = pymunk.Body(jaw_mass, left_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
-        self.left_jaw.position = self.base_body.local_to_world((-max_opening/4, base_height/2))
+        # Initial opening: 60% of max opening to ensure object can be grasped
+        initial_half_opening = max_opening * 0.3
+        self.left_jaw.position = self.base_body.local_to_world((-initial_half_opening, base_height/2))
         self.left_jaw.angle = angle
 
         left_jaw_shape = pymunk.Poly(self.left_jaw, left_jaw_verts)
@@ -134,7 +136,7 @@ class ParallelGripper:
         right_jaw_verts = left_jaw_verts
         right_jaw_inertia = pymunk.moment_for_poly(jaw_mass, right_jaw_verts)
         self.right_jaw = pymunk.Body(jaw_mass, right_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
-        self.right_jaw.position = self.base_body.local_to_world((max_opening/4, base_height/2))
+        self.right_jaw.position = self.base_body.local_to_world((initial_half_opening, base_height/2))
         self.right_jaw.angle = angle
 
         right_jaw_shape = pymunk.Poly(self.right_jaw, right_jaw_verts)
@@ -166,13 +168,13 @@ class ParallelGripper:
         space.add(self.right_joint)
 
         # Rotation constraint for jaws
-        left_rotation = pymunk.GearJoint(self.base_body, self.left_jaw, 0, 1)
-        left_rotation.max_force = 1e10
-        space.add(left_rotation)
+        self.left_rotation = pymunk.GearJoint(self.base_body, self.left_jaw, 0, 1)
+        self.left_rotation.max_force = 1e10
+        space.add(self.left_rotation)
 
-        right_rotation = pymunk.GearJoint(self.base_body, self.right_jaw, 0, 1)
-        right_rotation.max_force = 1e10
-        space.add(right_rotation)
+        self.right_rotation = pymunk.GearJoint(self.base_body, self.right_jaw, 0, 1)
+        self.right_rotation.max_force = 1e10
+        space.add(self.right_rotation)
 
         # External wrench tracking
         # Following Modern Robotics convention: [tau, fx, fy]
@@ -383,6 +385,8 @@ class EndEffectorManager:
             self.space.remove(gripper.right_jaw)
             self.space.remove(gripper.left_joint)
             self.space.remove(gripper.right_joint)
+            self.space.remove(gripper.left_rotation)
+            self.space.remove(gripper.right_rotation)
 
         self.grippers = []
 
@@ -423,22 +427,26 @@ class EndEffectorManager:
             impulse = Vec2d(contact.normal.x, contact.normal.y) * contact.normal_impulse
             contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
 
-            # Determine which gripper and which body this belongs to
-            for gripper in self.grippers:
-                contact_body = None
-
-                # Identify which body the contact occurred on
-                if arbiter.shapes[0].body == gripper.base_body:
-                    contact_body = gripper.base_body
-                elif arbiter.shapes[0].body == gripper.left_jaw:
-                    contact_body = gripper.left_jaw
-                elif arbiter.shapes[0].body == gripper.right_jaw:
-                    contact_body = gripper.right_jaw
-
-                if contact_body is not None:
-                    # Record contact with body information
-                    gripper.add_contact_impulse(impulse, contact_point, contact_body)
-                    break
+            # Check both shapes involved in collision
+            for shape in arbiter.shapes:
+                contact_body = shape.body
+                
+                # Determine if this body belongs to any gripper
+                for gripper in self.grippers:
+                    gripper_part = None
+                    
+                    if contact_body == gripper.base_body:
+                        gripper_part = gripper.base_body
+                    elif contact_body == gripper.left_jaw:
+                        gripper_part = gripper.left_jaw
+                    elif contact_body == gripper.right_jaw:
+                        gripper_part = gripper.right_jaw
+                    
+                    if gripper_part is not None:
+                        # Record contact with body information
+                        gripper.add_contact_impulse(impulse, contact_point, gripper_part)
+                        # Found the gripper for this shape, move to next shape
+                        break
 
         return True
 

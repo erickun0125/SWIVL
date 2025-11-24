@@ -136,7 +136,9 @@ class SE2ScrewDecomposedImpedanceController:
         S_norm_sq = self.screw_norm_sq
 
         # Parallel projection: P_∥ = (S S^T) / (S^T S)
-        self.P_parallel = np.outer(S, S) / S_norm_sq
+        # Add epsilon to avoid division by zero
+        epsilon = 1e-10
+        self.P_parallel = np.outer(S, S) / (S_norm_sq + epsilon)
 
         # Perpendicular projection: P_⊥ = I - P_∥
         self.P_perpendicular = np.eye(3) - self.P_parallel
@@ -169,7 +171,8 @@ class SE2ScrewDecomposedImpedanceController:
             v_perp: Perpendicular component [3,]
         """
         # Scalar coordinate: θ = (v^T S) / (S^T S)
-        theta = np.dot(v, self.screw_axis) / self.screw_norm_sq
+        epsilon = 1e-10
+        theta = np.dot(v, self.screw_axis) / (self.screw_norm_sq + epsilon)
 
         # Parallel component: v_∥ = θ S
         v_parallel = theta * self.screw_axis

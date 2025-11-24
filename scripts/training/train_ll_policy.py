@@ -37,7 +37,10 @@ import torch
 import yaml
 
 # Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+current_file_path = os.path.abspath(__file__)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.rl_policy.impedance_learning_env import ImpedanceLearningEnv, ImpedanceLearningConfig
 from src.rl_policy.ppo_impedance_policy import PPOImpedancePolicy
@@ -48,6 +51,17 @@ from src.hl_planners.act import ACTPolicy
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""
+    # Convert to absolute path if needed
+    if not os.path.isabs(config_path):
+        # Assume relative to project root
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+        config_path = os.path.join(base_dir, config_path)
+    
+    if not os.path.exists(config_path):
+        # Create default config if not exists
+        print(f"Config file {config_path} not found. Using default configuration.")
+        return {}
+        
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
