@@ -1,0 +1,188 @@
+% Appendix: SE(3) and SE(2) Trajectory Interpolation
+\section{SE(3) and SE(2) Trajectory Interpolation}
+\label{app:trajectory_interpolation}
+
+This section describes trajectory smoothing methods for both SE(3) and SE(2) formulations. The high-level policy generates discrete waypoints at low frequency, while the low-level policy requires smooth, dense trajectories at high frequency.
+
+\subsection{SE(3) Trajectory Interpolation}
+
+\subsubsection{Rotation Representation Pipeline}
+
+While the neural network uses \textbf{rotation\_6d} representation for training stability and continuity, trajectory interpolation requires conversion to quaternions for SLERP:
+
+$$
+\text{rotation\_6d} \xrightarrow{\text{inverse transform}} \text{quaternion} \xrightarrow{\text{SLERP}} \text{interpolated trajectory}
+$$
+
+This conversion ensures proper handling of rotation manifold geometry while maintaining computational efficiency.
+
+\subsubsection{Geodesic Interpolation}
+
+Given discrete waypoints $\lbrace T_{si}^{des}[\tau_k] \rbrace_{k=0}^{H}$ at times $\lbrace t_k \rbrace_{k=0}^{H}$, we construct a smooth trajectory $T_{si}^{des}(t)$ using SE(3) geodesics. For $t \in [t_k, t_{k+1}]$, the interpolated transformation is:
+
+$$
+T_{si}^{des}(t) = T_{si}^{des}[\tau_k] \exp\left(\alpha(t) \log\left(T_{si}^{des}[\tau_k]^{-1} T_{si}^{des}[\tau_{k+1}]\right)\right),
+$$
+
+where $\alpha(t) \in [0,1]$ is a smooth interpolation parameter. To ensure $C^1$ continuity in velocity, we use cubic interpolation:
+
+$$
+\alpha(t) = 3s^2 - 2s^3, \quad s = \frac{t - t_k}{t_{k+1} - t_k}.
+$$
+
+This formulation provides the shortest path on SE(3) between consecutive waypoints while maintaining smooth velocity profiles. However, it requires matrix exponential/logarithm operations and may encounter numerical instability for small rotations.
+
+\subsubsection{Decoupled Interpolation (Recommended)}
+
+A more practical approach decouples translation and rotation, offering numerical stability and independent velocity constraints:
+
+\textbf{Translation:} For position $\mathbf{p}_{si}(t) \in \mathbb{R}^3$, we support two interpolation schemes:
+
+\textit{Linear Interpolation} (computationally efficient):
+$$
+\mathbf{p}_{si}(t) = \mathbf{p}_{si}[\tau_k] + s \cdot (\mathbf{p}_{si}[\tau_{k+1}] - \mathbf{p}_{si}[\tau_k]), \quad s = \frac{t - t_k}{t_{k+1} - t_k}
+$$
+
+\textit{Cubic Spline Interpolation} (smoother velocity profiles):
+$$
+\mathbf{p}_{si}(t) = \mathbf{a}_3 s^3 + \mathbf{a}_2 s^2 + \mathbf{a}_1 s + \mathbf{a}_0,
+$$
+
+where coefficients $\lbrace \mathbf{a}_j \rbrace$ are determined by boundary conditions (positions and velocities at waypoints).
+
+\textbf{Rotation:} Use Spherical Linear Interpolation (SLERP) for quaternions $\mathbf{q}_{si}(t)$:
+
+$$
+\mathbf{q}_{si}(t) = \mathbf{q}_{si}[\tau_k] \left(\mathbf{q}_{si}[\tau_k]^{-1} \mathbf{q}_{si}[\tau_{k+1}]\right)^{\alpha(t)},
+$$
+
+where:
+\begin{itemize}
+\item Quaternion exponentiation is defined via the exponential map on SO(3)
+\item $\alpha(t) = s$ for linear SLERP, or $\alpha(t) = 3s^2 - 2s^3$ for cubic smoothing
+\item SLERP ensures geodesic path (shortest rotation) on the SO(3) manifold
+\item Preserves unit norm: $\|\mathbf{q}_{si}(t)\| = 1$ for all $t$
+\item Numerically stable for all rotation magnitudes
+\end{itemize}
+
+\textbf{Combined Transformation:} Construct $T_{si}^{des}(t)$ from $\mathbf{p}_{si}(t)$ and $R_{si}(t) = \text{quat2mat}(\mathbf{q}_{si}(t))$:
+
+$$
+T_{si}^{des}(t) = \begin{bmatrix} R_{si}(t) & \mathbf{p}_{si}(t) \\ \mathbf{0}^\top & 1 \end{bmatrix} \in \text{SE}(3).
+$$
+
+\subsubsection{Distance Metrics and Velocity Constraints}
+
+For trajectory planning with kinematic limits, we define SE(3) distance as decoupled metrics:
+
+\textbf{Position Distance:}
+$$
+d_{\text{pos}}(\mathbf{p}_1, \mathbf{p}_2) = \|\mathbf{p}_2 - \mathbf{p}_1\|_2 \quad \text{(meters)}
+$$
+
+\textbf{Rotation Distance:}
+$$
+d_{\text{rot}}(\mathbf{q}_1, \mathbf{q}_2) = \left\|(\mathbf{q}_2 \mathbf{q}_1^{-1})\right\|_{\text{angle}} \quad \text{(radians)}
+$$
+
+where $\|\mathbf{q}\|_{\text{angle}}$ denotes the rotation angle magnitude of quaternion $\mathbf{q}$.
+
+When adding waypoints with velocity constraints, compute minimum duration:
+
+$$
+\Delta t_{\min} = \max\left(\frac{d_{\text{pos}}}{v_{\max}}, \frac{d_{\text{rot}}}{\omega_{\max}}\right),
+$$
+
+where $v_{\max}$ is maximum linear velocity (m/s) and $\omega_{\max}$ is maximum angular velocity (rad/s). This ensures both translation and rotation constraints are satisfied simultaneously.
+
+\subsubsection{Implementation Notes}
+
+\begin{itemize}
+\item \textbf{Frequency:} High-Level Policy generates waypoints at $f_{HL} = 5$ Hz (action chunks of $H = 10$ steps); Low-Level Policy requires trajectories at $f_{LL} = 50$ Hz, requiring interpolation ratio $f_{LL}/f_{HL} = 10$.
+\item \textbf{Horizon:} For action chunks of $H = 10$ waypoints, the smoothed trajectory contains $H_{LL} = H \cdot (f_{LL}/f_{HL}) = 100$ samples.
+\item \textbf{Time Clipping:} Queries outside $[t_0, t_H]$ are clipped to boundary values.
+\item \textbf{Numerical Stability:} SLERP handles all rotation magnitudes robustly, including near-identity rotations, avoiding singularities present in matrix logarithm approaches.
+\end{itemize}
+
+\subsubsection{Comparison: Coupled vs. Decoupled Approaches}
+
+\textbf{Coupled SE(3) Geodesic:}
+\begin{itemize}
+\item True geodesic on SE(3) manifold with mathematically elegant formulation
+\item Requires computationally expensive matrix exponential/logarithm
+\item Numerical instability for small rotations (log singularity)
+\item Cannot independently constrain translation/rotation velocities
+\end{itemize}
+
+\textbf{Decoupled Interpolation:}
+\begin{itemize}
+\item Numerically stable and computationally efficient
+\item Independent velocity constraints for translation and rotation
+\item Flexible interpolation schemes (linear, cubic, etc.)
+\item Geodesic on SO(3) subgroup (though not on full SE(3))
+\item Widely adopted in practical robotic applications
+\end{itemize}
+
+\subsection{SE(2) Trajectory Smoothing}
+
+For planar manipulation tasks, trajectory smoothing is simplified to 2D.
+
+\subsubsection{Planar Position Interpolation}
+
+Given discrete waypoints $\{T_{si}^{des}[\tau]\}_{\tau=0}^H = \{(x[\tau], y[\tau], \theta[\tau])\}_{\tau=0}^H$ from the high-level planner at 10 Hz, we generate dense trajectories at 50 Hz (Low-Level Policy frequency).
+
+\textbf{Position Interpolation:}
+Cubic spline interpolation through position waypoints $(x[\tau], y[\tau])$:
+
+$$
+\begin{bmatrix} x(t) \\ y(t) \end{bmatrix} = \sum_{j=0}^{3} a_j s^j, \quad s = \frac{t - t_k}{t_{k+1} - t_k}
+$$
+
+where coefficients $\{a_j\}$ satisfy boundary conditions (positions and velocities at waypoints).
+
+\subsubsection{Planar Orientation Interpolation}
+
+Circular interpolation on SO(2) ensuring shortest path:
+
+$$
+\theta(t) = \theta_k + \text{wrap}(\theta_{k+1} - \theta_k) \cdot \phi(s)
+$$
+
+where:
+\begin{itemize}
+\item $\phi(s) = 3s^2 - 2s^3$ (cubic smoothing for $C^1$ continuity)
+\item $\text{wrap}(\Delta\theta) = \text{atan2}(\sin\Delta\theta, \cos\Delta\theta)$ ensures $|\Delta\theta| \leq \pi$ (shortest angular path)
+\end{itemize}
+
+\subsubsection{Body Twist Computation}
+
+From smooth trajectory $T_{si}^{des}(t)$, compute desired body twist via time differentiation:
+
+$$
+\mathcal{V}_i^{des}(t) = \begin{bmatrix} \dot{\theta}(t) \\ \dot{x}(t)\cos\theta(t) + \dot{y}(t)\sin\theta(t) \\ -\dot{x}(t)\sin\theta(t) + \dot{y}(t)\cos\theta(t) \end{bmatrix} \in \mathbb{R}^3
+$$
+
+This formulation transforms spatial velocities $(\dot{x}, \dot{y})$ into the body frame using the current orientation $\theta(t)$.
+
+\subsubsection{Implementation Details}
+
+\textbf{Frequency Matching:}
+\begin{itemize}
+\item High-level planner: 10 Hz (10 waypoints per chunk)
+\item Low-level policy: 50 Hz (100 interpolated poses per chunk)
+\item Interpolation ratio: 5× upsampling
+\end{itemize}
+
+\textbf{Smoothness Guarantees:}
+\begin{itemize}
+\item Position: $C^2$ continuous (cubic splines)
+\item Orientation: $C^1$ continuous (cubic blending function)
+\item Velocity: $C^0$ continuous at waypoints
+\end{itemize}
+
+\textbf{Edge Cases:}
+\begin{itemize}
+\item \textbf{Orientation wrapping:} Handle $\theta$ discontinuities at $\pm\pi$ using atan2
+\item \textbf{Zero velocity waypoints:} Use natural spline boundary conditions
+\item \textbf{Stationary goals:} Exponential decay to final pose or zero-velocity boundary condition
+\end{itemize}

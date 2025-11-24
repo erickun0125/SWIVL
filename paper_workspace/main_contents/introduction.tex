@@ -1,0 +1,66 @@
+% Introduction
+\section{Introduction}
+\label{sec:introduction}
+
+Learning-based robotic manipulation has achieved strong performance in single-arm settings, particularly for structured pick-and-place tasks learned via demonstration. However, extending such approaches to \textbf{dual-arm manipulation of an articulated object} remains challenging. Coordinated bimanual interaction induces rich \textbf{inter-arm force coupling} and must satisfy complex \textbf{object-centric kinematic constraints}. Existing Learning-from-Demonstration (LfD) frameworks---typically grounded in high-stiffness position control with no explicit representation of object kinematics---often generate unstable motions and large internal forces when multiple arms physically interact with a shared object.
+
+\subsection*{Cognitive vs. Physical Intelligence}
+
+To reason about this challenge, we distinguish between two complementary aspects of robot decision-making: \textbf{Cognitive Intelligence} and \textbf{Physical Intelligence}.
+
+\textbf{Cognitive Intelligence} addresses high-level task understanding through semantic reasoning and planning. Modern VLA-based robot foundation models excel at interpreting goals and decomposing instructions via visual-language understanding based on VLM backbones. However, language operates as an abstracted symbolic representation that lacks the resolution needed for precise physical interaction---making it difficult to specify fine-grained motor commands for contact-rich manipulation such as force modulation or coordinated compliance control.
+
+\textbf{Physical Intelligence}, in contrast, ensures safe and stable execution through explicit modeling of dynamics and kinematic principles. This includes regulating contact forces, satisfying geometric constraints, and generating smooth, dynamically consistent motions---critical requirements for force-coupled bimanual manipulation.
+
+Most existing work advances on Cognitive Intelligence through robot foundation models that leverage broad cross-embodiment datasets for rich semantic understanding. However, cross-embodiment training makes it difficult to standardize low-level physical signals---such as end-effector wrench feedback, reference frame definitions, and kinematic constraints---due to varying sensor types and frame conventions across robots. Consequently, foundation models lack explicit access to such information, limiting their ability to reason about contact forces, enforce geometric constraints, or maintain stable cooperative interaction during manipulation.
+
+Moreover, imitation-driven paradigms are well-suited for learning human-like task schemas, but low-level control in physically constrained environments requires instinctive, dynamically consistent behavior, which we find is better realized through reinforcement learning rather than imitation learning.
+
+This mismatch motivates methods that \textbf{bridge high-level cognitive policies to low-level physically grounded control}.
+
+\subsection*{Problem Focus and Scope}
+
+To this end, we focus on developing a low-level control stack for bimanual manipulation of an articulated object. Our formulation assumes access to (1) 6-axis wrench measurements at each end-effector via wrist-mounted force/torque sensors, and (2) screw axes of an articulated object. While not all manipulation scenarios provide such information, structured domains---including repetitive assembly, industrial workflows, and environments with perception modules (e.g., screw-splatting for axis extraction from point clouds)---reasonably support these assumptions.
+
+In this setting, high-level planners (behavior-cloned policies, teleoperation, or VLA) provide motion intentions as desired end-effector poses, without explicitly reasoning about object's physical information or inter-arm force interactions. Conventional high-stiffness position controllers that directly track these desired poses generate excessive contact forces and constraint violations when manipulating articulated objects, as they lack mechanisms to accommodate unforeseen contact dynamics or kinematic restrictions. This creates a fundamental challenge: translating high-level guidance into physically feasible bimanual coordination that simultaneously maintains kinematic consistency and suppresses harmful internal forces while ensuring compliant interaction in task space. 
+
+To address these problems, we require a control framework that satisfies four key requirements:
+
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{Dense, closed-loop reference generation}: Transform sparse, open-loop waypoints from high-level planners into continuous, feedback-driven reference trajectories that provide corrective guidance when the system deviates from desired paths.
+    
+    \item \textbf{Kinematic constraint satisfaction}: Ensure commanded motions respect the object's joint structure, preventing physically infeasible trajectories that violate holonomic constraints and cause grasp slippage or internal stress.
+    
+    \item \textbf{Screw-decomposed compliance modulation}: Enable independent impedance control for internal motion (joint articulation) versus bulk motion (overall transport), allowing task-appropriate compliance without manual tuning across the entire SE(3) manifold.
+    
+    \item \textbf{Wrench-feedback force regulation}: Identify and actively minimize non-productive internal wrenches arising from coordination errors, while maintaining necessary productive forces for manipulation.
+\end{enumerate}
+
+
+\subsection*{Our Approach: SWIVL}
+
+To address these requirements, we introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning), a \textbf{task-agnostic low-level control stack for bimanual manipulation of articulated objects} that operationalizes Physical Intelligence through explicit modeling of object kinematics and wrench feedback.
+
+SWIVL consists of three key learned components that directly address the four requirements above: (1) a \textbf{Reference Motion Field Generator} that transforms discrete high-level waypoints into dense, stable vector fields with corrective feedback (Requirement 1), (2) a \textbf{Screw-decomposed Impedance Controller} that structurally enforces kinematic constraints through orthogonal motion decomposition (Requirements 2 \& 3), and (3) a \textbf{Reinforcement Learning Policy} trained to modulate impedance variables based on object geometry and wrench feedback, minimizing internal forces while ensuring compliant manipulation (Requirements 3 \& 4).
+
+This policy is trained via \textbf{Reinforcement Learning}, which enables the agent to autonomously discover force-compliant behaviors by directly optimizing physical objectives---such as minimizing internal forces and satisfying kinematic constraints---through environmental interaction, rather than merely replicating demonstrated trajectories. By translating high-level trajectories into a \textbf{Reference Motion Field}, SWIVL allows cognitive planners to remain expressive while ensuring safety and compliance during manipulation, making it possible to operate underneath arbitrary high-level cognitive planners with any high-level task objectives.
+
+We construct the methodology of SWIVL on SE(3) that is the task space of manipulation task. Also, we evaluate SWIVL on SE(2) planar benchmark environment designed to isolate the core challenges of force coupling and constraint satisfaction. Our SE(2) experiments on bimanual manipulation tasks involving rigid transport, articulated object rotation, and insertion demonstrate that SWIVL: improves success rates, reduces inter-arm internal forces, and generalizes across planners, task objectives, and object geometries---outperforming LfD-based baselines. These results demonstrate that \textbf{physics-aware learning} is essential for robust cooperative manipulation and enables seamless integration with arbitrary high-level planners without task-specific retraining.
+
+\subsection*{Contributions}
+
+This work makes the following contributions:
+
+\begin{enumerate}
+    \item \textbf{Stable Imitation Vector Field}: We propose a temporally-indexed contraction field that provides $O(1)$ reference motion generation with guaranteed exponential convergence, enabling real-time bimanual coordination at 50Hz. It enables decoupling of high-level planning from low-level force-compliant execution.
+
+    \item \textbf{Screw-Decomposed Impedance Control}: We formulate an SE(3) impedance controller with orthogonal motion decomposition that structurally enforces kinematic constraints while enabling independent compliance modulation for bulk versus internal motion, addressing fundamental geometric limitations of classical SE(3) impedance control.
+
+    \item \textbf{Task-Agnostic RL Framework}: We introduce a reinforcement learning framework that learns adaptive impedance modulation conditioned on object geometry and wrench feedback, enabling generalization across joint types, task objectives, and novel object geometries without task-specific retraining.
+
+    \item \textbf{Object-Conditioned Policy Architecture}: We design a FiLM-conditioned neural network that injects object kinematic structure into all feature processing stages, enabling constraint-aware representation learning for articulated object manipulation.
+
+    \item \textbf{Comprehensive Evaluation Framework}: We establish a systematic SE(2) benchmark with controlled ablation studies, demonstrating the necessity of explicit physical modeling for robust bimanual manipulation (pending experimental validation).
+\end{enumerate}
+
+Overall, our work provides a principled framework toward dual-arm robotic systems for force-compliant articulated object manipulation.

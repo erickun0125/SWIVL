@@ -1,0 +1,453 @@
+% Appendix: SWIVL Instantiation in SE(2)
+\section{SWIVL Instantiation in SE(2)}
+\label{app:se2}
+
+While the SWIVL framework presented in Section~\ref{sec:method} is formulated for general bimanual manipulation of $k$-DoF articulated objects in SE(3), our experimental evaluation in Section~\ref{sec:experiments} focuses on SE(2) planar tasks with a \\textbf{single internal joint} ($k = 1$). This design choice allows systematic study of force coupling and constraint satisfaction while controlling for the additional complexity of full 3D manipulation. Here we detail how the SE(3) formulation naturally reduces to SE(2) in this 1-DoF setting and how each component of SWIVL is instantiated.
+
+\subsection{SE(2) Geometric Formulation (1-DoF Object)}
+
+\subsubsection{Configuration Space}
+
+In SE(2), poses are represented as $(x, y, \theta) \in \mathbb{R}^2 \times SO(2)$, where $(x, y)$ is planar position and $\theta$ is orientation around the vertical z-axis. The homogeneous transformation matrix:
+
+\[
+T \in SE(2): \quad T = \begin{bmatrix} \cos\theta & -\sin\theta & x \\ \sin\theta & \cos\theta & y \\ 0 & 0 & 1 \end{bmatrix}
+\]
+
+\subsubsection{Twist Space}
+
+The Lie algebra $\mathfrak{se}(2)$ consists of planar twists:
+
+\[
+\mathcal{V} = \begin{bmatrix} \omega_z \\ v_x \\ v_y \end{bmatrix} \in \mathbb{R}^3
+\]
+
+where $\omega_z \in \mathbb{R}$ is angular velocity around z-axis and $(v_x, v_y) \in \mathbb{R}^2$ is linear velocity in the plane.
+
+\subsubsection{Screw Axis in SE(2)}
+
+For planar articulated objects with a \\textbf{single kinematic joint}, the screw axis $\mathcal{S} = \begin{bmatrix} s_\omega \\ s_v \end{bmatrix}$ reduces to:
+
+\[
+\mathcal{S} = \begin{bmatrix} s_\omega \\ s_{v,x} \\ s_{v,y} \end{bmatrix} \in \mathbb{R}^3
+\]
+
+\textbf{Joint Type Examples:}
+\begin{itemize}
+\item \textbf{Revolute joint} (rotation around z-axis): $\mathcal{S} = \begin{bmatrix} 1 \\ 0 \\ 0 \end{bmatrix}$ (pure rotation)
+\item \textbf{Prismatic joint} (translation along direction $\hat{d}$): $\mathcal{S} = \begin{bmatrix} 0 \\ d_x \\ d_y \end{bmatrix}$ where $(d_x, d_y)$ defines sliding direction
+\item \textbf{Fixed joint} (rigid transport): $\mathcal{S} = \begin{bmatrix} 0 \\ 0 \\ 0 \end{bmatrix}$ (no relative motion allowed)
+\end{itemize}
+
+In the general SE(3) formulation (Section~\ref{sec:problem_formulation}), the object Jacobian $J_s(\mathbf{q}_{obj}) \in \mathbb{R}^{6 \times k}$ relates internal joint velocities to relative end-effector motion. In our SE(2), 1-DoF setting, this reduces to a single spatial screw axis $\mathcal{S} \in \mathbb{R}^3$ and the kinematic constraint becomes:
+
+$$
+{}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S} \, \dot{q}_{obj}, \quad {}^s\mathcal{V}_i \in \mathbb{R}^3, \quad \mathcal{S} \in \mathbb{R}^3, \quad \dot{q}_{obj} \in \mathbb{R}.
+$$
+
+For each grasp, the corresponding \textbf{body-frame joint screw axes} $\mathcal{B}_l, \mathcal{B}_r \in \mathbb{R}^3$ are obtained by transforming $\mathcal{S}$ into the left and right end-effector frames via the SE(2) adjoint (Appendix~\ref{app:notation}). Because the object has a single joint and grasps remain fixed, these body-frame screw axes are \textbf{constant in time and independent of the joint configuration} $q_{obj}$:
+$$
+\mathcal{B}_i = [Ad_{T_{ib}}] \, {}^b\mathcal{S}, \quad i \in \{l,r\}, \quad \mathcal{B}_i \text{ fixed for a given object}.
+$$
+Thus, the object Jacobians in each body frame collapse to
+$$
+J_l(q_{obj}) = \mathcal{B}_l \in \mathbb{R}^{3 \times 1}, \qquad J_r(q_{obj}) = \mathcal{B}_r \in \mathbb{R}^{3 \times 1},
+$$
+which no longer depend on $q_{obj}$.
+
+\subsubsection{Wrench Space}
+
+Forces and moments in SE(2) are dual to twists:
+
+$$
+\mathcal{F} = \begin{bmatrix} m_z \\ f_x \\ f_y \end{bmatrix} \in \mathbb{R}^3
+$$
+
+where $m_z$ is moment around z-axis and $(f_x, f_y)$ are planar forces.
+
+\subsubsection{Adjoint Representation}
+
+The adjoint transformation for frame changes in SE(2):
+
+$$
+[Ad_T] = \begin{bmatrix}
+1 & 0 & 0 \\
+y & \cos\theta & -\sin\theta \\
+-x & \sin\theta & \cos\theta
+\end{bmatrix} \in \mathbb{R}^{3 \times 3}
+$$
+
+Twist transformation between frames:
+
+$$
+{}^s\mathcal{V} = [Ad_{T_{si}}] \mathcal{V}_i, \quad \mathcal{V}_i = [Ad_{T_{si}^{-1}}] {}^s\mathcal{V}
+$$
+
+\subsection{Reference Motion Field Generator in SE(2)}
+
+\subsubsection{SE(2) Trajectory Smoothing}
+
+Given discrete waypoints $\{T_{si}^{des}[\tau]\}_{\tau=0}^H = \{(x[\tau], y[\tau], \theta[\tau])\}_{\tau=0}^H$ from the high-level planner at 5 Hz, we generate dense trajectories at 50 Hz (Low-Level Policy frequency).
+
+\textbf{Position Interpolation:}
+Cubic spline interpolation through position waypoints $(x[\tau], y[\tau])$:
+
+$$
+\begin{bmatrix} x(t) \\ y(t) \end{bmatrix} = \sum_{j=0}^{3} a_j s^j, \quad s = \frac{t - t_k}{t_{k+1} - t_k}
+$$
+
+where coefficients $\{a_j\}$ satisfy boundary conditions (positions and velocities at waypoints).
+
+\textbf{Orientation Interpolation:}
+Circular interpolation on SO(2) ensuring shortest path:
+
+$$
+\theta(t) = \theta_k + \text{wrap}(\theta_{k+1} - \theta_k) \cdot \phi(s)
+$$
+
+where $\phi(s) = 3s^2 - 2s^3$ (cubic smoothing), and wrap ensures $|\theta_{k+1} - \theta_k| \leq \pi$.
+
+\subsubsection{Body Twist Computation}
+
+From smooth trajectory $T_{si}^{des}(t)$, compute desired body twist via time differentiation:
+
+$$
+\mathcal{V}_i^{des}(t) = \begin{bmatrix} \dot{\theta}(t) \\ \dot{x}(t)\cos\theta(t) + \dot{y}(t)\sin\theta(t) \\ -\dot{x}(t)\sin\theta(t) + \dot{y}(t)\cos\theta(t) \end{bmatrix} \in \mathbb{R}^3
+$$
+
+\subsubsection{Stable Imitation Vector Field}
+
+Following Method Eq.~\eqref{eq:vector_field}, the reference twist combines imitation and stability components:
+
+$$
+\mathcal{V}_i^{\text{ref}}(t, T_{sb_i}) = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\text{des}}(t) + k_{p_i} \mathcal{E}_i
+$$
+
+where $\mathrm{Ad}_T$ denotes the SE(2) adjoint transformation that maps twists between frames. Since the desired twist $\mathcal{V}_i^{\text{des}}(t)$ is computed in the desired frame $\{d_i\}$, we must transform it to the current body frame $\{b_i\}$ where the controller operates. The transformation $T_{b_id_i} = T_{b_is} T_{sd_i} = (T_{sb_i})^{-1} T_{sd_i}$ represents the relative transformation from the desired frame to the current body frame.
+
+For SE(2), the adjoint transformation is:
+
+$$
+\mathrm{Ad}_{T_{b_id_i}} = \begin{bmatrix}
+1 & 0 & 0 \\
+\Delta y & \cos\Delta\theta & -\sin\Delta\theta \\
+-\Delta x & \sin\Delta\theta & \cos\Delta\theta
+\end{bmatrix} \in \mathbb{R}^{3 \times 3}
+$$
+
+where $(\Delta x, \Delta y, \Delta\theta)$ are the components of $T_{b_id_i}$.
+
+The pose error term $\mathcal{E}_i \in \mathbb{R}^3$ is given by:
+
+\textbf{SE(2) Logarithm Map:}
+For pose error $\Delta T = T_{si}^{des}(t^*)^{-1} T_{si}$:
+
+$$
+\left[\log(\Delta T)\right]^\vee = \begin{bmatrix}
+\Delta\theta \\
+\Delta x \cos\theta_{des} + \Delta y \sin\theta_{des} \\
+-\Delta x \sin\theta_{des} + \Delta y \cos\theta_{des}
+\end{bmatrix}
+$$
+
+where $\Delta x = x - x_{des}$, $\Delta y = y - y_{des}$, $\Delta\theta = \text{wrap}(\theta - \theta_{des})$.
+
+\subsection{Bulk-Internal Decomposition via Projection Operators in SE(2)}
+
+Following Method Section 3.2.4, SWIVL uses projection operators based on the learned metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$ to decompose twists into bulk and internal motion components. This approach enables independent impedance modulation for each component.
+
+\subsubsection{Metric Tensor and Inner Product}
+
+The SE(2) inner product on $\mathfrak{se}(2)$ is defined using the metric tensor $G \in \mathbb{R}^{3 \times 3}$:
+
+$$
+\langle \mathcal{V}_1, \mathcal{V}_2 \rangle_G = \mathcal{V}_1^\top G \mathcal{V}_2 = \alpha^2 \omega_{1,z} \omega_{2,z} + v_{1,x} v_{2,x} + v_{1,y} v_{2,y}
+$$
+
+where $\alpha \in \mathbb{R}^+$ is the **learnable characteristic length scale** (part of the RL action space) that weights rotational versus translational components. By learning $\alpha$, the policy discovers task-appropriate notions of orthogonality for separating bulk versus internal motions.
+
+\subsubsection{Projection Operators}
+
+For each end-effector $i \in \{l, r\}$ with constant body-frame screw axis $\mathcal{B}_i \in \mathbb{R}^{3 \times 1}$ (1-DoF object), we construct orthogonal projection operators:
+
+$$
+\begin{aligned}
+P_{i,\parallel} &= \mathcal{B}_i (\mathcal{B}_i^\top G \mathcal{B}_i)^{-1} \mathcal{B}_i^\top G \in \mathbb{R}^{3 \times 3} \quad \text{(project onto internal motion)}, \\
+P_{i,\perp} &= I_3 - P_{i,\parallel} \in \mathbb{R}^{3 \times 3} \quad \text{(project onto bulk motion)}.
+\end{aligned}
+$$
+
+These operators satisfy:
+\begin{itemize}
+\item $P_{i,\parallel}^\top G = G P_{i,\parallel}$ (G-self-adjoint for internal projection)
+\item $P_{i,\perp}^\top G = G P_{i,\perp}$ (G-self-adjoint for bulk projection)
+\item $P_{i,\parallel} + P_{i,\perp} = I_3$ (partition of identity)
+\item $P_{i,\parallel} P_{i,\perp} = 0$ (orthogonal subspaces under G-metric)
+\end{itemize}
+
+\subsubsection{Twist Decomposition}
+
+Given reference body twist $\mathcal{V}_i^{\text{ref}} \in \mathbb{R}^3$, decompose into bulk and internal components:
+
+$$
+\begin{aligned}
+\mathcal{V}_{i,\parallel}^{\text{ref}} &= P_{i,\parallel} \mathcal{V}_i^{\text{ref}} \in \mathbb{R}^3 \quad \text{(internal motion: range of } \mathcal{B}_i \text{)}, \\
+\mathcal{V}_{i,\perp}^{\text{ref}} &= P_{i,\perp} \mathcal{V}_i^{\text{ref}} \in \mathbb{R}^3 \quad \text{(bulk motion: orthogonal complement)}.
+\end{aligned}
+$$
+
+This decomposition satisfies G-orthogonality: $\langle \mathcal{V}_{i,\parallel}^{\text{ref}}, \mathcal{V}_{i,\perp}^{\text{ref}} \rangle_G = 0$.
+
+\textbf{Physical Interpretation:}
+\begin{itemize}
+\item $\mathcal{V}_{i,\parallel}^{\text{ref}}$: Motion component aligned with the object's kinematic constraint (drives joint articulation)
+\item $\mathcal{V}_{i,\perp}^{\text{ref}}$: Motion component orthogonal to constraint (drives overall object transport/reorientation)
+\end{itemize}
+
+The Low-Level Policy receives both the full reference twists $\{\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}}\}$ and their decomposed components, enabling it to learn task semantics from trajectory structure.
+
+\subsubsection{Wrench Decomposition}
+
+By duality, wrenches decompose using transposed projection operators. For measured wrench $\mathcal{F}_i \in \mathbb{R}^3$:
+
+$$
+\begin{aligned}
+\mathcal{F}_{i,\parallel} &= P_{i,\parallel}^\top \mathcal{F}_i \in \mathbb{R}^3 \quad \text{(productive wrench)}, \\
+\mathcal{F}_{i,\perp} &= P_{i,\perp}^\top \mathcal{F}_i \in \mathbb{R}^3 \quad \text{(internal wrench)}.
+\end{aligned}
+$$
+
+Internal wrench $\mathcal{F}_{i,\perp}$ represents non-productive contact forces that stress the grasp without contributing to joint motion. The RL reward explicitly penalizes $\|\mathcal{F}_{i,\perp}\|_2^2$ to minimize harmful internal forces (Section 3.3.2).
+
+\textbf{Output Summary:}
+The Reference Motion Field Generator produces at each timestep (50 Hz):
+
+$$
+\{\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}}, \mathcal{B}_l, \mathcal{B}_r\}
+$$
+
+where individual reference twists $\mathcal{V}_i^{\text{ref}} = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\text{des}} + k_{p_i} \mathcal{E}_i$ are computed from the stable imitation vector field (Eq.~\eqref{eq:vector_field} in Method Section 3.2.2). The Low-Level Policy applies projection operators $P_{i,\parallel}$ and $P_{i,\perp}$ (parameterized by learned $\alpha$) to decompose these into bulk and internal components. Constant screw axes $\mathcal{B}_l, \mathcal{B}_r$ encode the 1-DoF constraint structure.
+
+\subsection{Low-Level Policy Architecture for SE(2)}
+
+\subsubsection{Observation Space}
+
+Following Method Section 3.2.3, the SE(2) policy observes:
+
+\textbf{1. Reference Twists} ($\mathbb{R}^{6}$):
+\begin{itemize}
+\item $\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}} \in \mathbb{R}^3$: Reference motions computed by the Reference Motion Field Generator (Layer 2) at the current time $t$ and current end-effector poses $T_{sb_l}, T_{sb_r}$ (6-dim)
+\end{itemize}
+
+\textbf{2. Object Constraints} ($\mathbb{R}^{6}$):
+\begin{itemize}
+\item $\mathcal{B}_l, \mathcal{B}_r \in \mathbb{R}^3$: Body-frame screw axes defining the object's allowable internal motion directions at each end-effector (6-dim)
+\end{itemize}
+
+\textbf{3. Wrench Feedback} ($\mathbb{R}^{6}$):
+\begin{itemize}
+\item $\mathcal{F}_l, \mathcal{F}_r \in \mathbb{R}^3$: Body wrenches measured at the end-effectors (6-dim)
+\end{itemize}
+
+\textbf{4. Proprioception} ($\mathbb{R}^{12}$):
+\begin{itemize}
+\item End-effector poses: $T_{sb_l}, T_{sb_r} \in \mathrm{SE}(2)$, represented as $(x_i, y_i, \theta_i) \in \mathbb{R}^3$ × 2 (6-dim)
+\item End-effector body twists: $\mathcal{V}_l, \mathcal{V}_r \in \mathbb{R}^3$, represented as $(\omega_{z,i}, v_{x,i}, v_{y,i}) \in \mathbb{R}^3$ × 2 (6-dim)
+\end{itemize}
+
+\textbf{Total: $o_t \in \mathbb{R}^{30}$ (6+6+6+12=30-dim)}
+
+\textbf{Note:} The policy receives the core physical observations that directly parameterize the impedance controller. The policy network internally computes bulk-internal decomposition of reference twists and measured wrenches using projection operators $P_{i,\parallel}$ and $P_{i,\perp}$ parameterized by the learned metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$.
+
+\subsubsection{Action Space}
+
+Following the SE(3) formulation in Method Section 3.2.3, the SE(2) policy outputs impedance modulation variables adapted for the planar, 1-DoF setting:
+
+\textbf{Action Space:}
+
+$$
+a_t = (d_{l,\parallel}, d_{r,\parallel}, d_{l,\perp}, d_{r,\perp}, k_{p_l}, k_{p_r}, \alpha) \in \mathbb{R}^7
+$$
+
+where:
+\begin{itemize}
+\item $d_{l,\parallel}, d_{r,\parallel} \in \mathbb{R}^+$: Per-arm damping coefficients for internal motion (parallel to screw axis)
+\item $d_{l,\perp}, d_{r,\perp} \in \mathbb{R}^+$: Per-arm damping coefficients for bulk motion (orthogonal to screw axis)
+\item $k_{p_l}, k_{p_r} \in \mathbb{R}^+$: Per-arm stiffness gains for the stability term $k_{p_i} \mathcal{E}_i$ in the reference vector field (Eq.~\eqref{eq:vector_field})
+\item $\alpha \in \mathbb{R}^+$: Learnable characteristic length scale that defines the metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$ for the SE(2) inner product, enabling task-appropriate orthogonal decomposition of twists and wrenches
+\end{itemize}
+
+\textbf{Note:} This maintains the full SE(3) action space structure $(d_{l,\parallel}, d_{r,\parallel}, d_{l,\perp}, d_{r,\perp}, k_{p_l}, k_{p_r}, \alpha) \in \mathbb{R}^7$, preserving the ability to independently modulate compliance for each arm. Gripper commands are omitted as grippers remain closed throughout episodes.
+
+\subsubsection{SE(2) Screw-decomposed Controller}
+
+Following the SE(3) controller formulation in Method Section 3.2.4 (Eq.~\eqref{eq:projection_operators}--\eqref{eq:impedance_control_main}), the impedance variables parameterize an SE(2) twist-driven impedance controller:
+
+\textbf{Orthogonal Projection Operators:}
+
+Using the metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1) \in \mathbb{R}^{3 \times 3}$ and body-frame screw axes $\mathcal{B}_i \in \mathbb{R}^{3 \times 1}$:
+
+$$
+\begin{aligned}
+P_{i,\parallel} &= \mathcal{B}_i (\mathcal{B}_i^\top G \mathcal{B}_i)^{-1} \mathcal{B}_i^\top G \in \mathbb{R}^{3 \times 3}, \\
+P_{i,\perp} &= I_3 - P_{i,\parallel} \in \mathbb{R}^{3 \times 3}
+\end{aligned}
+$$
+
+where $P_{i,\parallel}$ projects onto internal motion (range of $\mathcal{B}_i$) and $P_{i,\perp}$ projects onto bulk motion (orthogonal complement).
+
+\textbf{Damping Matrix Construction:}
+
+$$
+K_{d_i} = G (P_{i,\parallel} d_{i,\parallel} + P_{i,\perp} d_{i,\perp}) \in \mathbb{R}^{3 \times 3}
+$$
+
+where $d_{i,\parallel}$ and $d_{i,\perp}$ denote the per-arm damping coefficients ($d_{l,\parallel}, d_{l,\perp}$ for left arm, $d_{r,\parallel}, d_{r,\perp}$ for right arm). This allows independent damping modulation for each arm: $d_{i,\parallel}$ controls compliance along the object's kinematic constraint (internal motion), while $d_{i,\perp}$ controls compliance orthogonal to it (bulk motion).
+
+\textbf{Commanded Wrench:}
+
+$$
+\mathcal{F}_{\mathrm{cmd}, i} = K_{d_i} (\mathcal{V}_i^{\text{ref}} - \mathcal{V}_i) + \mu_{b,i} \in \mathbb{R}^3
+$$
+
+where $\mathcal{V}_i^{\text{ref}} = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\text{des}} + k_{p_i} \mathcal{E}_i$ is the reference twist from Layer 2 (Eq.~\eqref{eq:vector_field}), $\mu_{b,i} = C_{b,i}(q_i, \dot{q}_i) \dot{q}_i$ accounts for Coriolis/centrifugal terms, and gravity $\gamma_{b,i} = 0$ in planar settings.
+
+\textbf{Execution:}
+
+In our SE(2) simulation environment with direct body wrench control, the commanded wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands to update end-effector poses, consistent with the impedance-based control framework.
+
+\textbf{Kinematic Constraint Satisfaction:}
+
+By construction, the projection-based structure ensures the holonomic constraint is satisfied. The reference twists $\mathcal{V}_i^{\text{ref}}$ already respect the constraint through the Reference Motion Field Generator, and the damping matrix $K_{d_i}$ preserves the constraint subspace through its construction from $P_{i,\parallel}$ and $P_{i,\perp}$.
+
+\subsection{Controller Implementation}
+
+\subsubsection{Direct End-Effector Control}
+
+In the SE(2) simulation environment, we use direct end-effector wrench control without intermediate joint-space representations. The commanded body wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ (computed from the impedance controller above) are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands through forward dynamics to update end-effector poses at each control step. This wrench-based control scheme is appropriate for the planar manipulation tasks and allows us to focus on the core challenges of force coupling and constraint satisfaction while maintaining full consistency with the impedance control framework in Method Section 3.2.4.
+
+\textbf{Control Frequency:} 50 Hz (policy and controller run at the same frequency).
+
+\subsection{Reward Function in SE(2)}
+
+The reward function for SE(2) specializes the general formulation from Method Section 3.3.2, adapted for planar manipulation with the learned metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$:
+
+$$
+r_t = r_{\text{track}} + r_{\text{safety}} + r_{\text{reg}}
+$$
+
+\subsubsection{Motion Tracking Reward}
+
+Following Method Eq.~\eqref{eq:reward_tracking}, the tracking reward uses the G-metric to measure velocity error:
+
+$$
+r_{\text{track}} = -w_{\text{track}} \sum_{i \in \{l,r\}} \|\mathcal{V}_i - \mathcal{V}_i^{\text{ref}}\|_G^2 = -w_{\text{track}} \sum_{i \in \{l,r\}} (\mathcal{V}_i - \mathcal{V}_i^{\text{ref}})^T G (\mathcal{V}_i - \mathcal{V}_i^{\text{ref}})
+$$
+
+Expanding with $G = \mathrm{diag}(\alpha^2, 1, 1)$ and $\mathcal{V}_i = [\omega_{z,i}, v_{x,i}, v_{y,i}]^T \in \mathbb{R}^3$:
+
+$$
+\|\mathcal{V}_i - \mathcal{V}_i^{\text{ref}}\|_G^2 = \alpha^2 (\omega_{z,i} - \omega_{z,i}^{\text{ref}})^2 + (v_{x,i} - v_{x,i}^{\text{ref}})^2 + (v_{y,i} - v_{y,i}^{\text{ref}})^2
+$$
+
+This ensures tracking error is measured consistently with the impedance control framework, with adaptive weighting between rotational and translational components via the learned parameter $\alpha$.
+
+\subsubsection{Safety Reward}
+
+Following Method Eq.~\eqref{eq:reward_safety}, the safety reward minimizes internal wrenches---wrench components orthogonal to the object's allowable motion direction:
+
+$$
+r_{\text{safety}} = -w_{\text{int}} \sum_{i \in \{l,r\}} \|\mathcal{F}_{i,\perp}\|_2^2
+$$
+
+\textbf{Wrench Decomposition via Projection Operators.} Consistent with Method Section 3.3.2 and the twist decomposition in Layer 4, wrenches decompose using the transpose of twist projection operators. For measured wrench $\mathcal{F}_i = [m_{z,i}, f_{x,i}, f_{y,i}]^T \in \mathbb{R}^3$:
+
+$$
+\mathcal{F}_{i,\parallel} = P_{i,\parallel}^T \mathcal{F}_i, \quad \mathcal{F}_{i,\perp} = P_{i,\perp}^T \mathcal{F}_i = (I_3 - P_{i,\parallel})^T \mathcal{F}_i
+$$
+
+where $P_{i,\parallel} = \mathcal{B}_i (\mathcal{B}_i^T G \mathcal{B}_i)^{-1} \mathcal{B}_i^T G$ and $P_{i,\perp} = I_3 - P_{i,\parallel}$ are the SE(2) projection operators defined in Section~\ref{app:se2}.3.2.
+
+This decomposition exploits the duality between twist and wrench spaces under the reciprocal product (virtual power). For any $\mathcal{V} \in \text{range}(P_{i,\perp})$, we have $\mathcal{V} = P_{i,\perp} \mathcal{V}'$, and:
+
+$$
+\mathcal{F}_{i,\parallel}^T \mathcal{V} = (P_{i,\parallel}^T \mathcal{F}_i)^T (P_{i,\perp} \mathcal{V}') = \mathcal{F}_i^T P_{i,\parallel} P_{i,\perp} \mathcal{V}' = 0
+$$
+
+where the last equality follows from $P_{i,\parallel} P_{i,\perp} = 0$ (orthogonal projections). Similarly, $\mathcal{F}_{i,\perp}^T \mathcal{V} = 0$ for all $\mathcal{V} \in \text{range}(P_{i,\parallel})$.
+
+\textbf{Physical Interpretation:}
+\begin{itemize}
+\item $\mathcal{F}_{i,\parallel}$: Productive wrench that performs work along the object's internal degree of freedom (joint articulation)
+\item $\mathcal{F}_{i,\perp}$: Internal wrench orthogonal to the kinematic constraint that:
+\begin{itemize}
+    \item Does not contribute to desired object motion (zero virtual power along $\text{range}(P_{i,\parallel})$)
+    \item Arises from coordination errors between the two arms
+    \item Represents constraint forces (bearing loads, friction, contact stresses) unrelated to joint actuation
+    \item Increases unnecessary contact stress and grasp instability
+    \item Wastes energy and risks hardware damage
+\end{itemize}
+\end{itemize}
+
+By penalizing $\|\mathcal{F}_{i,\perp}\|_2^2$, the policy learns to minimize non-productive forces while maintaining necessary productive forces for manipulation.
+
+\subsubsection{Regularization Reward}
+
+Following Method Eq.~\eqref{eq:reward_regularization}, the regularization reward encourages smooth motion:
+
+$$
+r_{\text{reg}} = -w_{\text{reg}} \sum_{i \in \{l,r\}} \|\dot{\mathcal{V}}_i\|_2^2
+$$
+
+where $\dot{\mathcal{V}}_i = [\ddot{\theta}_i, \dot{v}_{x,i}, \dot{v}_{y,i}]^T \in \mathbb{R}^3$ is the SE(2) twist acceleration. This reduces energy consumption, joint jerkiness, and Cartesian jerkiness, promoting natural and efficient movements.
+
+\subsubsection{Termination Conditions}
+
+Following Method Section 3.3.2, grasp stability is enforced through early termination rather than reward penalties. Episodes terminate immediately (task failure) when grasp drift exceeds safety thresholds:
+
+$$
+\text{Terminate if: } \exists i \in \{l, r\} \text{ such that } \left\|\left[\log\left((T_{\text{grip},i}^{\text{init}})^{-1} T_{\text{grip},i}\right)\right]^\vee\right\|_2 > d_{\max}
+$$
+
+where $T_{\text{grip},i}^{\text{init}}$ is the initial grasp pose, $T_{\text{grip},i}$ is the current grasp pose, and $d_{\max}$ is the maximum allowable drift threshold. For SE(2), the logarithm map computes planar geodesic distance:
+
+$$
+\left[\log(\Delta T)\right]^\vee = \begin{bmatrix}
+\Delta\theta \\
+\Delta x \cos\theta_{init} + \Delta y \sin\theta_{init} \\
+-\Delta x \sin\theta_{init} + \Delta y \cos\theta_{init}
+\end{bmatrix}
+$$
+
+This ensures grasp stability throughout manipulation without explicit reward shaping.
+
+\subsection{SE(2) $\to$ SE(3) Extension Path}
+
+The SE(2) experimental validation serves as a controlled study of SWIVL's core principles. Extension to SE(3) is straightforward:
+
+\textbf{Mathematical Framework:}
+\begin{itemize}
+\item All SE(3) formulations in Section 3 directly apply
+\item Twist space: $\mathfrak{se}(2) \subset \mathfrak{se}(3)$ (3-dim $\to$ 6-dim)
+\item Metric tensor: $G = \mathrm{diag}(\alpha^2, 1, 1) \in \mathbb{R}^{3 \times 3} \to G = \mathrm{diag}(\alpha^2 I_3, I_3) \in \mathbb{R}^{6 \times 6}$ (scalar rotation $\to$ 3D rotation weighting)
+\item Action space: $(d_{l,\parallel}, d_{r,\parallel}, d_{l,\perp}, d_{r,\perp}, k_{p_l}, k_{p_r}, \alpha) \in \mathbb{R}^7$ (same structure for both SE(2) and SE(3))
+\item Object Jacobian: $\mathcal{B}_i \in \mathbb{R}^{3 \times 1} \to J_i \in \mathbb{R}^{6 \times k}$ (single screw axis $\to$ multi-DoF Jacobian)
+\item Network architecture scales with input/output dimensions
+\end{itemize}
+
+\textbf{Engineering Requirements:}
+\begin{itemize}
+\item 6-axis F/T sensors (already available on Franka FR3)
+\item 7-DoF differential IK controller (standard in Franka SDK) for joint-space control
+\item SE(3) trajectory smoothing (geodesic interpolation, Appendix C)
+\item Robot proprioception (end-effector poses and twists, object tracking, gripper feedback)
+\end{itemize}
+
+\textbf{Validation Strategy:}
+\begin{enumerate}
+\item SE(2) experiments (current work): Isolate force coupling and constraint satisfaction with impedance-based control
+\item SE(3) simulation: Validate 6-DoF extension with gravity, collisions, and per-arm impedance modulation
+\item Real-world deployment: Franka FR3 dual-arm setup
+\end{enumerate}
+
+The SE(2) results provide strong evidence that SWIVL's principles---learned impedance variables, projection-based motion decomposition, FiLM-based object conditioning, and screw-decomposed control---will transfer to full SE(3) manipulation.

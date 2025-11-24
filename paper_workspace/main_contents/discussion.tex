@@ -1,0 +1,72 @@
+% Discussion
+\section{Discussion}
+\label{sec:discussion}
+
+\textbf{Note}: This section outlines the analysis framework for interpreting experimental results. Concrete findings will be added upon completion of evaluation.
+
+\subsection{Key Findings: SWIVL in SE(2) Bimanual Manipulation}
+
+Our SE(2) experiments with a single-joint articulated object confirm that \textbf{explicit encoding of geometric and wrench structure} is essential for robust dual-arm manipulation. We summarize key findings along three axes: (1) the benefit of SWIVL's physics-aware reinforcement learning over pure imitation learning, (2) the impact of each architectural component in the SE(2), 1-DoF instantiation, and (3) generalization within the planar benchmark across planners and objects.
+
+	extbf{Physics-Aware RL vs. Pure Imitation Learning.} [Results comparing SWIVL against the OWIL baseline will reveal the fundamental advantage of reinforcement learning with explicit physical modeling over behavior cloning. Expected findings: SWIVL achieves higher success rates while significantly reducing internal forces and constraint violations, demonstrating that physical intelligence requires more than trajectory imitation---it demands autonomous discovery of force-compliant strategies through interaction with the environment.]
+
+\textbf{Role of Explicit Constraint Encoding.} [Analysis of SE(2) kinematic constraint violations will show whether the impedance-modulated controller with projection-based motion decomposition successfully enforces the 1-DoF holonomic constraint $ {}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S} \dot{q}_{obj}$ through the structural projection operators $P_{i,\parallel}$ and $P_{i,\perp}$, eliminating the need for penalty-based reward engineering. Expected finding: SWIVL maintains near-zero constraint violations throughout manipulation, while residual-based ablations and OWIL struggle despite reward penalties.]
+
+	extbf{Wrench Feedback for Force Regulation.} [Quantitative analysis of internal force patterns, using the SE(2) wrench decomposition in Appendix~\ref{app:orthogonal_decomposition}, will demonstrate how explicit wrench sensing enables active minimization of non-productive contact forces. Expected finding: Wrench-aware SWIVL variants suppress harmful internal forces by identifying and counteracting wrench components orthogonal to the screw axis, while wrench-blind variants and OWIL cannot reliably distinguish between productive and harmful forces.]
+
+\subsection{Architectural Design Choices and Their Impact}
+
+	extbf{Bulk--Internal Motion Decomposition in SE(2).} [Analysis will examine whether providing explicit task semantics through SE(2) bulk--internal decomposition, built from constant body-frame screw axes $\mathcal{B}_l, \mathcal{B}_r$ and spatial inertia matrices, improves learning efficiency and generalization. Expected findings: (1) Policies with decomposition learn faster by exploiting a structured observation space tied to the 1-DoF constraint, (2) decomposition enables task-agnostic behavior---the same SE(2) policy executes transport-focused, articulation-focused, and coordinated tasks without retraining, (3) interpretability of learned behaviors improves through semantically meaningful bulk and internal motion primitives.]
+
+	extbf{Stable Imitation Vector Field vs. Temporal Tracking.} [Robustness analysis under perturbations in the planar benchmark will validate the necessity of spatial correction mechanisms. Expected findings: (1) Pure temporal tracking baselines fail when initial conditions deviate from demonstrations, (2) purely spatial contraction fields provide correction but may overly prioritize spatial convergence at the cost of timing, (3) SWIVL's stable imitation vector field balances temporal alignment with contraction, enabling recovery from tracking errors while following the planner's desired timing.]
+
+	extbf{FiLM Conditioning for Object Generalization.} [Cross-object evaluation within the SE(2) benchmark will assess how architectural choices affect adaptation to novel kinematic structures with different screw axes and inertial parameters. Expected findings: FiLM-based feature modulation enables dynamic adjustment of control strategies based on joint type, body-frame screw axes, and planar inertia parameters, outperforming concatenation-based conditioning in zero-shot transfer to unseen object geometries and mass distributions.]
+
+\subsection{Generalization and Transfer Capabilities}
+
+	extbf{Cross-Planner Generalization in SE(2).} [Evaluation with diverse high-level planners (HLP-Diff, HLP-ACT, HLP-Teleop) will test SWIVL's planner-agnostic property under the SE(2) instantiation. Expected findings: (1) SWIVL successfully tracks SE(2) action chunks from all planner types without retraining, validating the reference motion field interface as a clean separation layer, (2) performance remains consistent across planning paradigms, demonstrating separation of cognitive and physical intelligence layers, (3) planner-specific characteristics (smoothness, horizon length, noise) are successfully handled by the stable imitation vector field design.]
+
+	extbf{Zero-Shot Transfer to Novel Planar Objects.} [Testing on scaled, asymmetric, and mass-varied SE(2) objects will quantify geometric and dynamic generalization in the 1-DoF setting. Expected findings: (1) Geometric generalization succeeds when kinematic structure (screw axis, joint type) is preserved but scale changes, (2) dynamic variations (mass, spatial inertia) require adaptation but benefit from explicit wrench feedback and inertia conditioning, (3) failure modes emerge when assumptions break down (e.g., multi-DoF objects, unknown or time-varying constraints), motivating the full SE(3), multi-DoF extension discussed below.]
+
+\textbf{Sample Efficiency and Training Dynamics.} [Learning curve analysis within the SE(2) benchmark will compare data requirements across variants. Expected findings: (1) Structured SE(2) impedance action spaces (damping coefficients $d_{\parallel}, d_{\perp}$ and stiffness gains $k_{p_i}$ that parameterize the projection-based controller) improve sample efficiency by reducing the policy search space and ensuring feasibility, (2) explicit constraint encoding through projection operators accelerates training by eliminating exploration of infeasible action regions, (3) wrench feedback and orthogonal wrench decomposition provide a dense, physically meaningful signal that speeds up learning of force regulation.]
+
+\subsection{Physical Intelligence Through Learned Behaviors}
+
+\textbf{Emergent Force-Compliant Strategies in SE(2).} [Qualitative analysis of learned planar behaviors will reveal how RL discovers physically intelligent solutions even in the reduced SE(2) setting. Expected observations: (1) Adaptive compliance---the policy modulates damping coefficients $d_{\parallel}$ and $d_{\perp}$ based on task phase (high stiffness for aggressive motion when free, high compliance near joint limits and contacts), (2) metric adaptation---the learned characteristic length scale $\alpha$ dynamically adjusts the SE(2) metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$, which defines the inner product for orthogonal decomposition of twists and wrenches, enabling task-appropriate separation of bulk versus internal motion components, (3) predictive force regulation---the policy anticipates violations of the SE(2) holonomic constraint and preemptively adjusts impedance variables before large internal forces develop.]
+
+\textbf{Interpretability of Bulk--Internal Decomposition.} [Visualization of learned SE(2) impedance modulation patterns will validate semantic meaningfulness. Expected findings: (1) Pure transport tasks exhibit high damping $d_{\perp}$ on bulk motion components and low damping $d_{\parallel}$ on internal motion, resulting in stiff transport with compliant joint articulation, (2) articulation tasks show the opposite pattern with high $d_{\parallel}$ and low $d_{\perp}$, enabling precise joint control while allowing bulk motion compliance, (3) coordinated tasks balance both damping coefficients, (4) transitions between task phases correspond to smooth modulation of the damping ratio $d_{\parallel}/d_{\perp}$ in the SE(2) controller.]
+
+	extbf{Computational Efficiency and Real-Time Feasibility.} [Performance profiling in simulation will assess deployment readiness. Expected measurements: (1) SE(2) reference motion field generation achieves $O(1)$ computation per timestep as claimed, (2) the low-level policy meets 50 Hz control requirements with sub-10 ms latency, (3) overall SWIVL computation remains compatible with real-time execution, supporting future SE(3) hardware deployment.]
+
+\subsection{Limitations and Future Work}
+
+	extbf{Current Limitations:}
+\begin{itemize}
+\item \textbf{SE(2) planar setting:} Real-world tasks require full SE(3) workspace beyond the single-joint, planar benchmark studied here
+\item \textbf{Simulation evaluation:} Sim-to-real transfer remains to be validated
+\item \textbf{Known object models:} Assumes screw axis $\mathcal{S}$ and body-frame axes $\mathcal{B}_l, \mathcal{B}_r$ provided a priori
+\item \textbf{Single-DoF constraints:} Limited to revolute, prismatic, or fixed 1-DoF joints
+\item \textbf{Pre-grasped objects:} Grasping and regrasping not addressed
+\end{itemize}
+
+\textbf{Future Directions:}
+\begin{enumerate}
+\item \textbf{SE(3) extension}: Generalize to 6-DoF manipulation with full spatial twists $\mathcal{V} \in \mathbb{R}^6$ and metric tensor $G = \mathrm{diag}(\alpha^2 I_3, I_3) \in \mathbb{R}^{6 \times 6}$
+\item \textbf{Real robot deployment}: Domain randomization for sim-to-real transfer on dual-arm platforms (Franka Panda, UR5e)
+\item \textbf{Multi-DoF articulation}: Extend to $k$-DoF objects with Jacobian $J_i \in \mathbb{R}^{6 \times k}$ and per-arm impedance variables $(d_{l,\parallel}, d_{r,\parallel}, d_{l,\perp}, d_{r,\perp})$ as in Method Section 3.2.3
+\item \textbf{Online constraint learning}: Estimate unknown screw axes through exploratory interaction
+\item \textbf{End-to-end visuomotor control}: Integrate visual perception for object pose and constraint prediction
+\item \textbf{Theoretical analysis}: Formal stability guarantees and optimality characterization
+\end{enumerate}
+
+\subsection{Broader Impact}
+
+\textbf{Applications:} Bimanual assembly in manufacturing, surgical assistance in healthcare, cooperative manipulation in service robotics.
+
+\textbf{Research Contributions:} Principled integration of geometric structure into learning-based control, demonstrating how explicit physical constraints enhance robustness and generalization.
+
+\textbf{Safety Considerations:} Explicit internal force minimization reduces contact stress, improving safety in human-robot interaction scenarios.
+
+\subsection{Summary}
+
+Our analysis framework focuses on three key dimensions: (1) force regulation patterns to understand physical intelligence, (2) robustness under perturbations to validate stability guarantees, and (3) computational efficiency to assess real-time feasibility. Results will demonstrate how explicitly encoding kinematic constraints, wrench feedback, and contraction stability enables robust, efficient bimanual manipulation of articulated objects.

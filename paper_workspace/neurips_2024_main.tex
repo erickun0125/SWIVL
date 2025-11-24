@@ -1,0 +1,140 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2024
+
+% ready for submission
+% \usepackage[final]{neurips_2024}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+\usepackage[preprint]{neurips_style/neurips_2024}
+
+% Remove the conference notice at the bottom of the first page
+\makeatletter
+\renewcommand{\@notice}{}
+\makeatother
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2024}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2024}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{newunicodechar}  % support for unicode characters
+% Define unicode characters that might appear in verbatim
+\newunicodechar{θ}{\ensuremath{\theta}}
+\newunicodechar{σ}{\ensuremath{\sigma}}
+\newunicodechar{μ}{\ensuremath{\mu}}
+\newunicodechar{τ}{\ensuremath{\tau}}
+\newunicodechar{Δ}{\ensuremath{\Delta}}
+\newunicodechar{ε}{\ensuremath{\varepsilon}}
+\newunicodechar{γ}{\ensuremath{\gamma}}
+\newunicodechar{λ}{\ensuremath{\lambda}}
+\newunicodechar{β}{\ensuremath{\beta}}
+\newunicodechar{─}{-}
+\newunicodechar{├}{+}
+\newunicodechar{└}{+}
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage[expansion=false]{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{amsmath}        % advanced math
+\usepackage{amssymb}        % additional math symbols
+\usepackage{mathtools}      % more math tools
+\usepackage{algorithm}      % algorithm environment
+\usepackage{algorithmic}    % algorithmic environment
+\usepackage{graphicx}       % include graphics
+\usepackage{subcaption}     % subfigures
+\usepackage{enumitem}       % better enumerate
+\usepackage{bm}             % bold math
+
+\title{SWIVL: Screw-Wrench informed Impedance Variable Learning for bimanual manipulation of an articulated object}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+\author{%
+  Kyungseo Park \\
+  Student ID : 2020-12295 \\
+  Department of Mechanical Engineering \\
+  Seoul National University \\
+  \texttt{erickun0125@snu.ac.kr} \\
+  % examples of more authors
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \AND
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Bimanual manipulation of articulated objects remains challenging due to inter-arm force coupling and complex kinematic constraints. While recent Vision-Language-Action (VLA) models demonstrate strong cognitive intelligence in high-level task planning, they lack explicit grounding in low-level physical interaction---specifically, force regulation and constraint satisfaction during contact-rich manipulation. We introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning), a task-agnostic framework that bridges the gap between high-level cognitive planning and low-level physical execution. SWIVL consists of two key components: (1) a \textbf{Screw-Decomposed SE(3) Impedance Controller} that maps constraint-unaware desired motions (e.g., action chunk from VLAs) into constraint-compatible compliant motions by leveraging the object's instantaneous screw axis—decomposing commanded velocities into \textit{internal motion} aligned with allowable kinematic freedoms and \textit{bulk motion} in the constraint-violation subspace, then applying impedance control in each decomposed manifold, and (2) a \textbf{Wrench-Adaptive Impedance Variable Learning Policy} that learns to modulate impedance variables (stiffness/damping parameters) via real-time wrench feedback and object information conditioning, enabling force-compliant, physically feasible commands. We evaluate SWIVL on SE(2) planar benchmarks involving rigid transport, revolute rotation, and prismatic insertion, demonstrating improved success rates, reduced internal forces, and robust generalization across diverse planners and object geometries compared to imitation learning baselines.
+\end{abstract}
+
+% Main Content
+\input{main_contents/introduction}
+\input{main_contents/related_work}
+\input{main_contents/method}
+\input{main_contents/experiments}
+\input{main_contents/discussion}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We introduced \textbf{SWIVL}, a hierarchical framework that bridges high-level cognitive planning with low-level physically grounded execution for bimanual manipulation of articulated objects. By explicitly incorporating object kinematic constraints and end-effector wrench feedback, SWIVL operationalizes \textbf{Physical Intelligence}---enabling force-compliant coordination, constraint satisfaction, and robust tracking of diverse high-level planners.
+
+Our key contributions include: (1) a \textbf{Stable Imitation Vector Field} with $O(1)$ computational complexity and guaranteed exponential convergence, (2) a \textbf{bulk-internal motion decomposition} that provides interpretable task semantics, (3) a \textbf{kinematic-constrained action space} that structurally enforces holonomic constraints, (4) an \textbf{object-conditioned policy architecture} using FiLM conditioning for generalization across joint types, and (5) comprehensive evaluation demonstrating necessity of explicit physical modeling.
+
+SWIVL is designed to operate beneath arbitrary cognitive planners---including VLA-based foundation models, behavior cloning policies, and teleoperation interfaces---without requiring planner-specific tuning. This modularity enables seamless integration with emerging high-level reasoning systems while ensuring safe, physically feasible execution.
+
+\textbf{Future Directions.} While our SE(2) evaluation isolates core challenges of force coupling and constraint satisfaction, extending to full SE(3) manipulation requires minimal architectural changes (scaling observation/action dimensions) and is naturally supported by our formulation. Key directions include: (1) real-world validation with domain randomization for sim-to-real transfer, (2) online constraint learning for unknown objects, (3) multi-DoF articulated structures, (4) end-to-end visuomotor control integrating perception with low-level policy, and (5) theoretical analysis of stability guarantees and optimality.
+
+By decoupling \textbf{Cognitive Intelligence} (high-level semantic reasoning) from \textbf{Physical Intelligence} (low-level force-compliant execution), SWIVL advances toward robotic systems that effectively unify both dimensions---a critical step for deploying learning-based policies in real-world contact-rich manipulation.
+
+% Bibliography
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% Appendix
+\appendix
+
+\input{appendix/appendix_notation}
+\input{appendix/appendix_trajectory_interpolation}
+\input{appendix/appendix_impedance_control}
+\input{appendix/appendix_se2}
+\input{appendix/appendix_learning_settings}
+\input{appendix/appendix_environment_settings}
+\input{appendix/appendix_owil}
+
+\end{document}
