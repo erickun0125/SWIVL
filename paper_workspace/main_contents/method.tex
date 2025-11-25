@@ -2,7 +2,7 @@
 \section{Method}
 \label{sec:method}
 
-We present \textbf{SWIVL} (Screw-Wrench informed Impedance Variable Learning), a hierarchical control framework that bridges high-level cognitive planning with physically grounded bimanual execution. SWIVL consists of three key components: (1) a Stable Imitation Vector Field based \textbf{Reference Twist Field Generator} that transforms discrete high-level waypoints into dense, continuous vector fields defined over the entire task space, (2) a Screw Axes Decomposition based \textbf{Twist-driven Impedance Controller} that enables practical impedance control with pose error and twist error, and (3) a Reinforcement Learning based \textbf{Wrench-feedback and Object-conditioned Impedance Variable Learning Policy} that modulates compliance in a physically feasible manner.
+We present \textbf{SWIVL} a hierarchical control framework that bridges high-level cognitive planning with physically grounded bimanual execution. SWIVL consists of three key components: (1) a Stable Imitation Vector Field based \textbf{Reference Twist Field Generator} that transforms discrete high-level waypoints into dense, continuous vector fields defined over the entire task space, (2) a Screw Axes Decomposition based \textbf{Twist-driven Impedance Controller} that enables practical impedance control with pose error and twist error, and (3) a Reinforcement Learning based \textbf{Wrench-feedback and Object-conditioned Impedance Variable Learning Policy} that modulates compliance in a physically feasible manner.
 
 %==============================================================================
 \subsection{Problem Setup and Key Challenges}
@@ -61,16 +61,12 @@ SWIVL adopts a four-layer hierarchical architecture (Figure~\ref{fig:architectur
 
 The core innovation lies in the tight integration of Layers 2--4, which together enable physically grounded, force-compliant bimanual manipulation underneath arbitrary high-level planners.
 
-% ============================================================================
-% FIGURE PLACEHOLDER: Architecture Overview
-% ============================================================================
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figures/architecture_overview.pdf}
-%     \caption{\textbf{SWIVL Architecture.} Four-layer hierarchy bridging cognitive planning with physical execution. High-level waypoints are transformed into stable reference twists (Layer 2), which are tracked by a screw-decomposed impedance controller (Layer 4) with learned compliance modulation (Layer 3). Wrench feedback enables adaptive force regulation.}
-%     \label{fig:architecture_overview}
-% \end{figure}
-% ============================================================================
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/architecture_overview.jpg}
+    \caption{\textbf{SWIVL Architecture.} Four-layer hierarchy bridging cognitive planning with physical execution. High-level waypoints are transformed into stable reference twists (Layer 2), which are tracked by a screw-decomposed impedance controller (Layer 4) with learned compliance modulation (Layer 3). Wrench feedback enables adaptive force regulation.}
+    \label{fig:architecture_overview}
+\end{figure}
 
 %==============================================================================
 \subsection{Stable Imitation Vector Field (Layer 2)}
@@ -141,6 +137,13 @@ where $e_{R_i} \in \mathbb{R}^3$ is the rotation error and $e_{p_i} \in \mathbb{
 Here, $\alpha$ acts as the radius of gyration, representing the ratio between the body's rotational and translational inertia. Furthermore, this metric induces a left-invariant Riemannian metric on $SE(3)$ with a distinct geometric significance: its geodesics correspond to the \textit{free-body motion} of said isotropic body, thereby providing a dynamically consistent notion of distance on the manifold.
 
 \textbf{Dual Role of $k_p \mathcal{E}$.} The stability term $k_{p_i} \mathcal{E}_i$ serves a crucial dual purpose: it provides corrective feedback for trajectory tracking \emph{and} acts as an elastic force term in the impedance framework. As we show in Section~\ref{sec:controller_interpretation}, this formulation \textbf{bypasses the problematic SE(3) Jacobian $J_{\mathcal{E}}$} while maintaining impedance behavior.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/reference_twist_field.jpg}
+    \caption{\textbf{Reference Twist Field Generator.} The generator transforms sparse high-level waypoints into dense, stable reference twists. (Left) Sparse action chunks from the high-level policy are interpolated via SE(3) trajectory smoothing. (Center) Body twists $\mathcal{V}_i^{\text{des}}$ are computed by differentiation. (Right) The stable imitation vector field combines the desired twist with a pose-error corrective term $k_{p_i}\mathcal{E}_i$, enabling closed-loop reference generation that balances imitation fidelity with robustness to deviations.}
+    \label{fig:reference_twist_field}
+\end{figure}
 
 %==============================================================================
 \subsection{Screw Axes-Decomposed Impedance Control (Layer 4)}

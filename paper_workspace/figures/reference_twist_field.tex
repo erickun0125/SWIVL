@@ -1,0 +1,55 @@
+% Placeholder for reference_twist_field.jpg
+% This is a placeholder file. Replace with actual figure.
+%
+% FIGURE: Reference Twist Field Generator
+% ========================================
+% File: reference_twist_field.jpg
+% Location: method.tex - Section 3.3 (Stable Imitation Vector Field) 끝부분
+% Label: fig:reference_twist_field
+%
+% Content Description:
+% Three-panel diagram showing the 3-step process of generating reference twists
+%
+% Panel 1 (Left): SE(3) Trajectory Smoothing
+% - Input: Sparse action chunks from high-level policy (discrete waypoints)
+% - Process: SLERP for rotations, cubic splines for translations
+% - Output: Dense desired trajectories T_{sd_i}(t) at control frequency
+% - Visual: Show discrete dots → smooth continuous curve
+%
+% Panel 2 (Center): Body Twist Computation
+% - Input: Interpolated SE(3) trajectory T_{sd_i}(t)
+% - Process: Differentiation to compute V_i^des(t)
+% - Output: Desired body twists in frame {d_i}
+% - Visual: Show trajectory with tangent velocity vectors
+%
+% Panel 3 (Right): Stable Imitation Vector Field
+% - Formula: V_i^ref = Ad_{T_{b_id_i}} V_i^des + k_{p_i} E_i
+% - Components:
+%   * Feedforward term: Ad_{T_{b_id_i}} V_i^des (imitation)
+%   * Corrective term: k_{p_i} E_i (stability/error correction)
+% - Visual: Vector field arrows showing:
+%   * Desired trajectory (dashed line)
+%   * Current pose (solid point)
+%   * Error vector E_i pointing from current to desired
+%   * Reference twist as combination of desired twist + corrective term
+%
+% Caption (from method.tex):
+% "Reference Twist Field Generator. The generator transforms sparse high-level 
+% waypoints into dense, stable reference twists. (Left) Sparse action chunks 
+% from the high-level policy are interpolated via SE(3) trajectory smoothing. 
+% (Center) Body twists V_i^des are computed by differentiation. (Right) The 
+% stable imitation vector field combines the desired twist with a pose-error 
+% corrective term k_{p_i}E_i, enabling closed-loop reference generation that 
+% balances imitation fidelity with robustness to deviations."
+%
+% Design Suggestions:
+% - Use consistent color scheme:
+%   * Desired trajectory/pose: Blue
+%   * Current pose: Green
+%   * Error/correction: Red/Orange
+%   * Reference twist: Purple
+% - Add mathematical annotations where appropriate
+% - Include time axis or frequency labels (10Hz → 100Hz)
+%
+% Recommended Tools: TikZ, Inkscape, Figma, or draw.io
+% Recommended Size: Full width (\linewidth)

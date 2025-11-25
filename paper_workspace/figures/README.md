@@ -98,7 +98,8 @@
 | Figure | 파일명 | 상태 |
 |--------|--------|------|
 | Teaser (Bimanual Example) | `bimanipulation_example_image.jpg` | ✅ 완료 |
-| Architecture Overview | `architecture_overview.pdf` | ⬜ 미생성 |
+| Architecture Overview | `architecture_overview.jpg` | ⏳ 대기 (파일 추가 필요) |
+| Reference Twist Field | `reference_twist_field.jpg` | ⏳ 대기 (파일 추가 필요) |
 | Benchmark Objects | `objects.pdf` | ⬜ 미생성 |
 | Force Comparison | `force_comparison.pdf` | ⬜ 미생성 |
 | Impedance Analysis | `impedance_analysis.pdf` | ⬜ 미생성 |
@@ -113,6 +114,43 @@
 - 두 로봇 팔이 파란색 링크로 연결된 물체를 협력하여 조작
 - Kinematic constraint와 inter-arm force coupling의 실제 시나리오 시각화
 - `\label{fig:teaser}`로 참조 가능
+
+---
+
+## Architecture Overview (대기 중)
+
+### `architecture_overview.jpg`
+**위치**: `method.tex` - Section 3.2 (Architecture Overview) 끝부분
+**Label**: `fig:architecture_overview`
+**설명**: SWIVL 4-layer 계층 구조
+
+**권장 내용**:
+- Layer 1: High-Level Policy (VLA, BC, Teleoperation) - 10Hz
+- Layer 2: Reference Twist Field Generator
+- Layer 3: Impedance Variable Modulation Policy (RL)
+- Layer 4: Screw Axes-Decomposed Impedance Controller - 100Hz
+- 데이터 흐름: Waypoints → Reference Twists → Impedance Variables → Commanded Wrench
+- Wrench feedback 루프 표시
+
+---
+
+## Reference Twist Field (대기 중)
+
+### `reference_twist_field.jpg`
+**위치**: `method.tex` - Section 3.3 (Stable Imitation Vector Field) 끝부분
+**Label**: `fig:reference_twist_field`
+**설명**: Reference Twist Field Generator의 3단계 프로세스
+
+**권장 내용**:
+- (Left) Step 1: SE(3) Trajectory Smoothing
+  - Sparse action chunks → Dense interpolated trajectory
+  - SLERP for rotation, cubic spline for translation
+- (Center) Step 2: Body Twist Computation
+  - Differentiation to get $\mathcal{V}_i^{\text{des}}$
+- (Right) Step 3: Stable Imitation Vector Field
+  - $\mathcal{V}_i^{\text{ref}} = \text{Ad}_{T_{b_id_i}}\mathcal{V}_i^{\text{des}} + k_{p_i}\mathcal{E}_i$
+  - Pose error correction term 시각화
+  - 현재 pose에서 desired pose로 향하는 corrective field
 
 ---
 
