@@ -1,0 +1,20 @@
+% Placeholder for architecture_overview.pdf
+% This is a placeholder file. Replace with actual figure.
+%
+% FIGURE: SWIVL Architecture Overview
+% =====================================
+%
+% Content Description:
+% - 4-layer hierarchical architecture diagram
+% - Layer 1: High-Level Policy (VLA, BC, Teleoperation) - 10Hz
+% - Layer 2: Reference Twist Field Generator
+% - Layer 3: Impedance Variable Modulation Policy (RL)
+% - Layer 4: Screw-Decomposed Impedance Controller - 100Hz
+%
+% Data Flow:
+% Waypoints T_{sd_i} → Reference Twists V_i^ref → Impedance Variables → Commanded Wrench F_cmd
+%
+% Feedback Loop:
+% Wrench F_i from F/T sensor → Layer 3 (RL Policy)
+%
+% Recommended Tools: TikZ, Inkscape, Figma, or draw.io

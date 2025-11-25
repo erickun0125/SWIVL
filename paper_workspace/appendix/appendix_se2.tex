@@ -36,7 +36,6 @@ For planar articulated objects with a \\textbf{single kinematic joint}, the scre
 \begin{itemize}
 \item \textbf{Revolute joint} (rotation around z-axis): $\mathcal{S} = \begin{bmatrix} 1 \\ 0 \\ 0 \end{bmatrix}$ (pure rotation)
 \item \textbf{Prismatic joint} (translation along direction $\hat{d}$): $\mathcal{S} = \begin{bmatrix} 0 \\ d_x \\ d_y \end{bmatrix}$ where $(d_x, d_y)$ defines sliding direction
-\item \textbf{Fixed joint} (rigid transport): $\mathcal{S} = \begin{bmatrix} 0 \\ 0 \\ 0 \end{bmatrix}$ (no relative motion allowed)
 \end{itemize}
 
 In the general SE(3) formulation (Section~\ref{sec:problem_formulation}), the object Jacobian $J_s(\mathbf{q}_{obj}) \in \mathbb{R}^{6 \times k}$ relates internal joint velocities to relative end-effector motion. In our SE(2), 1-DoF setting, this reduces to a single spatial screw axis $\mathcal{S} \in \mathbb{R}^3$ and the kinematic constraint becomes:
@@ -87,7 +86,7 @@ $$
 
 \subsubsection{SE(2) Trajectory Smoothing}
 
-Given discrete waypoints $\{T_{si}^{des}[\tau]\}_{\tau=0}^H = \{(x[\tau], y[\tau], \theta[\tau])\}_{\tau=0}^H$ from the high-level planner at 5 Hz, we generate dense trajectories at 50 Hz (Low-Level Policy frequency).
+Given discrete waypoints $\{T_{si}^{des}[\tau]\}_{\tau=0}^H = \{(x[\tau], y[\tau], \theta[\tau])\}_{\tau=0}^H$ from the high-level planner at 10 Hz, we generate dense trajectories at 100 Hz (Low-Level Policy frequency).
 
 \textbf{Position Interpolation:}
 Cubic spline interpolation through position waypoints $(x[\tau], y[\tau])$:
@@ -220,7 +219,7 @@ $$
 Internal wrench $\mathcal{F}_{i,\perp}$ represents non-productive contact forces that stress the grasp without contributing to joint motion. The RL reward explicitly penalizes $\|\mathcal{F}_{i,\perp}\|_2^2$ to minimize harmful internal forces (Section 3.3.2).
 
 \textbf{Output Summary:}
-The Reference Twist Field Generator produces at each timestep (50 Hz):
+The Reference Twist Field Generator produces at each timestep (100 Hz):
 
 $$
 \{\mathcal{V}_l^{\text{ref}}, \mathcal{V}_r^{\text{ref}}, \mathcal{B}_l, \mathcal{B}_r\}
@@ -326,7 +325,7 @@ By construction, the projection-based structure ensures the holonomic constraint
 
 In the SE(2) simulation environment, we use direct end-effector wrench control without intermediate joint-space representations. The commanded body wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ (computed from the impedance controller above) are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands through forward dynamics to update end-effector poses at each control step. This wrench-based control scheme is appropriate for the planar manipulation tasks and allows us to focus on the core challenges of force coupling and constraint satisfaction while maintaining full consistency with the impedance control framework in Method Section 3.2.4.
 
-\textbf{Control Frequency:} 50 Hz (policy and controller run at the same frequency).
+\textbf{Control Frequency:} 100 Hz (policy and controller run at the same frequency).
 
 \subsection{Reward Function in SE(2)}
 

@@ -2,295 +2,506 @@
 \section{Impedance Control on SE(3)}
 \label{app:impedance}
 
-This appendix presents a systematic derivation of geometrically consistent impedance control on SE(3) for the compliance controller used in SWIVL's low-level execution. Starting from the definition of an inner product on the Lie algebra $\mathfrak{se}(3)$ representing the kinetic energy of an isotropic rigid body, we extend this to a Riemannian metric on SE(3), derive geodesics through variational principles, and construct a virtual mass-spring-damper system that respects the manifold structure. Finally, we couple this virtual system with the robot's operational space dynamics to derive the controller implementation.
+This appendix provides the geometric foundations underlying SWIVL's twist-driven impedance control (Section~\ref{sec:screw_decomposed_control}). We derive the classical SE(3) impedance formulation from energy principles, identify the nonlinear pose-error Jacobian $J_{\mathcal{E}}$ as a key complexity, and show how SWIVL's approach bypasses this challenge by incorporating pose errors directly into reference twists.
 
-\subsection{Notation Conventions}
+%==============================================================================
+\subsection{Notation}
+\label{app:notation}
+%==============================================================================
 
-We adopt the following notation for impedance control derivation:
+We adopt the following notation consistent with the main text:
 \begin{itemize}
-\item ${}^a\mathcal{V}_b$: Twist of frame $b$ expressed in frame $a$
-\item $T_b = (R_b, p_b)$: Current end-effector pose (body frame $b$)
-\item $T_d = (R_d, p_d)$: Desired end-effector pose (desired frame $d$)
-\item $T_{bd} = T_b^{-1} T_d$: Relative transformation from current to desired
-\item ${}^b\mathcal{V}_b = (\omega_b, v_b)$: Current body twist
-\item ${}^d\mathcal{V}_d = (\omega_d, v_d)$: Desired body twist
-\item $\alpha \in \mathbb{R}^+$: Characteristic length weighting rotational cost
+    \item $T_{sb} = (R_{sb}, p_{sb}) \in \mathrm{SE}(3)$: Current end-effector pose (body frame $\{b\}$ w.r.t.\ spatial frame $\{s\}$)
+    \item $T_{sd} = (R_{sd}, p_{sd}) \in \mathrm{SE}(3)$: Desired end-effector pose (desired frame $\{d\}$)
+    \item $T_{bd} = T_{sb}^{-1} T_{sd}$: Relative transformation from current to desired frame
+    \item ${}^b\mathcal{V}_b = (\omega_b, v_b) \in \mathbb{R}^6 \cong \mathfrak{se}(3)$: Current body twist
+    \item ${}^d\mathcal{V}_d = (\omega_d, v_d)$: Desired body twist expressed in frame $\{d\}$
+    \item $\mathcal{E} \in \mathbb{R}^6$: Weighted pose error vector
+    \item $\mathcal{F} \in \mathbb{R}^6 \cong \mathfrak{se}(3)^*$: Wrench (moment, force)
+    \item $\alpha \in \mathbb{R}^+$: Characteristic length weighting rotation vs.\ translation
+    \item $[\cdot]_\times$: Skew-symmetric matrix representation of $\mathbb{R}^3$
 \end{itemize}
 
-\subsection{Virtual System Design on SE(3)}
+%==============================================================================
+\subsection{Metric Tensor on $\mathfrak{se}(3)$}
+\label{app:metric}
+%==============================================================================
 
-\subsubsection{Inner Product on $\mathfrak{se}(3)$ as Kinetic Energy}
+A geometrically consistent impedance controller requires a proper notion of distance on SE(3). We begin by defining an inner product on $\mathfrak{se}(3)$ with clear physical interpretation.
 
-We begin by defining an inner product on the Lie algebra $\mathfrak{se}(3)$, corresponding to the tangent space at identity. Let $\hat{\mathcal{V}}_1, \hat{\mathcal{V}}_2 \in \mathfrak{se}(3)$ be twist elements with coordinates $\mathcal{V}_1 = (\omega_1, v_1)$ and $\mathcal{V}_2 = (\omega_2, v_2)$.
+\subsubsection{Inner Product as Kinetic Energy}
 
-To provide a clear physical interpretation, we use an inner product representing an isotropic rigid body's kinematic energy. Using characteristic length scale $\alpha$, we define the metric coefficients as $\alpha^2$ for rotation and $1$ for translation (normalizing the mass term):
+For twists $\mathcal{V}_1 = (\omega_1, v_1)$ and $\mathcal{V}_2 = (\omega_2, v_2)$ in $\mathfrak{se}(3)$, we define the inner product:
 \begin{equation}
-\langle \hat{\mathcal{V}}_1, \hat{\mathcal{V}}_2 \rangle_I = \frac{\alpha^2}{2} \mathrm{tr}([\omega_1]^\top [\omega_2]) + v_1^\top v_2 = \alpha^2 \omega_1^\top \omega_2 + v_1^\top v_2 = \mathcal{V}_1^\top G \mathcal{V}_2
+\langle \mathcal{V}_1, \mathcal{V}_2 \rangle_G = \frac{\alpha^2}{2} \mathrm{tr}([\omega_1]_\times^\top [\omega_2]_\times) + v_1^\top v_2 = \alpha^2 \omega_1^\top \omega_2 + v_1^\top v_2 = \mathcal{V}_1^\top G \mathcal{V}_2
+\label{eq:app_inner_product}
 \end{equation}
-where $G = \mathrm{diag}(\alpha^2 I_3, I_3)$ is the inertia matrix.
-
-This naturally defines the kinetic energy $K$ of an isotropic rigid body with body twist ${}^b\mathcal{V}_b$:
+where $G = \mathrm{diag}(\alpha^2 I_3, I_3)$ is the metric tensor. This corresponds to the kinetic energy of an isotropic rigid body with unit mass and moment of inertia $\alpha^2 I_3$:
 \begin{equation}
-K = \frac{1}{2} \langle \hat{\mathcal{V}}_b, \hat{\mathcal{V}}_b \rangle_I = \frac{1}{2} {}^b\mathcal{V}_b^\top G \,{}^b\mathcal{V}_b
+K = \frac{1}{2} \langle \mathcal{V}, \mathcal{V} \rangle_G = \frac{1}{2} \mathcal{V}^\top G \mathcal{V}
+\label{eq:app_kinetic_energy_metric}
 \end{equation}
+
+\textbf{Physical Interpretation.} The characteristic length $\alpha$ acts as the radius of gyration, representing the ratio between rotational and translational inertia. This metric extends to a left-invariant Riemannian metric on SE(3), whose geodesics correspond to free rigid body motion---providing a dynamically consistent notion of distance on the configuration manifold.
 
 \subsubsection{Riemannian Metric Extension}
 
-We extend the inner product to a left-invariant Riemannian metric on SE(3). For tangent vectors $\dot{T}_1, \dot{T}_2 \in T_T \mathrm{SE}(3)$:
+We extend the inner product defined on $\mathfrak{se}(3)$ to a left-invariant Riemannian metric on SE(3). For tangent vectors $\dot{T}_1, \dot{T}_2 \in T_T \mathrm{SE}(3)$:
 \begin{equation}
-\langle \dot{T}_1, \dot{T}_2 \rangle_T = \langle T^{-1}\dot{T}_1, T^{-1}\dot{T}_2 \rangle_I
+\langle \dot{T}_1, \dot{T}_2 \rangle_T = \langle T^{-1}\dot{T}_1, T^{-1}\dot{T}_2 \rangle_G
+\label{eq:app_riemannian_metric}
 \end{equation}
 
 \subsubsection{Geodesics and Action Minimization}
 
 A geodesic minimizes the action integral along the manifold. For a curve $T(t) \in \mathrm{SE}(3)$ with body twist ${}^b\mathcal{V}_b(t) = (\omega(t), v(t))$, the action integral is:
 \begin{equation}
-S = \int_{t_0}^{t_f} \langle {}^b\mathcal{V}_b(t), {}^b\mathcal{V}_b(t) \rangle_{T(t)} \, dt = \int_{t_0}^{t_f} {}^b\mathcal{V}_b^\top G \,{}^b\mathcal{V}_b \, dt = \int_{t_0}^{t_f} \left( \alpha^2 \|\omega(t)\|^2 + \|v(t)\|^2 \right) dt
+S = \int_{t_0}^{t_f} \langle {}^b\mathcal{V}_b(t), {}^b\mathcal{V}_b(t) \rangle_G \, dt = \int_{t_0}^{t_f} \left( \alpha^2 \|\omega(t)\|^2 + \|v(t)\|^2 \right) dt
+\label{eq:app_action_integral}
 \end{equation}
 
-The Euler-Poincaré equations for the decoupled metric $G = \mathrm{diag}(\alpha^2 I, I)$ are:
+The Euler-Poincar\'{e} equations for the decoupled metric $G = \mathrm{diag}(\alpha^2 I_3, I_3)$ yield:
 \begin{align}
-\alpha^2 \dot{\omega} + \omega \times (\alpha^2 \omega) &= 0 \quad \Rightarrow \quad \dot{\omega} = 0 \\
-\dot{v} + \omega \times v &= 0 \quad \Rightarrow \quad \dot{v} = -\omega \times v
+\alpha^2 \dot{\omega} + \omega \times (\alpha^2 \omega) &= 0 \quad \Rightarrow \quad \dot{\omega} = 0 \label{eq:app_euler_poincare_rot}\\
+\dot{v} + \omega \times v &= 0 \quad \Rightarrow \quad \dot{v} = -\omega \times v \label{eq:app_euler_poincare_trans}
 \end{align}
 
-Solving with initial conditions $\omega(0) = \omega_0$ and $v(0) = v_0$ yields:
-
-\textbf{Rotational component:}
-\begin{equation}
-\omega(t) = \omega_0 \quad \text{(constant angular velocity)}
-\end{equation}
-
-\textbf{Translational component:}
-\begin{equation}
-v(t) = e^{-[\omega_0]t} v_0 = R(t)^\top v_0
-\end{equation}
-where $R(t) = e^{[\omega_0]t}$ is the rotation matrix. These solutions describe motion of an isotropic rigid body: constant angular velocity about a fixed axis in the body frame, with linear velocity maintaining constant direction in the spatial frame.
+Solving with initial conditions $\omega(0) = \omega_0$ and $v(0) = v_0$:
+\begin{itemize}
+    \item \textbf{Rotation}: $\omega(t) = \omega_0$ (constant angular velocity about a fixed axis in body frame)
+    \item \textbf{Translation}: $v(t) = e^{-[\omega_0]_\times t} v_0 = R(t)^\top v_0$ where $R(t) = e^{[\omega_0]_\times t}$
+\end{itemize}
+These solutions describe the motion of an isotropic rigid body: constant angular velocity with linear velocity maintaining constant direction in the spatial frame.
 
 \subsubsection{Geodesic Distance and Weighted Pose Error}
 
-The geodesic distance between poses $T_b = (R_b, p_b)$ and $T_d = (R_d, p_d)$ is computed by integrating the Riemannian metric along the geodesic path. The squared geodesic distance is:
+The geodesic distance between poses $T_{sb}$ and $T_{sd}$ under this metric is:
 \begin{equation}
-d^2(T_b, T_d) = \alpha^2 \big\| \log(R_b^\top R_d)^\vee \big\|^2 + \big\| p_d - p_b \big\|^2
+d^2(T_{sb}, T_{sd}) = \alpha^2 \| e_R \|^2 + \| e_p \|^2
+\label{eq:app_geodesic_distance}
+\end{equation}
+where the pose error components in body frame are:
+\begin{equation}
+e_R = \log(R_{sb}^\top R_{sd})^\vee \in \mathbb{R}^3, \quad e_p = R_{sb}^\top(p_{sd} - p_{sb}) \in \mathbb{R}^3
+\label{eq:app_pose_error_components}
 \end{equation}
 
-This represents the minimum action required to move from $T_b$ to $T_d$ under the Riemannian metric.
-
-We define unweighted pose error components in the body frame:
+The \textbf{weighted pose error vector} (matching Eq.~\eqref{eq:pose_error} in the main text):
 \begin{equation}
-\begin{aligned}
-e_p &= R_b^\top(p_d - p_b) \in \mathbb{R}^3 \quad \text{(translation error)} \\
-e_R &= \log(R_b^\top R_d)^\vee \in \mathbb{R}^3 \quad \text{(rotation error)}
-\end{aligned}
+\mathcal{E} = \begin{pmatrix} \alpha \, e_R \\ e_p \end{pmatrix} \in \mathbb{R}^6
+\label{eq:app_weighted_error}
 \end{equation}
+satisfies $\|\mathcal{E}\|^2 = d^2(T_{sb}, T_{sd})$, providing a Euclidean representation whose norm equals the SE(3) geodesic distance.
 
-where $e_p$ is the position difference vector expressed in body frame coordinates, and $e_R$ is the rotation vector representing the required rotation from $R_b$ to $R_d$ in body frame.
+%==============================================================================
+\subsection{Virtual Mass-Spring-Damper System on SE(3)}
+\label{app:virtual_system}
+%==============================================================================
 
-The \textbf{weighted pose error vector} incorporates the characteristic length $\alpha$:
-\begin{equation}
-\mathcal{E} = \begin{pmatrix} \alpha e_R \\ e_p \end{pmatrix} \in \mathbb{R}^6
-\end{equation}
+Classical impedance control designs a virtual mechanical system that governs the end-effector's interaction behavior. We derive this system from energy principles.
 
-With this definition, $\|\mathcal{E}\|^2 = \alpha^2 \|e_R\|^2 + \|e_p\|^2 = d^2(T_b,T_d)$, so $\mathcal{E}$ is a Euclidean representation whose norm equals the SE(3) geodesic distance.
+\subsubsection{Potential Energy of Pose Error}
 
-\subsubsection{Potential Energy and Elastic Wrench}
-
-We define the potential energy using a symmetric positive semi-definite stiffness matrix $K \in \mathbb{R}^{6 \times 6}$:
+We define the potential energy as a quadratic function of the weighted pose error using a symmetric positive semi-definite stiffness matrix $K \in \mathbb{R}^{6 \times 6}$:
 \begin{equation}
 P(\mathcal{E}) = \frac{1}{2} \mathcal{E}^\top K \, \mathcal{E}
+\label{eq:app_potential_energy}
 \end{equation}
 
-For regulation tasks with static desired pose ($\dot{T}_d = 0$), we derive the error time derivatives in terms of body twist ${}^b\mathcal{V}_b = (\omega_b, v_b)$.
+This potential energy reaches its minimum ($P = 0$) when $\mathcal{E} = 0$, i.e., when the current pose matches the desired pose.
 
-\textbf{Translation Error Rate:} With $e_p = R_b^\top(p_d - p_b)$, using $\dot{R}_b = R_b[\omega_b]$ and $\dot{p}_b = R_b v_b$:
+\subsubsection{Pose-Error Jacobian and Elastic Wrench Derivation}
+\label{app:error_jacobian}
+
+We derive the elastic wrench using the \textbf{power duality principle}. The key is to establish the relationship between the rate of change of the weighted pose error and the body twist through an error Jacobian matrix.
+
+For regulation tasks with static desired pose ($\dot{T}_{sd} = 0$), we derive the error time derivatives in terms of body twist ${}^b\mathcal{V}_b = (\omega_b, v_b)$.
+
+\textbf{Translation Error Rate.} With $e_p = R_{sb}^\top(p_{sd} - p_{sb})$, using $\dot{R}_{sb} = R_{sb}[\omega_b]_\times$ and $\dot{p}_{sb} = R_{sb} v_b$:
 \begin{equation}
 \begin{aligned}
-\dot{e}_p &= \frac{d}{dt}(R_b^\top)(p_d - p_b) + R_b^\top(\dot{p}_d - \dot{p}_b) \\
-&= (R_b[\omega_b])^\top(p_d - p_b) - R_b^\top R_b v_b \\
-&= [\omega_b]^\top e_p - v_b = -[\omega_b] e_p - v_b = [e_p] \omega_b - v_b
+\dot{e}_p &= \frac{d}{dt}(R_{sb}^\top)(p_{sd} - p_{sb}) + R_{sb}^\top(\dot{p}_{sd} - \dot{p}_{sb}) \\
+&= (R_{sb}[\omega_b]_\times)^\top(p_{sd} - p_{sb}) - R_{sb}^\top R_{sb} v_b \\
+&= [\omega_b]_\times^\top e_p - v_b = -[\omega_b]_\times e_p - v_b = [e_p]_\times \omega_b - v_b
 \end{aligned}
+\label{eq:app_trans_error_rate}
 \end{equation}
-where we used $[\omega_b]^\top = -[\omega_b]$ and the identity $-\omega_b \times e_p = [e_p] \omega_b$.
+where we used $[\omega_b]_\times^\top = -[\omega_b]_\times$ and the identity $-\omega_b \times e_p = [e_p]_\times \omega_b$.
 
-\textbf{Rotation Error Rate:} Let $R_{err} = R_b^\top R_d$ so that $e_R = \log(R_{err})^\vee$. Differentiating for static $\dot{R}_d = 0$:
+\textbf{Rotation Error Rate.} Let $R_{\mathrm{err}} = R_{sb}^\top R_{sd}$ so that $e_R = \log(R_{\mathrm{err}})^\vee$. Differentiating for static $\dot{R}_{sd} = 0$:
 \begin{equation}
-\dot{R}_{err} = \dot{R}_b^\top R_d = (R_b[\omega_b])^\top R_d = -[\omega_b] R_b^\top R_d = -[\omega_b] R_{err}
+\dot{R}_{\mathrm{err}} = \dot{R}_{sb}^\top R_{sd} = (R_{sb}[\omega_b]_\times)^\top R_{sd} = -[\omega_b]_\times R_{sb}^\top R_{sd} = -[\omega_b]_\times R_{\mathrm{err}}
+\label{eq:app_rot_error_dynamics}
 \end{equation}
 
-From Lie group theory, if $\dot{R} = [\omega_s]R$ then $\dot{\theta} = J_l^{-1}(\theta)\,\omega_s$, where $J_l$ is the left Jacobian of SO(3):
+From Lie group theory, if $\dot{R} = [\omega_s]_\times R$ then $\dot{\theta} = J_l^{-1}(\theta)\,\omega_s$, where $J_l$ is the left Jacobian of SO(3):
 \begin{equation}
-J_l(\theta) = I + \frac{1 - \cos \|\theta\|}{\|\theta\|^2} [\theta] + \frac{\|\theta\| - \sin \|\theta\|}{\|\theta\|^3} [\theta]^2
+J_l(\theta) = I + \frac{1 - \cos\|\theta\|}{\|\theta\|^2}[\theta]_\times + \frac{\|\theta\| - \sin\|\theta\|}{\|\theta\|^3}[\theta]_\times^2
+\label{eq:app_left_jacobian}
 \end{equation}
 
 Here $\omega_s = -\omega_b$, so:
 \begin{equation}
-\dot{e}_R = -J_l^{-1}(e_R) \omega_b
+\dot{e}_R = -J_l^{-1}(e_R) \, \omega_b
+\label{eq:app_rot_error_rate}
 \end{equation}
 
-The weighted error rate is:
+\textbf{Weighted Error Jacobian.} The weighted error rate is:
 \begin{equation}
-\dot{\mathcal{E}} = \begin{pmatrix} \alpha \dot{e}_R \\ \dot{e}_p \end{pmatrix} = \begin{pmatrix} -\alpha J_l^{-1}(e_R) \, \omega_b \\ [e_p] \, \omega_b - v_b \end{pmatrix} = -J_{\mathcal{E}} \, {}^b\mathcal{V}_b
+\dot{\mathcal{E}} = \begin{pmatrix} \alpha \dot{e}_R \\ \dot{e}_p \end{pmatrix} = \begin{pmatrix} -\alpha J_l^{-1}(e_R) \, \omega_b \\ [e_p]_\times \, \omega_b - v_b \end{pmatrix} = -J_{\mathcal{E}} \, {}^b\mathcal{V}_b
+\label{eq:app_weighted_error_rate}
 \end{equation}
-
-with the \textbf{weighted error Jacobian}:
+with the \textbf{pose-error Jacobian}:
 \begin{equation}
-J_{\mathcal{E}} = \begin{pmatrix} \alpha J_l^{-1}(e_R) & 0_{3 \times 3} \\ -[e_p] & I_{3} \end{pmatrix} \in \mathbb{R}^{6 \times 6}
+\boxed{J_{\mathcal{E}} = \begin{pmatrix} \alpha J_l^{-1}(e_R) & 0_{3\times 3} \\ -[e_p]_\times & I_3 \end{pmatrix} \in \mathbb{R}^{6 \times 6}}
+\label{eq:app_error_jacobian}
 \end{equation}
 
-By power duality, the elastic wrench satisfies $\dot{P} = {}^b\mathcal{V}_b^\top \mathcal{F}_{\mathrm{elastic}}$:
+\textbf{Elastic Wrench via Power Duality.} The rate of change of potential energy is:
 \begin{equation}
-\dot{P} = \frac{\partial P}{\partial \mathcal{E}}^\top \dot{\mathcal{E}} = (K \mathcal{E})^\top \dot{\mathcal{E}} = (-J_{\mathcal{E}}^\top K \mathcal{E})^\top {}^b\mathcal{V}_b
+\dot{P} = \frac{\partial P}{\partial \mathcal{E}}^\top \dot{\mathcal{E}} = (K\mathcal{E})^\top \dot{\mathcal{E}} = (K\mathcal{E})^\top (-J_{\mathcal{E}} \, {}^b\mathcal{V}_b) = (-J_{\mathcal{E}}^\top K \mathcal{E})^\top \, {}^b\mathcal{V}_b
+\label{eq:app_potential_power}
 \end{equation}
 
-yielding:
+By power duality, we define the elastic wrench $\mathcal{F}_{\mathrm{elastic}}$ such that $\dot{P} = {}^b\mathcal{V}_b^\top \mathcal{F}_{\mathrm{elastic}}$, yielding:
 \begin{equation}
 \boxed{\mathcal{F}_{\mathrm{elastic}} = -J_{\mathcal{E}}^\top K \mathcal{E}}
+\label{eq:app_elastic_wrench}
 \end{equation}
 
-Expanding with $\mathcal{E} = \begin{pmatrix} \alpha e_R \\ e_p \end{pmatrix}$ and $K = \begin{pmatrix} K_{RR} & K_{Rp} \\ K_{pR} & K_{pp} \end{pmatrix}$:
+\textbf{Explicit Components.} Expanding with $\mathcal{E} = (\alpha e_R, e_p)^\top$ and $K = \begin{psmallmatrix} K_{RR} & K_{Rp} \\ K_{pR} & K_{pp} \end{psmallmatrix}$:
 \begin{equation}
+\mathcal{F}_{\mathrm{elastic}} = \begin{pmatrix} m_{\mathrm{elastic}} \\ f_{\mathrm{elastic}} \end{pmatrix}, \quad
 \begin{aligned}
-m_{\mathrm{elastic}} &= -\alpha J_l^{-\top}(e_R) \, (K_{RR} \, \alpha e_R + K_{Rp} \, e_p) - e_p \times (K_{pR} \, \alpha e_R + K_{pp} \, e_p) \\
-f_{\mathrm{elastic}} &= -K_{pR} \, \alpha e_R - K_{pp} \, e_p
+m_{\mathrm{elastic}} &= -\alpha J_l^{-\top}(e_R)(K_{RR}\alpha e_R + K_{Rp} e_p) - e_p \times (K_{pR}\alpha e_R + K_{pp} e_p) \\
+f_{\mathrm{elastic}} &= -K_{pR}\alpha e_R - K_{pp} e_p
 \end{aligned}
+\label{eq:app_elastic_components}
 \end{equation}
 
 \subsubsection{Twist Error and Kinetic Energy}
+\label{app:twist_error}
 
-Given current body twist ${}^b\mathcal{V}_b$ and desired body twist ${}^d\mathcal{V}_d$, we compute their difference in the current body frame using the Adjoint map. Let $T_{bd} = T_b^{-1} T_d$ with $R_{bd} = R_b^\top R_d$ and $p_{bd} = R_b^\top(p_d - p_b)$. The Adjoint transformation is:
+Given current body twist ${}^b\mathcal{V}_b$ and desired body twist ${}^d\mathcal{V}_d$, we compute their difference in the current body frame using the Adjoint map. For $T_{bd} = T_{sb}^{-1} T_{sd}$ with $R_{bd} = R_{sb}^\top R_{sd}$ and $p_{bd} = R_{sb}^\top(p_{sd} - p_{sb})$:
 \begin{equation}
-[Ad_{T_{bd}}] = \begin{pmatrix} R_{bd} & 0 \\ [p_{bd}]R_{bd} & R_{bd} \end{pmatrix}
+\mathrm{Ad}_{T_{bd}} = \begin{pmatrix} R_{bd} & 0 \\ [p_{bd}]_\times R_{bd} & R_{bd} \end{pmatrix}
+\label{eq:app_adjoint}
 \end{equation}
 
 The twist error in the body frame is:
 \begin{equation}
-\xi = {}^b\mathcal{V}_d - {}^b\mathcal{V}_b = [Ad_{T_{bd}}] {}^d\mathcal{V}_d - {}^b\mathcal{V}_b
+\xi = {}^b\mathcal{V}_d - {}^b\mathcal{V}_b = \mathrm{Ad}_{T_{bd}} \, {}^d\mathcal{V}_d - {}^b\mathcal{V}_b
+\label{eq:app_twist_error}
 \end{equation}
 
-The kinetic energy of the virtual system is defined as:
+We define the \textbf{kinetic energy of the virtual system} as a quadratic function of the twist error:
 \begin{equation}
 K_{\mathrm{virtual}}(\xi) = \frac{1}{2} \xi^\top M \xi
+\label{eq:app_virtual_kinetic}
 \end{equation}
 where $M \in \mathbb{R}^{6 \times 6}$ is the positive-definite virtual mass (inertia) matrix.
 
 Assuming $M$ is constant in the body frame, the rate of change of kinetic energy is:
 \begin{equation}
-\dot{K}_{\mathrm{virtual}} = \frac{d}{dt} \left( \frac{1}{2} \xi^\top M \xi \right) = \xi^\top M \dot{\xi}
+\dot{K}_{\mathrm{virtual}} = \frac{d}{dt}\left(\frac{1}{2}\xi^\top M \xi\right) = \xi^\top M \dot{\xi}
+\label{eq:app_kinetic_rate}
 \end{equation}
 
-The inertial wrench is $M\dot{\xi}$, analogous to $ma$ in Newton's second law.
+The term $M\dot{\xi}$ corresponds to the \textbf{inertial wrench}, analogous to $ma$ in Newton's second law.
 
-\subsubsection{Complete Virtual Dynamics}
+\subsubsection{Complete Virtual Dynamics via Power Balance}
+\label{app:power_balance}
 
-The complete virtual system follows the power balance equation. The total energy $E = K_{\mathrm{virtual}} + P$ evolves according to:
+The complete virtual system follows from the \textbf{power balance equation}. The total energy $E = K_{\mathrm{virtual}} + P$ evolves according to:
 \begin{equation}
 \dot{E} = P_{\mathrm{ext}} - P_{\mathrm{diss}}
+\label{eq:app_energy_balance}
 \end{equation}
-
-where external power is $P_{\mathrm{ext}} = \mathcal{F}_{\mathrm{ext}}^\top \xi$ and dissipated power is $P_{\mathrm{diss}} = \xi^\top D \xi$ with symmetric positive-definite damping matrix $D \in \mathbb{R}^{6 \times 6}$.
+where:
+\begin{itemize}
+    \item $P_{\mathrm{ext}} = \mathcal{F}_{\mathrm{ext}}^\top \xi$: External power input (work done by external wrench on the virtual system)
+    \item $P_{\mathrm{diss}} = \xi^\top D \xi$: Dissipated power due to damping ($D \in \mathbb{R}^{6\times 6}$ symmetric positive-definite)
+\end{itemize}
 
 Expanding the power balance:
 \begin{equation}
-\frac{d}{dt}\left(\frac{1}{2} \xi^\top M \xi\right) + \frac{d}{dt}\left(\frac{1}{2} \mathcal{E}^\top K \mathcal{E}\right) = \mathcal{F}_{\mathrm{ext}}^\top \xi - \xi^\top D \xi
+\frac{d}{dt}\left(\frac{1}{2}\xi^\top M \xi\right) + \frac{d}{dt}\left(\frac{1}{2}\mathcal{E}^\top K \mathcal{E}\right) = \mathcal{F}_{\mathrm{ext}}^\top \xi - \xi^\top D \xi
+\label{eq:app_power_balance_expanded}
 \end{equation}
 
+Using $\dot{K}_{\mathrm{virtual}} = \xi^\top M \dot{\xi}$ and $\dot{P} = -\mathcal{F}_{\mathrm{elastic}}^\top {}^b\mathcal{V}_b = (J_{\mathcal{E}}^\top K \mathcal{E})^\top {}^b\mathcal{V}_b$:
 \begin{equation}
-\xi^\top \left[ M \dot{\xi} + J_{\mathcal{E}}^\top K \mathcal{E} \right] = \xi^\top \left[ \mathcal{F}_{\mathrm{ext}} - D \xi \right]
+\xi^\top \left[M \dot{\xi} + J_{\mathcal{E}}^\top K \mathcal{E}\right] = \xi^\top \left[\mathcal{F}_{\mathrm{ext}} - D\xi\right]
+\label{eq:app_power_balance_factored}
 \end{equation}
 
-This yields the virtual mass-spring-damper system:
+Since this must hold for all $\xi$, we obtain the \textbf{virtual mass-spring-damper dynamics}:
 \begin{equation}
-\boxed{M \dot{\xi} + D \xi + J_{\mathcal{E}}^\top K \mathcal{E} = \mathcal{F}_{\mathrm{ext}}}
+\boxed{M \dot{\xi} + D\xi + J_{\mathcal{E}}^\top K \mathcal{E} = \mathcal{F}_{\mathrm{ext}}}
+\label{eq:app_virtual_dynamics}
 \end{equation}
 
-where $M \dot{\xi}$ is the inertial term, $D \xi$ is the damping term, $J_{\mathcal{E}}^\top K \mathcal{E}$ is the elastic wrench, and $\mathcal{F}_{\mathrm{ext}}$ is external excitation.
+\textbf{Physical Interpretation:}
+\begin{itemize}
+    \item $M \dot{\xi}$: Inertial term (virtual mass effect resisting acceleration)
+    \item $D \xi$: Damping term (energy dissipation proportional to velocity error)
+    \item $J_{\mathcal{E}}^\top K \mathcal{E}$: Elastic wrench (restoring force toward desired pose)
+    \item $\mathcal{F}_{\mathrm{ext}}$: External excitation from environment contact
+\end{itemize}
 
+%==============================================================================
+\subsection{The Pose-Error Jacobian Problem}
+\label{app:jacobian_problem}
+%==============================================================================
+
+The Jacobian $J_{\mathcal{E}}$ in Eq.~\eqref{eq:app_error_jacobian} introduces significant complexity:
+
+\begin{enumerate}
+    \item \textbf{Nonlinear transcendental functions}: $J_l^{-1}(e_R)$ involves $\sin\|e_R\|$, $\cos\|e_R\|$, and $\|e_R\|^{-1}$ terms that are expensive to compute and differentiate.
+    
+    \item \textbf{Configuration-dependent coupling}: The $-[e_p]_\times$ block couples rotation and translation in ways that depend on the current pose error.
+    
+    \item \textbf{Approximation failure}: The common approximation $J_l^{-1}(e_R) \approx I_3$ (valid for small $\|e_R\| \ll 1$) fails in bimanual manipulation where constraint violations can cause large trajectory deviations.
+    
+    \item \textbf{Non-diagonal stiffness requirements}: Object-aware motion decomposition requires non-diagonal $K$ matrices, making the full $J_{\mathcal{E}}^\top K \mathcal{E}$ computation unavoidable.
+\end{enumerate}
+
+This nonlinearity is the core challenge referenced in Section~\ref{sec:problem_setup} (\textbf{C3}) that SWIVL addresses.
+
+%==============================================================================
 \subsection{Impedance Controller Implementation}
+\label{app:controller_implementation}
+%==============================================================================
 
 \subsubsection{Operational Space Dynamics}
 
-The robot's joint space dynamics are described by the Euler-Lagrange equations:
+The robot's joint space dynamics:
 \begin{equation}
 M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau - J_b^\top \mathcal{F}_{\mathrm{ext}}
+\label{eq:app_joint_dynamics}
 \end{equation}
-
-where $q \in \mathbb{R}^n$ are joint positions, $M(q)$ is the joint space inertia matrix, $C(q,\dot{q})$ includes Coriolis and centrifugal effects, $g(q)$ is gravity, $\tau$ are joint torques, and $\mathcal{F}_{\mathrm{ext}}$ is external wrench.
-
-The body twist ${}^b\mathcal{V}_b = (\omega_b, v_b)$ relates to joint velocities through the body Jacobian $J_b(q) \in \mathbb{R}^{6 \times n}$:
+transform to operational space via the body Jacobian $J_b(q)$ with ${}^b\mathcal{V}_b = J_b(q)\dot{q}$:
 \begin{equation}
-{}^b\mathcal{V}_b = J_b(q) \dot{q}, \quad \dot{\mathcal{V}}_b = J_b(q) \ddot{q} + \dot{J}_b(q,\dot{q}) \dot{q}
+\Lambda_b(q) \dot{\mathcal{V}}_b + \mu_b(q,\dot{q}) + \gamma_b(q) = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}
+\label{eq:app_op_space_dynamics}
 \end{equation}
-
-Projecting to operational space with operational space inertia $\Lambda_b(q) = (J_b M^{-1} J_b^\top)^{-1}$:
-\begin{equation}
-\Lambda_b(q) \dot{\mathcal{V}}_b + \mu_b(q, \dot{q}) + \gamma_b(q) = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}
-\end{equation}
-
 where:
 \begin{itemize}
-\item $\Lambda_b(q) = (J_b M^{-1} J_b^\top)^{-1}$: Operational space inertia (symmetric positive-definite)
-\item $\mu_b(q, \dot{q}) = \Lambda_b(q) J_b M^{-1} C \dot{q} - \Lambda_b \dot{J}_b \dot{q}$: Coriolis and centrifugal wrench
-\item $\gamma_b(q) = \Lambda_b(q) J_b M^{-1} g(q)$: Gravity wrench in body frame
-\item $\mathcal{F}_{\mathrm{cmd}} \in \mathbb{R}^6$: Control wrench related to joint torques by $\tau = J_b^\top \mathcal{F}_{\mathrm{cmd}}$
+    \item $\Lambda_b = (J_b M^{-1} J_b^\top)^{-1}$: Operational space inertia (symmetric positive-definite)
+    \item $\mu_b = \Lambda_b J_b M^{-1} C\dot{q} - \Lambda_b \dot{J}_b \dot{q}$: Coriolis/centrifugal wrench
+    \item $\gamma_b = \Lambda_b J_b M^{-1} g$: Gravity wrench in body frame
+    \item $\mathcal{F}_{\mathrm{cmd}}$: Control wrench, related to joint torques by $\tau = J_b^\top \mathcal{F}_{\mathrm{cmd}}$
 \end{itemize}
 
-\subsubsection{Controller Design by Virtual-Robot Coupling}
+\subsubsection{Controller Design via Virtual-Robot Coupling}
 
 To achieve desired impedance behavior, we couple the virtual system dynamics with the robot's operational space dynamics. The key is to match the closed-loop robot behavior to the virtual mass-spring-damper system.
 
 We have two dynamic systems:
 \begin{itemize}
-\item \textbf{Virtual System:} $M \dot{\xi} + D \xi + J_{\mathcal{E}}^\top K \mathcal{E} = \mathcal{F}_{\mathrm{ext}}$
-\item \textbf{Robot Dynamics:} $\Lambda_b(q) \dot{\mathcal{V}}_b + \mu_b(q, \dot{q}) + \gamma_b(q) = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}$
+    \item \textbf{Virtual System}: $M \dot{\xi} + D \xi + J_{\mathcal{E}}^\top K \mathcal{E} = \mathcal{F}_{\mathrm{ext}}$
+    \item \textbf{Robot Dynamics}: $\Lambda_b \dot{\mathcal{V}}_b + \mu_b + \gamma_b = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}$
 \end{itemize}
 
 Recall $\xi = {}^b\mathcal{V}_d - {}^b\mathcal{V}_b$, so $\dot{\xi} = {}^b\dot{\mathcal{V}}_d - {}^b\dot{\mathcal{V}}_b$.
 
-\textbf{Step 1:} Solve for $\dot{\xi}$ from the virtual system:
+\textbf{Step 1}: Solve for $\dot{\xi}$ from virtual system:
 \begin{equation}
-\dot{\xi} = -M^{-1}\left(D \xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}}\right)
+\dot{\xi} = -M^{-1}(D\xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}})
 \end{equation}
 
-\textbf{Step 2:} Substitute into $\dot{\xi} = {}^b\dot{\mathcal{V}}_d - {}^b\dot{\mathcal{V}}_b$ and solve for ${}^b\dot{\mathcal{V}}_b$:
+\textbf{Step 2}: Substitute into $\dot{\xi} = {}^b\dot{\mathcal{V}}_d - {}^b\dot{\mathcal{V}}_b$ and solve for ${}^b\dot{\mathcal{V}}_b$:
 \begin{equation}
-{}^b\dot{\mathcal{V}}_b = {}^b\dot{\mathcal{V}}_d + M^{-1}\left(D \xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}}\right)
+{}^b\dot{\mathcal{V}}_b = {}^b\dot{\mathcal{V}}_d + M^{-1}(D\xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}})
 \end{equation}
 
-\textbf{Step 3:} Substitute into robot dynamics:
+\textbf{Step 3}: Substitute into robot dynamics:
 \begin{equation}
-\Lambda_b \left[{}^b\dot{\mathcal{V}}_d + M^{-1}\left(D \xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}}\right)\right] + \mu_b + \gamma_b = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}
+\Lambda_b\left[{}^b\dot{\mathcal{V}}_d + M^{-1}(D\xi + J_{\mathcal{E}}^\top K \mathcal{E} - \mathcal{F}_{\mathrm{ext}})\right] + \mu_b + \gamma_b = \mathcal{F}_{\mathrm{cmd}} - \mathcal{F}_{\mathrm{ext}}
 \end{equation}
 
-\textbf{Step 4:} Solve for the control wrench:
+\textbf{Step 4}: Solve for control wrench:
 \begin{equation}
-\boxed{\mathcal{F}_{\mathrm{cmd}} = \Lambda_b M^{-1}\left(D \xi + J_{\mathcal{E}}^\top K \mathcal{E}\right) + \Lambda_b {}^b\dot{\mathcal{V}}_d + \mu_b + \gamma_b + \left(I - \Lambda_b M^{-1}\right)\mathcal{F}_{\mathrm{ext}}}
+\boxed{\mathcal{F}_{\mathrm{cmd}} = \Lambda_b M^{-1}(D\xi + J_{\mathcal{E}}^\top K \mathcal{E}) + \Lambda_b {}^b\dot{\mathcal{V}}_d + \mu_b + \gamma_b + (I - \Lambda_b M^{-1})\mathcal{F}_{\mathrm{ext}}}
+\label{eq:app_general_controller}
 \end{equation}
 
-This is the general impedance controller with components:
+\textbf{Controller Components:}
 \begin{itemize}
-\item $\Lambda_b M^{-1}(D \xi + J_{\mathcal{E}}^\top K \mathcal{E})$: Impedance feedback with weighted error Jacobian
-\item $\Lambda_b {}^b\dot{\mathcal{V}}_d$: Feedforward acceleration term
-\item $\mu_b + \gamma_b$: Compensation for Coriolis and gravity
-\item $(I - \Lambda_b M^{-1})\mathcal{F}_{\mathrm{ext}}$: External force compensation (inertia-dependent)
+    \item $\Lambda_b M^{-1}(D\xi + J_{\mathcal{E}}^\top K \mathcal{E})$: Impedance feedback with weighted error Jacobian
+    \item $\Lambda_b {}^b\dot{\mathcal{V}}_d$: Feedforward acceleration term
+    \item $\mu_b + \gamma_b$: Coriolis and gravity compensation
+    \item $(I - \Lambda_b M^{-1})\mathcal{F}_{\mathrm{ext}}$: External force compensation (inertia-dependent)
 \end{itemize}
 
-\textbf{Simplified Cases:}
+\subsubsection{Simplified Cases}
+
+\textbf{Case 1: $M = \Lambda_b$} (virtual mass matches robot inertia):
+\begin{equation}
+\mathcal{F}_{\mathrm{cmd}} = D\xi + J_{\mathcal{E}}^\top K \mathcal{E} + \Lambda_b {}^b\dot{\mathcal{V}}_d + \mu_b + \gamma_b
+\label{eq:app_simplified_1}
+\end{equation}
+
+\textbf{Case 2: $M = \Lambda_b$ and ${}^b\dot{\mathcal{V}}_d = 0$} (regulation task):
+\begin{equation}
+\mathcal{F}_{\mathrm{cmd}} = D\xi + J_{\mathcal{E}}^\top K \mathcal{E} + \mu_b + \gamma_b
+\label{eq:app_simplified_2}
+\end{equation}
+
+\textbf{Case 3: Small rotation errors} ($\|e_R\| \ll 1$ so $J_l^{-1} \approx I_3$) with isotropic stiffness ($K = kI_6$):
+\begin{equation}
+J_{\mathcal{E}} \approx \begin{pmatrix} \alpha I_3 & 0 \\ -[e_p]_\times & I_3 \end{pmatrix}, \quad
+\mathcal{F}_{\mathrm{cmd}} = D\xi + K_\alpha \mathcal{E} + \mu_b + \gamma_b
+\label{eq:app_simplified_3}
+\end{equation}
+where $K_\alpha = \mathrm{diag}(\alpha k I_3, k I_3)$ recovers the familiar linear impedance form.
+
+%==============================================================================
+\subsection{SWIVL's Twist-Driven Approach}
+\label{app:swivl_approach}
+%==============================================================================
+
+SWIVL bypasses $J_{\mathcal{E}}$ by incorporating pose errors directly into reference twists rather than computing elastic wrenches explicitly.
+
+\subsubsection{Reference Twist with Pose Error Correction}
+
+Recall from Section~\ref{sec:reference_twist_field} that SWIVL constructs a reference twist (Eq.~\eqref{eq:vector_field}):
+\begin{equation}
+\mathcal{V}_i^{\mathrm{ref}} = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\mathrm{des}} + k_{p_i} \mathcal{E}_i
+\label{eq:app_ref_twist}
+\end{equation}
+where $\mathcal{E}_i = (\alpha e_{R_i}, e_{p_i})^\top$ is the weighted pose error.
+
+\subsubsection{Controller Formulation}
+
+SWIVL's commanded wrench (Eq.~\eqref{eq:impedance_control_main}) is:
+\begin{equation}
+\mathcal{F}_{\mathrm{cmd},i} = K_{d_i}(\mathcal{V}_i^{\mathrm{ref}} - \mathcal{V}_i) + \mu_{b,i} + \gamma_{b,i}
+\label{eq:app_swivl_cmd}
+\end{equation}
+where $K_{d_i} = G(P_{i,\parallel} d_{i,\parallel} + P_{i,\perp} d_{i,\perp})$ is the decomposed damping matrix.
+
+\subsubsection{Equivalence to SE(3) Impedance}
+
+Expanding Eq.~\eqref{eq:app_swivl_cmd} with the reference twist definition:
+\begin{align}
+\mathcal{F}_{\mathrm{cmd},i} &= K_{d_i}(\mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\mathrm{des}} - \mathcal{V}_i + k_{p_i} \mathcal{E}_i) + \mu_{b,i} + \gamma_{b,i} \nonumber \\
+&= K_{d_i} \xi_i + K_{d_i} k_{p_i} \mathcal{E}_i + \mu_{b,i} + \gamma_{b,i}
+\label{eq:app_expanded}
+\end{align}
+where $\xi_i = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\mathrm{des}} - \mathcal{V}_i$ is the twist error.
+
+Comparing with the classical impedance controller (Eq.~\eqref{eq:app_simplified_2}):
+\begin{equation}
+\mathcal{F}_{\mathrm{cmd}} = D\xi + J_{\mathcal{E}}^\top K \mathcal{E} + \mu_b + \gamma_b
+\end{equation}
+
+The correspondence is:
+\begin{equation}
+\underbrace{K_{d_i}}_{\text{learned } D} \xi_i + \underbrace{K_{d_i} k_{p_i} \mathcal{E}_i}_{\approx J_{\mathcal{E}}^\top K \mathcal{E}} + \mu_{b,i} + \gamma_{b,i}
+\end{equation}
+
+\textbf{Key Insight.} SWIVL replaces the explicit nonlinear term $J_{\mathcal{E}}^\top K \mathcal{E}$ with $K_{d_i} k_{p_i} \mathcal{E}_i$, which:
 \begin{itemize}
-\item \textbf{When $M = \Lambda_b$} (matching virtual and robot inertia):
-\begin{equation}
-\mathcal{F}_{\mathrm{cmd}} = D \xi + J_{\mathcal{E}}^\top K \mathcal{E} + \Lambda_b {}^b\dot{\mathcal{V}}_d + \mu_b + \gamma_b
-\end{equation}
-
-\item \textbf{With $M = \Lambda_b$ and ${}^b\dot{\mathcal{V}}_d = 0$} (regulation):
-\begin{equation}
-\mathcal{F}_{\mathrm{cmd}} = D \xi + J_{\mathcal{E}}^\top K \mathcal{E} + \mu_b + \gamma_b
-\end{equation}
-
-\item \textbf{Small rotation errors} ($\|e_R\| \ll 1$ so $J_l^{-1} \approx I$) with isotropic stiffness ($K=kI_6$):
-\begin{equation}
-J_{\mathcal{E}} \approx \begin{pmatrix}  \alpha I_3 & 0 \\ -[e_p] & I_3 \end{pmatrix}, \quad \mathcal{F}_{\mathrm{cmd}} = D \xi + K_{\alpha} \, \mathcal{E} + \mu_b + \gamma_b
-\end{equation}
-where $K_{\alpha}=\mathrm{diag}(\alpha k I_3,k I_3)$ recovers the familiar linear impedance form.
+    \item Avoids computing $J_l^{-1}(e_R)$ and its configuration-dependent coupling
+    \item Maintains impedance behavior through the pose error correction in the reference twist
+    \item Enables the RL policy to learn appropriate $k_{p_i}$ values that adapt to task requirements
 \end{itemize}
 
-This completes the geometrically consistent impedance controller derivation for SE(3) manipulation tasks.
+Under small rotation errors where $J_l^{-1}(e_R) \approx I_3$, the approximation $J_{\mathcal{E}} \approx \mathrm{diag}(\alpha I_3, I_3)$ shows that $K_{d_i} k_{p_i} \mathcal{E}_i \approx k_{p_i} G \mathcal{E}_i$, recovering a diagonal stiffness structure. For larger errors, the learned $k_{p_i}$ compensates for the approximation.
+
+%==============================================================================
+%==============================================================================
+\section{SE(3) Trajectory Interpolation}
+\label{app:trajectory_interpolation}
+%==============================================================================
+%==============================================================================
+
+This appendix details the SE(3) trajectory smoothing procedure used in the Reference Twist Field Generator (Section~\ref{sec:reference_twist_field}, Step 1).
+
+\subsection{Problem Setup}
+
+Given sparse waypoints $\{T_{sd_i}[\tau]\}_{\tau=0}^{H}$ from high-level policies at frequency $f_{\mathrm{HL}} \sim 10$~Hz, we generate dense trajectories at control frequency $f_{\mathrm{LL}} \sim 100$~Hz while ensuring:
+\begin{enumerate}
+    \item Continuous position and orientation trajectories
+    \item Differentiable trajectories for twist computation (Eq.~\eqref{eq:body_twist})
+    \item Geometric consistency on SE(3)
+\end{enumerate}
+
+\subsection{Rotational Interpolation: SLERP}
+\label{app:slerp}
+
+For rotation matrices $R_0, R_1 \in \mathrm{SO}(3)$ at consecutive waypoints, we use Spherical Linear Interpolation (SLERP) via the exponential map.
+
+\subsubsection{Formulation}
+
+The interpolated rotation at $t \in [0, 1]$ is:
+\begin{equation}
+R(t) = R_0 \exp\left(t \cdot \log(R_0^\top R_1)\right)
+\label{eq:app_slerp}
+\end{equation}
+where $\log: \mathrm{SO}(3) \to \mathfrak{so}(3)$ and $\exp: \mathfrak{so}(3) \to \mathrm{SO}(3)$ are the matrix logarithm and exponential.
+
+\subsubsection{Angular Velocity}
+
+Differentiating Eq.~\eqref{eq:app_slerp}, the body angular velocity is constant:
+\begin{equation}
+\omega(t) = \frac{1}{\Delta t} \log(R_0^\top R_1)^\vee
+\end{equation}
+where $\Delta t$ is the time interval between waypoints. This matches the geodesic solution in Appendix~\ref{app:metric}.
+
+\subsubsection{Quaternion Implementation}
+
+For numerical stability, we implement SLERP using unit quaternions $\mathbf{q}_0, \mathbf{q}_1 \in S^3$:
+\begin{equation}
+\mathbf{q}(t) = \frac{\sin((1-t)\Omega)}{\sin\Omega} \mathbf{q}_0 + \frac{\sin(t\Omega)}{\sin\Omega} \mathbf{q}_1
+\end{equation}
+where $\cos\Omega = \mathbf{q}_0 \cdot \mathbf{q}_1$. When $\Omega \approx 0$, we use linear interpolation.
+
+\subsection{Translational Interpolation: Cubic Splines}
+\label{app:cubic_spline}
+
+For position waypoints $\{p_0, p_1, \ldots, p_H\}$ at times $\{t_0, t_1, \ldots, t_H\}$, we construct a cubic spline ensuring $C^2$ continuity.
+
+\subsubsection{Spline Construction}
+
+On each interval $[t_k, t_{k+1}]$, the position is:
+\begin{equation}
+p(t) = a_k + b_k(t - t_k) + c_k(t - t_k)^2 + d_k(t - t_k)^3
+\end{equation}
+with coefficients determined by:
+\begin{itemize}
+    \item Interpolation: $p(t_k) = p_k$, $p(t_{k+1}) = p_{k+1}$
+    \item $C^1$ continuity: Velocity continuity at interior knots
+    \item $C^2$ continuity: Acceleration continuity at interior knots
+    \item Boundary conditions: Natural spline ($p''(t_0) = p''(t_H) = 0$) or clamped
+\end{itemize}
+
+\subsubsection{Velocity and Acceleration}
+
+The derivatives are:
+\begin{align}
+\dot{p}(t) &= b_k + 2c_k(t - t_k) + 3d_k(t - t_k)^2 \\
+\ddot{p}(t) &= 2c_k + 6d_k(t - t_k)
+\end{align}
+providing the spatial linear velocity needed for twist computation.
+
+\subsection{Body Twist Computation}
+
+Given interpolated $R(t)$ and $p(t)$, the desired body twist (Eq.~\eqref{eq:body_twist}) is:
+\begin{equation}
+\mathcal{V}^{\mathrm{des}}(t) = \begin{pmatrix} \omega^{\mathrm{des}}(t) \\ v^{\mathrm{des}}(t) \end{pmatrix}, \quad
+[\omega^{\mathrm{des}}]_\times = R(t)^\top \dot{R}(t), \quad
+v^{\mathrm{des}} = R(t)^\top \dot{p}(t)
+\end{equation}
+
+For SLERP rotations, $\omega^{\mathrm{des}}$ is piecewise constant. For cubic spline translations, $v^{\mathrm{des}}$ is piecewise quadratic in the spatial frame (and smooth in the body frame after the rotation transformation).
+
+\subsection{Implementation Notes}
+
+\begin{enumerate}
+    \item \textbf{Waypoint timing}: Equal spacing $\Delta t = 1/f_{\mathrm{HL}}$ between high-level waypoints
+    \item \textbf{Interpolation frequency}: Dense samples at $\Delta t_{\mathrm{LL}} = 1/f_{\mathrm{LL}}$
+    \item \textbf{Action chunk handling}: For action chunks of horizon $H_{\mathrm{chunk}}$, we interpolate over the full chunk and update when new chunks arrive
+    \item \textbf{Singularity handling}: When $R_0 \approx R_1$ (small rotation), use first-order approximation $R(t) \approx R_0(I + t[\omega]_\times)$
+\end{enumerate}

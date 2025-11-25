@@ -102,7 +102,7 @@ To address the sparsity gap, we perform smooth interpolation in SE(3) to obtain 
 \begin{equation}
 \{T_{sd_l}(t), T_{sd_r}(t)\}_{t=0}^{H_{LL}},
 \end{equation}
-where $H_{LL}$ is the smoothed trajectory horizon. We use SLERP for rotations and cubic splines for translations (Appendix~\ref{app:trajectory_interpolation}). Both schemes are differentiable in time, inducing continuous position and rotation trajectories $p_i^{\text{des}}(t)$ and $R_i^{\text{des}}(t)$.
+where $H_{LL}$ is the smoothed trajectory horizon. We use SLERP for rotations and cubic splines for translations. Both schemes are differentiable in time, inducing continuous position and rotation trajectories $p_i^{\text{des}}(t)$ and $R_i^{\text{des}}(t)$.
 
 \paragraph{Step 2: Body Twist Computation.} 
 For an interpolated trajectory $T_{sd_i}(t) = \begin{bsmallmatrix} R_{sd_i}(t) & p_{sd_i}(t) \\ 0 & 1 \end{bsmallmatrix}$, we compute the desired body twist by differentiation:
@@ -380,14 +380,14 @@ where $T_{\text{grip},i}^{\text{init}}$ and $T_{\text{grip},i}$ are initial and 
 
 \subsubsection{Policy Architecture and Training}
 
-The policy $\pi_\theta: \mathcal{O} \to \mathcal{A}$ uses a multi-stream architecture with \textbf{Feature-wise Linear Modulation (FiLM)} to inject object geometry into feature processing. Different joint types (revolute, prismatic, fixed) require fundamentally different impedance strategies. Separate encoders process reference twists, wrenches, and proprioception, with FiLM layers modulating features based on screw axes $\{\mathcal{B}_l, \mathcal{B}_r\}$, enabling dynamic adaptation across joint types.
+The policy $\pi_\theta: \mathcal{O} \to \mathcal{A}$ uses a multi-stream architecture with \textbf{Feature-wise Linear Modulation (FiLM)}~\cite{perez2018film} to inject object geometry into feature processing. Separate encoders process reference twists, wrenches, and proprioception, with FiLM layers modulating features based on screw axes $\{\mathcal{B}_l, \mathcal{B}_r\}$, enabling dynamic adaptation across joint types.
 
-We train with \textbf{Proximal Policy Optimization (PPO)}:
+We train with \textbf{Proximal Policy Optimization (PPO)}~\cite{schulman2017ppo}:
 \begin{equation}
 \label{eq:ppo}
 L^{\text{CLIP}}(\theta) = \mathbb{E}_t \left[\min\left(r_t(\theta) \hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t\right)\right],
 \end{equation}
-where $r_t(\theta) = \pi_\theta(a_t|o_t) / \pi_{\theta_{\text{old}}}(a_t|o_t)$ and advantages are computed via Generalized Advantage Estimation (GAE):
+where $r_t(\theta) = \pi_\theta(a_t|o_t) / \pi_{\theta_{\text{old}}}(a_t|o_t)$ and advantages are computed via Generalized Advantage Estimation (GAE)~\cite{schulman2016gae}:
 \begin{equation}
 \label{eq:gae}
 \hat{A}_t = \sum_{l=0}^{\infty} (\gamma \lambda)^l \delta_{t+l}, \quad \delta_t = r_t + \gamma V_\phi(o_{t+1}) - V_\phi(o_t),

@@ -99,7 +99,7 @@
 \maketitle
 
 \begin{abstract}
-Bimanual manipulation of articulated objects requires simultaneous satisfaction of kinematic constraints and regulation of inter-arm contact forces—capabilities that current imitation-based approaches that lack adaptive force modulation and rely on high-stiffness control. We introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning), a hierarchical control framework bridging cognitive planning with physical execution. SWIVL contributes: (1) twist-driven impedance control via stable imitation vector fields that bypass nonlinear pose-error Jacobians; (2) screw axes based decompositions enabling independent compliance for bulk and internal motions; and (3) wrench-adaptive impedance variable learning via RL that suppresses excessive fighting forces. We evaluate SWIVL on SE(2) planar benchmarks involving rigid transport, revolute rotation, and prismatic insertion, demonstrating improved success rates, reduced internal forces compared to imitation learning baselines. 
+Bimanual manipulation of articulated objects requires simultaneous satisfaction of kinematic constraints and regulation of inter-arm contact forces—capabilities that current imitation-based approaches that lack adaptive force modulation and rely on high-stiffness control. We introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning), a hierarchical control framework bridging cognitive planning with physical execution. SWIVL contributes: (1) twist-driven impedance control via stable imitation vector fields that bypass nonlinear pose-error Jacobians; (2) screw axes based decompositions enabling independent compliance for bulk and internal motions; and (3) wrench-adaptive impedance variable learning via RL that suppresses excessive fighting forces. We evaluate SWIVL on SE(2) planar benchmarks involving revolute rotation and prismatic insertion, demonstrating improved success rates, reduced internal forces compared to imitation learning baselines. 
 \end{abstract}
 
 % Main Content
@@ -112,16 +112,13 @@ Bimanual manipulation of articulated objects requires simultaneous satisfaction 
 \section{Conclusion}
 \label{sec:conclusion}
 
-We introduced \textbf{SWIVL}, a hierarchical framework that bridges high-level cognitive planning with low-level physically grounded execution for bimanual manipulation of articulated objects. By explicitly incorporating object kinematic constraints and end-effector wrench feedback, SWIVL operationalizes \textbf{Physical Intelligence}---enabling force-compliant coordination, constraint satisfaction, and robust tracking of diverse high-level planners.
+We introduced \textbf{SWIVL} (Screw-Wrench informed Impedance Variable Learning), a hierarchical control framework that bridges the gap between high-level cognitive planning and low-level physically grounded execution for bimanual manipulation of articulated objects. SWIVL addresses the fundamental limitation of existing learning-based manipulation approaches: their reliance on high-stiffness position control without explicit reasoning about kinematic constraints or inter-arm force interactions.
 
-Our key contributions include: (1) a \textbf{Stable Imitation Vector Field} with $O(1)$ computational complexity and guaranteed exponential convergence, (2) a \textbf{bulk-internal motion decomposition} that provides interpretable task semantics, (3) a \textbf{kinematic-constrained action space} that structurally enforces holonomic constraints, (4) an \textbf{object-conditioned policy architecture} using FiLM conditioning for generalization across joint types, and (5) comprehensive evaluation demonstrating necessity of explicit physical modeling.
+Our framework contributes three key technical innovations. First, twist-driven impedance control via stable imitation vector fields bypasses the nonlinear pose-error Jacobian inherent in SE(3) impedance formulations by incorporating pose errors directly into reference twists, enabling geometrically consistent compliance under large trajectory deviations. Second, screw axes-based decomposition partitions the twist and wrench spaces into object-centric internal and bulk motion subspaces, allowing independent compliance modulation aligned with the articulated object's kinematic structure. Third, wrench-adaptive impedance variable learning via reinforcement learning enables the policy to discover task-appropriate impedance strategies conditioned on real-time force feedback and object geometry, suppressing harmful fighting forces while maintaining compliant trajectory tracking.
 
-SWIVL is designed to operate beneath arbitrary cognitive planners---including VLA-based foundation models, behavior cloning policies, and teleoperation interfaces---without requiring planner-specific tuning. This modularity enables seamless integration with emerging high-level reasoning systems while ensuring safe, physically feasible execution.
+Our SE(2) experiments validate the core hypothesis: explicit encoding of geometric constraints and wrench feedback is essential for robust bimanual manipulation. SWIVL consistently outperforms position control and classical impedance control baselines in success rate while significantly reducing inter-arm fighting forces across revolute and prismatic joint types. These results demonstrate that object-aware motion decomposition and learned impedance modulation provide the physical intelligence that cognitive planners lack.
 
-\textbf{Future Directions.} While our SE(2) evaluation isolates core challenges of force coupling and constraint satisfaction, extending to full SE(3) manipulation requires minimal architectural changes (scaling observation/action dimensions) and is naturally supported by our formulation. Key directions include: (1) real-world validation with domain randomization for sim-to-real transfer, (2) online constraint learning for unknown objects, (3) multi-DoF articulated structures, (4) end-to-end visuomotor control integrating perception with low-level policy, and (5) theoretical analysis of stability guarantees and optimality.
-
-By decoupling \textbf{Cognitive Intelligence} (high-level semantic reasoning) from \textbf{Physical Intelligence} (low-level force-compliant execution), SWIVL advances toward robotic systems that effectively unify both dimensions---a critical step for deploying learning-based policies in real-world contact-rich manipulation.
-
+By operating as a planner-agnostic low-level control layer, SWIVL enables safer deployment of vision-language-action models and other cognitive policies for contact-rich bimanual tasks. The framework's principled integration of screw theory, impedance control, and reinforcement learning offers a foundation for extending physical intelligence to more complex articulated manipulation scenarios in SE(3).
 % Bibliography
 \bibliographystyle{plainnat}
 \bibliography{references}
@@ -130,11 +127,8 @@ By decoupling \textbf{Cognitive Intelligence} (high-level semantic reasoning) fr
 \appendix
 
 \input{appendix/appendix_notation}
-\input{appendix/appendix_trajectory_interpolation}
 \input{appendix/appendix_impedance_control}
 \input{appendix/appendix_se2}
 \input{appendix/appendix_learning_settings}
-\input{appendix/appendix_environment_settings}
-\input{appendix/appendix_owil}
 
 \end{document}
