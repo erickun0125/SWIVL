@@ -159,12 +159,12 @@ f_{\mathrm{elastic}} &= -K_{pR} \, \alpha e_R - K_{pp} \, e_p
 
 Given current body twist ${}^b\mathcal{V}_b$ and desired body twist ${}^d\mathcal{V}_d$, we compute their difference in the current body frame using the Adjoint map. Let $T_{bd} = T_b^{-1} T_d$ with $R_{bd} = R_b^\top R_d$ and $p_{bd} = R_b^\top(p_d - p_b)$. The Adjoint transformation is:
 \begin{equation}
-\Ad_{T_{bd}} = \begin{pmatrix} R_{bd} & 0 \\ [p_{bd}]R_{bd} & R_{bd} \end{pmatrix}
+[Ad_{T_{bd}}] = \begin{pmatrix} R_{bd} & 0 \\ [p_{bd}]R_{bd} & R_{bd} \end{pmatrix}
 \end{equation}
 
 The twist error in the body frame is:
 \begin{equation}
-\xi = {}^b\mathcal{V}_d - {}^b\mathcal{V}_b = \Ad_{T_{bd}} {}^d\mathcal{V}_d - {}^b\mathcal{V}_b
+\xi = {}^b\mathcal{V}_d - {}^b\mathcal{V}_b = [Ad_{T_{bd}}] {}^d\mathcal{V}_d - {}^b\mathcal{V}_b
 \end{equation}
 
 The kinetic energy of the virtual system is defined as:
