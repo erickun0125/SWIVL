@@ -1,0 +1,29 @@
+\section{Related Work}
+\label{sec:related_work}
+
+\subsection{Learning Paradigms for Manipulation}
+
+\textbf{Imitation Learning and Behavior Cloning.} 
+Learning from Demonstration (LfD) has become a dominant paradigm for acquiring manipulation skills. Behavior Cloning directly maps observations to actions through supervised learning, while recent methods employ generative models—Diffusion Policy for denoising-based action generation and ACT for transformer-based action chunking—to improve temporal consistency. However, these approaches inherit two fundamental limitations: they reproduce demonstrated trajectories without exploring contact dynamics, and they execute learned policies via high-stiffness position control that cannot accommodate force interactions or kinematic constraints. These limitations become critical in bimanual manipulation where constraint satisfaction and force regulation are essential.
+
+\textbf{Vision-Language-Action Models.} 
+Cross-embodiment foundation models such as RT-1, RT-2, $\pi_0$, and Octo leverage large-scale datasets like Open-X Embodiment for broad semantic understanding and impressive generalization to novel objects and instructions. These models advance Cognitive Intelligence—interpreting goals, decomposing tasks, and generating motion intentions. However, cross-embodiment training cannot standardize Physical Intelligence: wrench feedback, reference frame conventions, and kinematic constraints vary fundamentally across robot platforms and are absent from training data. This limitation motivates our approach of decoupling high-level cognitive planning from low-level physically grounded execution.
+
+\textbf{Reinforcement Learning for Contact-Rich Manipulation.} 
+Reinforcement learning enables acquisition of contact-rich skills through physical exploration—capabilities absent in imitation learning. Deep RL has achieved remarkable results in dexterous in-hand manipulation and tool use by optimizing physical objectives through environmental interaction. However, most RL formulations target single-task settings with dense, task-specific rewards. In contrast, SWIVL leverages RL to learn task-agnostic impedance modulation that generalizes across manipulation scenarios, using wrench feedback and object geometry as the primary learning signals.
+
+\subsection{Force-Compliant Control}
+
+\textbf{Compliant Control and Force Regulation.}
+Operational space control and impedance control provide foundations for compliant manipulation, regulating motion-force relationships through virtual mass-spring-damper dynamics. Hybrid force/position control extends this by decomposing task space into position-controlled and force-controlled subspaces. However, these classical frameworks face key limitations: mathematical formulations natural in Euclidean space require nonlinear Jacobians for SE(3) extension; fixed impedance parameters preclude adaptation to varying contact dynamics; and hybrid control requires a priori specification of control modes per axis. SWIVL addresses these through learned impedance modulation conditioned on wrench feedback, while our twist-driven formulation sidesteps SE(3) pose-error complexities.
+
+\textbf{Learning Force-Aware Manipulation.} 
+Recent work incorporates force sensing into learned policies through force-conditioned architectures and tactile-guided manipulation. These approaches demonstrate improved performance on contact-rich tasks but typically learn task-specific force patterns that do not transfer across scenarios. SWIVL instead learns generalizable force-compliant behavior by decomposing wrenches into productive and non-productive components based on object kinematics, enabling task-agnostic force regulation.
+
+\subsection{Hierarchical Integration of Cognitive and Physical Control}
+
+\textbf{Residual Reinforcement Learning.} 
+Residual RL bridges imitation and reinforcement learning by augmenting frozen behavior-cloned policies with learned corrective actions. This approach preserves demonstrated behavior while adapting to distribution shifts through online interaction. However, existing residual methods focus on single-arm manipulation without addressing the force coupling and constraint satisfaction required for bimanual coordination. SWIVL takes a different approach: rather than correcting a frozen policy, it learns a standalone low-level controller that operates beneath arbitrary high-level planners.
+
+\textbf{Whole-Body Control.}
+Whole-body control provides a principled framework for translating high-level task commands into physically feasible motions on complex robotic systems. While recent work in humanoid control employs MPC and RL-trained low-level policies to handle the physical interactions arising from full-body dynamics—tracking commands from high-level planners such as VLAs and imitation learning policies while maintaining balance and stability. SWIVL applies this hierarchical philosophy to a different physical challenge: bimanual manipulation of articulated objects, where inter-arm force coupling and closed-chain kinematic constraints create complex physical interactions analogous to whole-body contact dynamics. Just as humanoid controllers learn to regulate ground reaction forces and joint coordination, our RL-trained impedance modulation policy learns to regulate internal forces and constraint satisfaction.
