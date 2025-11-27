@@ -100,7 +100,7 @@
 | Teaser (Bimanual Example) | `bimanipulation_example_image.jpg` | ✅ 완료 |
 | Architecture Overview | `architecture_overview.jpg` | ⏳ 대기 (파일 추가 필요) |
 | Reference Twist Field | `reference_twist_field.jpg` | ⏳ 대기 (파일 추가 필요) |
-| Benchmark Objects | `objects.pdf` | ⬜ 미생성 |
+| Benchmark Objects | `objects.jpg` | ⏳ 대기 (파일 추가 필요) |
 | Force Comparison | `force_comparison.pdf` | ⬜ 미생성 |
 | Impedance Analysis | `impedance_analysis.pdf` | ⬜ 미생성 |
 

@@ -27,16 +27,12 @@ We evaluate on \textbf{2 articulated objects} spanning two joint types (Figure~\
 \end{itemize}
 Each object satisfies the SE(2) holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$ with constant body-frame screw axes $\mathcal{B}_l, \mathcal{B}_r \in \mathbb{R}^3$. Tasks require manipulating objects from randomized initial configurations to goal configurations. \textbf{Success criteria}: position error $<$10 pixels, orientation error $<$5°, joint error $<$5° or 5 pixels, with maintained grasp. Each configuration is tested over \textbf{100 trials}.
 
-% ============================================================================
-% FIGURE PLACEHOLDER: Object illustrations
-% ============================================================================
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figures/objects.pdf}
-%     \caption{\textbf{Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation).}
-%     \label{fig:objects}
-% \end{figure}
-% ============================================================================
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/objects.jpg}
+    \caption{\textbf{Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation).}
+    \label{fig:objects}
+\end{figure}
 
 \paragraph{High-Level Planner.}
 All methods share a common high-level planner: a \textbf{Flow Matching Policy} trained via behavior cloning on expert demonstrations. The policy outputs action chunks---sequences of desired end-effector poses $\{T_{sd_i}[\tau]\}_{\tau=0}^{H}$---at 10 Hz. This architecture represents state-of-the-art imitation learning for manipulation, providing temporally consistent motion intentions without explicit reasoning about contact dynamics or inter-arm force coordination. By fixing the high-level planner across all methods, we isolate the contribution of the low-level control strategy.
