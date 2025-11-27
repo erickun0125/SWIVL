@@ -1,3 +1,42 @@
+Metadata-Version: 2.4
+Name: swivl
+Version: 0.1.0
+Summary: SWIVL: Screw-Wrench informed Impedance Variable Learning for bimanual manipulation
+Author-email: Kyungseo Park <erickun0125@snu.ac.kr>
+License: MIT
+Project-URL: Homepage, https://github.com/your-username/swivl
+Project-URL: Documentation, https://github.com/your-username/swivl/tree/main/docs
+Project-URL: Repository, https://github.com/your-username/swivl
+Keywords: robotics,manipulation,impedance-control,bimanual,reinforcement-learning
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: gymnasium>=0.28.0
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: pymunk>=6.0.0
+Requires-Dist: pygame>=2.0.0
+Requires-Dist: opencv-python>=4.5.0
+Requires-Dist: shapely>=1.8.0
+Requires-Dist: scipy>=1.9.0
+Provides-Extra: rl
+Requires-Dist: torch>=2.0.0; extra == "rl"
+Requires-Dist: stable-baselines3>=2.0.0; extra == "rl"
+Requires-Dist: tensorboard>=2.10.0; extra == "rl"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: isort>=5.0.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+Provides-Extra: all
+Requires-Dist: swivl[dev,rl]; extra == "all"
+
 # SWIVL - Screw and Wrench informed Impedance Variable Learning
 
 Bimanual manipulation of articulated objects with inter-force interaction using reinforcement learning.
@@ -27,27 +66,24 @@ conda activate swivl
 ### Run Demos
 
 ```bash
-# Teleoperation demo (with visualization)
-python scripts/demos/demo_teleoperation.py revolute
+# Visualization demo
+python scripts/run_visualization.py
 
-# Screw-decomposed impedance control example
-python scripts/demos/screw_decomposed_bimanual_control.py
+# Teleoperation demo
+python -m scripts.demos.demo_teleoperation
 
 # Static hold demo
-python scripts/demos/demo_static_hold.py
+python -m scripts.demos.demo_static_hold
 ```
 
 ### Run Tests
 
 ```bash
-# Run core tests
-python scripts/tests/test_core.py
+# Run all tests
+python -m pytest scripts/tests/
 
-# Run controller tests
-python scripts/tests/test_controllers.py
-
-# Run updated controller tests
-python scripts/tests/test_updated_controllers.py
+# Run specific test
+python -m scripts.tests.test_biart_simple
 ```
 
 ### Training
@@ -85,48 +121,38 @@ SWIVL/
 │   ├── envs/                      # Environments
 │   │   ├── biart.py              # Main BiArt environment
 │   │   ├── object_manager.py     # Articulated object management
-│   │   ├── end_effector_manager.py # Gripper management
-│   │   └── reward_manager.py     # Reward computation
+│   │   └── end_effector_manager.py
 │   ├── ll_controllers/            # Low-level controllers
-│   │   ├── pd_controller.py                      # PD controller
-│   │   ├── se2_impedance_controller.py           # Standard impedance
-│   │   └── se2_screw_decomposed_impedance.py     # Screw decomposition
+│   │   ├── se2_impedance_controller.py              # Standard impedance
+│   │   ├── se2_screw_decomposed_impedance.py       # Screw decomposition
+│   │   └── task_space_impedance.py                  # Backward compatibility
 │   ├── hl_planners/               # High-level planners
 │   │   ├── diffusion_policy.py   # Diffusion policy
-│   │   ├── act.py                # ACT policy
-│   │   ├── flow_matching.py      # Flow matching policy
-│   │   ├── teleoperation.py      # Teleoperation planner
-│   │   └── keyboard_teleoperation.py
+│   │   ├── act_policy.py         # ACT policy
+│   │   └── flow_matching_policy.py
 │   ├── rl_policy/                 # RL policy
-│   │   ├── impedance_learning_env.py    # RL environment for impedance
-│   │   ├── ppo_impedance_policy.py      # PPO agent
-│   │   └── train_impedance_policy.py    # Training script
+│   │   └── impedance_learning_env.py
 │   ├── se2_math.py                # SE(2) math utilities
 │   ├── se2_dynamics.py            # Robot dynamics
 │   └── trajectory_generator.py    # Trajectory generation
 ├── scripts/                       # Scripts and utilities
 │   ├── demos/                     # Demo scripts
 │   │   ├── demo_teleoperation.py
-│   │   ├── demo_static_hold.py
-│   │   └── screw_decomposed_bimanual_control.py
+│   │   └── demo_static_hold.py
 │   ├── tests/                     # Test scripts
-│   │   ├── test_core.py           # Core functionality tests
-│   │   ├── test_controllers.py    # Controller tests
-│   │   └── test_updated_controllers.py
+│   │   ├── test_biart_simple.py
+│   │   ├── test_controllers.py
+│   │   └── test_integrated_system.py
 │   ├── training/                  # Training scripts
 │   ├── evaluation/                # Evaluation scripts
 │   └── run_visualization.py       # Visualization runner
+├── examples/                      # Usage examples
+│   └── screw_decomposed_bimanual_control.py
 ├── docs/                          # Documentation
-│   ├── README.md                  # Documentation index
-│   ├── SE2_IMPEDANCE_VERIFICATION.md
-│   ├── IMPEDANCE_CONTROLLER_ANALYSIS.md
+│   ├── SE2_IMPEDANCE_VERIFICATION.md       # Controller verification
 │   ├── IMPEDANCE_CONTROLLER_IMPLEMENTATION.md
 │   ├── PIPELINE_FLOW_ANALYSIS.md
-│   ├── SE2_FRAME_CONVENTIONS.md
-│   └── HL_RL_PIPELINE_README.md
-├── pyproject.toml                 # Package configuration
-├── requirements.txt               # Dependencies
-├── setup_conda.sh                 # Environment setup script
+│   └── SE2_FRAME_CONVENTIONS.md
 └── README.md                      # This file
 ```
 
@@ -137,7 +163,7 @@ SWIVL/
 - **Proper robot dynamics:** Task-space inertia, Coriolis, gravity compensation
 - **Model matching mode:** M_d = Lambda_b for guaranteed passivity
 - **Acceleration feedforward:** Lambda_b * dV_d for improved tracking
-- **Modern Robotics convention:** Twist [ω, vx, vy], Wrench [τ, fx, fy]
+- **Frame conventions:** Consistent spatial/body frame transformations
 
 See [docs/SE2_IMPEDANCE_VERIFICATION.md](docs/SE2_IMPEDANCE_VERIFICATION.md) for mathematical verification.
 
@@ -154,9 +180,6 @@ Example:
 B_left, B_right = env.get_joint_axis_screws()
 
 # Create screw-decomposed controller
-from src.ll_controllers import SE2ScrewDecomposedImpedanceController
-from src.ll_controllers.se2_screw_decomposed_impedance import ScrewImpedanceParams
-
 controller = SE2ScrewDecomposedImpedanceController(
     screw_axis=B_left,
     params=ScrewImpedanceParams(
@@ -166,14 +189,13 @@ controller = SE2ScrewDecomposedImpedanceController(
 )
 ```
 
-See [scripts/demos/screw_decomposed_bimanual_control.py](scripts/demos/screw_decomposed_bimanual_control.py) for complete example.
+See [examples/screw_decomposed_bimanual_control.py](examples/screw_decomposed_bimanual_control.py) for complete example.
 
 ### High-Level Planners
 
 - **Diffusion Policy:** Conditional diffusion for trajectory generation
 - **ACT (Action Chunking Transformer):** Transformer-based policy
 - **Flow Matching Policy:** Continuous normalizing flows
-- **Teleoperation:** Keyboard-based control for data collection
 
 ### RL-Based Impedance Learning
 
@@ -183,27 +205,27 @@ See [scripts/demos/screw_decomposed_bimanual_control.py](scripts/demos/screw_dec
 
 ## 📚 Documentation
 
-- [Documentation Index](docs/README.md) - Overview of all documentation
-- [SE(2) Impedance Verification](docs/SE2_IMPEDANCE_VERIFICATION.md) - Mathematical verification
-- [Impedance Controller Analysis](docs/IMPEDANCE_CONTROLLER_ANALYSIS.md) - Controller analysis
+- [SE(2) Impedance Verification](docs/SE2_IMPEDANCE_VERIFICATION.md) - Mathematical verification and comparison with SE(3)
 - [Impedance Controller Implementation](docs/IMPEDANCE_CONTROLLER_IMPLEMENTATION.md) - Implementation guide
 - [Pipeline Flow Analysis](docs/PIPELINE_FLOW_ANALYSIS.md) - Complete data flow from planner to physics
 - [SE(2) Frame Conventions](docs/SE2_FRAME_CONVENTIONS.md) - Frame conventions used throughout
-- [HL-RL Pipeline](docs/HL_RL_PIPELINE_README.md) - High-level RL pipeline
 
 ## 🧪 Testing
 
 Run the test suite:
 
 ```bash
-# Core functionality tests
-python scripts/tests/test_core.py
+# All tests
+python -m pytest scripts/tests/
 
 # Controller tests
-python scripts/tests/test_controllers.py
+python -m scripts.tests.test_controllers
 
-# Updated controller tests
-python scripts/tests/test_updated_controllers.py
+# Integration tests
+python -m scripts.tests.test_integrated_system
+
+# Stability tests
+python -m scripts.tests.test_stability
 ```
 
 ## 🎮 Environment Details
@@ -220,17 +242,16 @@ SE(2) bimanual manipulation environment with:
 ```python
 {
     'ee_poses': (2, 3),          # [x, y, theta] in spatial frame
-    'ee_body_twists': (2, 3),    # [ω, vx, vy] body twist (MR convention)
+    'ee_twists': (2, 3),         # [vx, vy, omega] in spatial frame
     'link_poses': (2, 3),        # Object link poses
-    'external_wrenches': (2, 3), # [τ, fx, fy] in body frame (MR convention)
-    'joint_state': (2,)          # [angle, angular_velocity] or [position, velocity]
+    'external_wrenches': (2, 3)  # [fx, fy, tau] in body frame
 }
 ```
 
-**Action Space (Modern Robotics Convention):**
+**Action Space:**
 ```python
-# Wrenches [τ, fx, fy] in body frame for both grippers
-[left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
+# Wrenches in body frame for both grippers
+[left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
 ```
 
 ## 🔬 Research
@@ -248,7 +269,7 @@ If you use this code in your research, please cite:
 ```bibtex
 @software{swivl2024,
   title={SWIVL: Screw and Wrench informed Impedance Variable Learning},
-  author={Kyungseo Park},
+  author={Your Name},
   year={2024},
   url={https://github.com/yourusername/SWIVL}
 }
@@ -256,7 +277,7 @@ If you use this code in your research, please cite:
 
 ## 📄 License
 
-MIT License
+[Your License Here]
 
 ## 🤝 Contributing
 
@@ -264,4 +285,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📧 Contact
 
-Kyungseo Park - erickun0125@snu.ac.kr
+[Your Contact Information]

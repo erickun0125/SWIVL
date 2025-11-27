@@ -35,10 +35,51 @@ import numpy as np
 import pygame
 import sys
 
-from gym_biart.envs.biart import BiArtEnv
-from gym_biart.envs.linkage_manager import LinkageObject, JointType, create_two_link_object
-from gym_biart.envs.pd_controller import MultiGripperController, PDGains
-from gym_biart.envs.keyboard_planner import MultiEEPlanner
+from src.envs.biart import BiArtEnv
+from src.envs.object_manager import JointType
+from src.ll_controllers.pd_controller import MultiGripperPDController, PDGains
+
+
+class KeyboardVelocityController:
+    """Simple keyboard velocity controller for teleoperation."""
+    
+    def __init__(self, linear_speed=30.0, angular_speed=1.0):
+        """
+        Initialize keyboard velocity controller.
+        
+        Args:
+            linear_speed: Linear velocity magnitude
+            angular_speed: Angular velocity magnitude
+        """
+        self.linear_speed = linear_speed
+        self.angular_speed = angular_speed
+        self.velocity = np.zeros(3)  # [vx, vy, omega]
+    
+    def process_keys(self, keys):
+        """Process keyboard state and return velocity command."""
+        self.velocity = np.zeros(3)
+        
+        # Linear velocity
+        if keys[pygame.K_UP]:
+            self.velocity[1] += self.linear_speed
+        if keys[pygame.K_DOWN]:
+            self.velocity[1] -= self.linear_speed
+        if keys[pygame.K_LEFT]:
+            self.velocity[0] -= self.linear_speed
+        if keys[pygame.K_RIGHT]:
+            self.velocity[0] += self.linear_speed
+        
+        # Angular velocity
+        if keys[pygame.K_q]:
+            self.velocity[2] += self.angular_speed
+        if keys[pygame.K_w]:
+            self.velocity[2] -= self.angular_speed
+        
+        return self.velocity
+    
+    def get_velocity_array(self):
+        """Return current velocity as array."""
+        return self.velocity.copy()
 
 
 class TeleoperationDemo:
@@ -71,25 +112,24 @@ class TeleoperationDemo:
         }
         self.joint_enum = joint_type_map[joint_type]
 
-        # Create linkage object
-        self.linkage = create_two_link_object(self.joint_enum)
-
         # Create PD controller with tuned gains
         gains = PDGains(
-            kp_linear=30.0,
-            kd_linear=8.0,
-            kp_angular=15.0,
-            kd_angular=3.0
+            kp_linear=0.0,
+            kd_linear=1000.0,
+            kp_angular=0.0,
+            kd_angular=100.0
         )
-        self.controller = MultiGripperController(num_grippers=2, gains=gains)
+        self.controller = MultiGripperPDController(num_grippers=2, gains=gains)
         self.controller.set_timestep(self.env.dt)
 
-        # Create keyboard planner
-        self.planner = MultiEEPlanner(
-            num_end_effectors=2,
-            linkage_object=self.linkage,
-            control_dt=1.0 / self.env.control_hz
-        )
+        # Create keyboard controller
+        self.keyboard = KeyboardVelocityController(linear_speed=30.0, angular_speed=1.0)
+        
+        # Control which EE
+        self.controlled_ee_idx = 0
+        
+        # Desired poses (will be initialized in reset)
+        self.desired_poses = None
 
         # Display settings
         self.show_help = True
@@ -111,24 +151,8 @@ class TeleoperationDemo:
         # Reset environment
         obs, info = self.env.reset()
 
-        # Extract initial poses from observation
-        # obs format: [left_gripper(3), right_gripper(3), link1(3), link2(3), ext_wrench(6)]
-        initial_ee_poses = np.array([
-            obs[0:3],   # Left gripper
-            obs[3:6],   # Right gripper
-        ])
-
-        # Set linkage bodies
-        self.linkage.set_link_body(0, self.env.link1)
-        self.linkage.set_link_body(1, self.env.link2)
-
-        # Register pymunk joint with linkage manager
-        if len(self.linkage.joints) > 0 and self.env.joint is not None:
-            self.linkage.joints[0].pymunk_joint = self.env.joint
-
-        # Initialize planner with current state as desired poses
-        # This ensures grippers hold their initial positions when no input is given
-        self.planner.initialize_from_current_state(initial_ee_poses)
+        # Initialize desired poses to current EE poses
+        self.desired_poses = obs['ee_poses'].copy()
 
         # Reset controller
         self.controller.reset()
@@ -140,63 +164,39 @@ class TeleoperationDemo:
 
         print("Environment reset complete!")
 
-    def get_current_state(self):
-        """Get current state of end-effectors and object."""
-        # Get current EE poses
-        current_ee_poses = np.array([
-            [self.env.left_gripper.position.x,
-             self.env.left_gripper.position.y,
-             self.env.left_gripper.angle],
-            [self.env.right_gripper.position.x,
-             self.env.right_gripper.position.y,
-             self.env.right_gripper.angle],
-        ])
+    def get_current_state(self, obs):
+        """Get current state of end-effectors and object from observation."""
+        # Get EE poses and velocities from observation
+        current_ee_poses = obs['ee_poses']
+        current_velocities = obs['ee_twists']  # [vx, vy, omega] per gripper
+        external_wrenches = obs['external_wrenches']  # [tau, fx, fy] per gripper
+        link_poses = obs['link_poses']
 
-        # Get current velocities
-        current_velocities = np.array([
-            [self.env.left_gripper.velocity.x,
-             self.env.left_gripper.velocity.y,
-             self.env.left_gripper.angular_velocity],
-            [self.env.right_gripper.velocity.x,
-             self.env.right_gripper.velocity.y,
-             self.env.right_gripper.angular_velocity],
-        ])
-
-        # Get external wrenches
-        external_wrenches = np.array([
-            self.env.external_wrench_left,
-            self.env.external_wrench_right
-        ])
-
-        # Get object state
-        self.linkage.update_joint_states()
-        joint_config = self.linkage.get_configuration()
-        link_poses = self.linkage.get_all_link_poses()
+        # Get joint configuration from object manager
+        joint_state = self.env.object_manager.get_joint_state()
 
         return {
             'ee_poses': current_ee_poses,
             'ee_velocities': current_velocities,
             'external_wrenches': external_wrenches,
-            'joint_config': joint_config,
+            'joint_state': joint_state,
             'link_poses': link_poses
         }
 
-    def draw_info_overlay(self, screen):
+    def draw_info_overlay(self, screen, state):
         """
         Draw information overlay on the screen.
 
         Args:
             screen: Pygame surface to draw on
+            state: Current state dictionary
         """
         if self.font is None:
             pygame.font.init()
             self.font = pygame.font.SysFont('monospace', 14, bold=True)
             self.font_small = pygame.font.SysFont('monospace', 12)
 
-        # Get current state
-        state = self.get_current_state()
-        controlled_idx = self.planner.get_controlled_ee_index()
-        vel_cmd = self.planner.keyboard.get_velocity_array()
+        vel_cmd = self.keyboard.get_velocity_array()
 
         # Prepare text lines
         y_offset = 10
@@ -242,12 +242,12 @@ class TeleoperationDemo:
 
         # Controlled EE and velocity command
         y_offset = draw_text(
-            f"Controlled EE: {controlled_idx} (Press 1/2 to switch)",
+            f"Controlled EE: {self.controlled_ee_idx} (Press 1/2 to switch)",
             y_offset,
             color=(128, 0, 0)
         )
         y_offset = draw_text(
-            f"Velocity Cmd: vx={vel_cmd[0]:6.1f} vy={vel_cmd[1]:6.1f} ω={vel_cmd[2]:5.2f}",
+            f"Velocity Cmd: vx={vel_cmd[0]:6.1f} vy={vel_cmd[1]:6.1f} omega={vel_cmd[2]:5.2f}",
             y_offset,
             color=(0, 100, 0)
         )
@@ -256,21 +256,21 @@ class TeleoperationDemo:
         # End-effector information
         for i in range(2):
             ee_name = f"EE {i} ({'LEFT' if i == 0 else 'RIGHT'})"
-            marker = "►" if i == controlled_idx else " "
+            marker = ">" if i == self.controlled_ee_idx else " "
 
             # Pose
             pose = state['ee_poses'][i]
             y_offset = draw_text(
-                f"{marker} {ee_name} Pose: x={pose[0]:6.1f} y={pose[1]:6.1f} θ={pose[2]:5.2f}",
+                f"{marker} {ee_name} Pose: x={pose[0]:6.1f} y={pose[1]:6.1f} theta={pose[2]:5.2f}",
                 y_offset,
-                color=(0, 0, 200) if i == controlled_idx else (0, 0, 0)
+                color=(0, 0, 200) if i == self.controlled_ee_idx else (0, 0, 0)
             )
 
-            # External wrench
+            # External wrench [tau, fx, fy] in MR convention
             wrench = state['external_wrenches'][i]
-            wrench_mag = np.linalg.norm(wrench[:2])
+            wrench_mag = np.linalg.norm(wrench[1:3])  # Force magnitude (fx, fy)
             y_offset = draw_text(
-                f"  Wrench: fx={wrench[0]:6.1f} fy={wrench[1]:6.1f} τ={wrench[2]:5.1f} |F|={wrench_mag:5.1f}",
+                f"  Wrench: tau={wrench[0]:6.1f} fx={wrench[1]:6.1f} fy={wrench[2]:5.1f} |F|={wrench_mag:5.1f}",
                 y_offset,
                 color=(200, 0, 0) if wrench_mag > 50 else (100, 100, 100)
             )
@@ -281,22 +281,21 @@ class TeleoperationDemo:
         y_offset = draw_text("--- Object State ---", y_offset, color=(128, 0, 128))
 
         # Joint configuration
-        joint_config = state['joint_config']
-        if len(joint_config) > 0:
-            if self.joint_enum == JointType.REVOLUTE:
-                y_offset = draw_text(
-                    f"Joint Angle: {joint_config[0]:5.2f} rad ({np.degrees(joint_config[0]):6.1f}°)",
-                    y_offset
-                )
-            elif self.joint_enum == JointType.PRISMATIC:
-                y_offset = draw_text(f"Joint Position: {joint_config[0]:6.2f}", y_offset)
-            else:  # FIXED
-                y_offset = draw_text("Joint: FIXED (no DOF)", y_offset)
+        joint_state = state['joint_state']
+        if self.joint_enum == JointType.REVOLUTE:
+            y_offset = draw_text(
+                f"Joint Angle: {joint_state:5.2f} rad ({np.degrees(joint_state):6.1f} deg)",
+                y_offset
+            )
+        elif self.joint_enum == JointType.PRISMATIC:
+            y_offset = draw_text(f"Joint Position: {joint_state:6.2f}", y_offset)
+        else:  # FIXED
+            y_offset = draw_text("Joint: FIXED (no DOF)", y_offset)
 
         # Link poses
         for i, pose in enumerate(state['link_poses']):
             y_offset = draw_text(
-                f"Link {i}: x={pose[0]:6.1f} y={pose[1]:6.1f} θ={pose[2]:5.2f}",
+                f"Link {i}: x={pose[0]:6.1f} y={pose[1]:6.1f} theta={pose[2]:5.2f}",
                 y_offset
             )
 
@@ -331,59 +330,79 @@ class TeleoperationDemo:
         print("  ESC: Exit")
         print("\nDemo running...")
 
+        # Initialize pygame for human rendering
+        pygame.init()
+        
         # Main loop
         running = True
         clock = pygame.time.Clock()
 
         while running:
-            # Get pygame events
-            events = pygame.event.get()
-
-            # Check for special commands
-            for event in events:
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r:
+            # Process events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key == pygame.K_r:
                         self.reset_environment()
                     elif event.key == pygame.K_h:
                         self.show_help = not self.show_help
+                    elif event.key == pygame.K_1:
+                        self.controlled_ee_idx = 0
+                        print("Switched to EE 0 (LEFT)")
+                    elif event.key == pygame.K_2:
+                        self.controlled_ee_idx = 1
+                        print("Switched to EE 1 (RIGHT)")
+                    elif event.key == pygame.K_SPACE:
+                        self.keyboard.velocity = np.zeros(3)
+                        print("Velocity reset to zero")
 
-            # Get current state
-            state = self.get_current_state()
+            # Get keyboard state
+            keys = pygame.key.get_pressed()
+            velocity_cmd = self.keyboard.process_keys(keys)
 
-            # Update planner with keyboard input
-            desired_poses, actions = self.planner.update(events, state['ee_poses'])
+            # Get current observation
+            obs = self.env.get_obs()
+            state = self.get_current_state(obs)
 
-            # Check for quit
-            if actions['quit']:
-                print("\nExiting demo...")
-                running = False
-                break
+            # Update desired pose for controlled EE based on velocity
+            dt = 1.0 / self.env.control_hz
+            self.desired_poses[self.controlled_ee_idx, 0] += velocity_cmd[0] * dt
+            self.desired_poses[self.controlled_ee_idx, 1] += velocity_cmd[1] * dt
+            self.desired_poses[self.controlled_ee_idx, 2] += velocity_cmd[2] * dt
+
+            # Clip desired poses to workspace
+            self.desired_poses[:, :2] = np.clip(self.desired_poses[:, :2], 20.0, 492.0)
+
+            # Compute desired velocities for PD controller
+            desired_velocities = np.zeros((2, 3))  # [vx, vy, omega] for each gripper
+            desired_velocities[self.controlled_ee_idx] = velocity_cmd
 
             # Compute control wrenches using PD controller
             wrenches = self.controller.compute_wrenches(
                 state['ee_poses'],
-                desired_poses,
-                state['ee_velocities']
+                self.desired_poses,
+                desired_velocities,
+                current_velocities=state['ee_velocities']
             )
 
-            # Construct action for environment
-            # Action format: [left_fx, left_fy, left_tau, right_fx, right_fy, right_tau]
+            # Step environment with wrench action
+            # Action format: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
             action = np.concatenate([wrenches[0], wrenches[1]])
-
-            # Step environment
             obs, reward, terminated, truncated, info = self.env.step(action)
 
             # Update statistics
             self.step_count += 1
             self.total_reward += reward
 
-            # Render base environment
+            # Render
             if self.render_mode == 'human':
                 # Initialize pygame window if needed
                 if self.env.window is None:
-                    pygame.init()
-                    pygame.display.init()
                     self.env.window = pygame.display.set_mode((512, 512))
+                    pygame.display.set_caption("SWIVL Bimanual Manipulation Demo")
                 if self.env.clock is None:
                     self.env.clock = pygame.time.Clock()
 
@@ -394,7 +413,8 @@ class TeleoperationDemo:
                 self.env.window.blit(screen_surface, screen_surface.get_rect())
 
                 # Draw info overlay on top
-                self.draw_info_overlay(self.env.window)
+                state = self.get_current_state(obs)
+                self.draw_info_overlay(self.env.window, state)
 
                 # Update display
                 pygame.event.pump()
@@ -402,11 +422,9 @@ class TeleoperationDemo:
 
             # Print periodic status
             if self.step_count % 50 == 0:
-                controlled_idx = self.planner.get_controlled_ee_index()
-                vel_cmd = self.planner.keyboard.get_velocity_array()
-                wrench_mag = np.linalg.norm(state['external_wrenches'][controlled_idx][:2])
-                print(f"[Step {self.step_count:4d}] EE{controlled_idx} | "
-                      f"Vel:[{vel_cmd[0]:5.1f},{vel_cmd[1]:5.1f},{vel_cmd[2]:4.2f}] | "
+                wrench_mag = np.linalg.norm(state['external_wrenches'][self.controlled_ee_idx][1:3])
+                print(f"[Step {self.step_count:4d}] EE{self.controlled_ee_idx} | "
+                      f"Vel:[{velocity_cmd[0]:5.1f},{velocity_cmd[1]:5.1f},{velocity_cmd[2]:4.2f}] | "
                       f"Wrench:|F|={wrench_mag:5.1f} | "
                       f"Reward:{reward:6.3f} | "
                       f"Success:{info.get('is_success', False)}")

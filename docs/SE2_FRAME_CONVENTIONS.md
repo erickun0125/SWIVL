@@ -1,375 +1,297 @@
-# SE(2) Reference Frame Conventions and Specifications
-
-This document specifies the reference frame conventions used throughout the SWIVL codebase for SE(2) bimanual manipulation.
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Frame Definitions](#frame-definitions)
-3. [Notation](#notation)
-4. [Data Flow Through Pipeline](#data-flow-through-pipeline)
-5. [Implementation Details](#implementation-details)
-6. [Common Pitfalls](#common-pitfalls)
+# SE(2) Frame Conventions
 
 ## Overview
 
-The SWIVL framework operates in SE(2), the Special Euclidean group representing 2D rigid body transformations. Proper handling of reference frames is critical for correct control behavior.
+This document describes the frame conventions used throughout the SWIVL codebase. We follow **Modern Robotics (Lynch & Park)** conventions for all twist, wrench, and screw representations.
 
-### Key Principles
-- **Poses** are always expressed in the **spatial (world) frame**
-- **Twists (velocities)** can be expressed in either the **spatial frame** or **body frame**
-- **Wrenches (forces)** are always expressed in the **body frame**
+## Modern Robotics Convention (Critical!)
 
-## Frame Definitions
+### Twist (se(2) element)
+```
+V = [ω, vx, vy]ᵀ
+```
+- **Angular velocity first!**
+- `ω`: Angular velocity (rad/s)
+- `vx`, `vy`: Linear velocity components (m/s or pixels/s)
 
-### Spatial Frame (World Frame) `{s}`
-- Fixed inertial reference frame
-- Origin at world coordinates (0, 0)
-- Does not move with the robot
+### Wrench (se(2)* element)
+```
+F = [τ, fx, fy]ᵀ
+```
+- **Torque first!**
+- `τ`: Torque (N·m)
+- `fx`, `fy`: Force components (N)
 
-### Body Frame `{i}` (where i ∈ {l, r} for left/right)
-- Attached to each end-effector
-- Origin at end-effector center
-- Moves with the end-effector
+### Screw Axis
+```
+S = [sω, sx, sy]ᵀ
+```
+- **Angular component first!**
+- For revolute: `[1, ry, -rx]` (unit angular velocity, r = position to joint)
+- For prismatic: `[0, vx, vy]` (unit linear velocity along axis)
 
-## Notation
+---
 
-Following Modern Robotics notation:
+## Coordinate Frames
 
-### Poses (Transformations)
-- `T_si`: Transformation from body frame {i} to spatial frame {s}
-- Represents pose of end-effector i in spatial frame
-- In code: `np.ndarray([x, y, theta])` where `(x, y)` is position in spatial frame, `theta` is orientation
+### Spatial (World) Frame {s}
+- Fixed inertial frame
+- Origin at (0, 0) of the workspace
+- X-axis pointing right, Y-axis pointing up
+- All **poses** are expressed in this frame: `[x, y, θ]`
 
-### Velocities (Twists)
-- `s^V_i`: **Spatial velocity** - velocity of frame {i} expressed in spatial frame {s}
-  - Time derivative of pose: `[ẋ, ẏ, θ̇]`
-  - In code: often denoted as `velocity_spatial`
+### Body Frame {b}
+- Attached to the rigid body (end-effector or link)
+- Origin at the body's reference point (e.g., gripper center)
+- X-axis aligned with body's forward direction
+- All **twists** and **wrenches** in control are expressed in this frame
 
-- `i^V_i`: **Body twist** - velocity of frame {i} expressed in body frame {i}
-  - Related to spatial velocity via: `i^V_i = Ad_{T_si}^{-1} * s^V_i`
-  - In code: denoted as `velocity_body` or `twist_body`
+### Object Frame {o}
+- Attached to the articulated object
+- Used for defining grasping frames and joint axes
 
-### Conversion
+---
+
+## Pose Representation
+
+### SE(2) Pose
 ```python
-# Spatial velocity to body twist
-velocity_body = world_to_body_velocity(pose, velocity_spatial)
-
-# Body twist to spatial velocity
-velocity_spatial = body_to_world_velocity(pose, velocity_body)
+pose = [x, y, θ]
 ```
+- `x`, `y`: Position in spatial frame (pixels)
+- `θ`: Orientation angle (radians)
 
-### Wrenches (Forces)
-- `F_i`: Wrench applied to body frame {i}, expressed in body frame
-- Format: `[fx, fy, τ]` where `fx, fy` are forces, `τ` is torque
-- **Always in body frame** for impedance control
-
-## Data Flow Through Pipeline
-
-### Complete Pipeline
-
-```
-High-Level Policy → Trajectory Generator → Impedance Controller → Robot
-```
-
-### Detailed Frame Flow
-
-#### 1. High-Level Policy Output
+### Homogeneous Transformation Matrix
 ```python
-# Output: Desired poses in SPATIAL frame
-desired_poses = hl_policy.get_action(observation)
-# Shape: (2, 3) for bimanual
-# Frame: T_si^des (spatial frame)
-# Format: [[x_left, y_left, theta_left],
-#          [x_right, y_right, theta_right]]
+T = [[cos(θ), -sin(θ), x],
+     [sin(θ),  cos(θ), y],
+     [0,       0,      1]]
 ```
 
-#### 2. Trajectory Generator
-
-**Input:**
-- Current pose: `T_si` (spatial frame)
-- Desired pose: `T_si^des` (spatial frame)
-
-**Processing:**
+### SE2Pose Dataclass
 ```python
-# Interpolate in SE(2)
-traj = MinimumJerkTrajectory(start_pose, end_pose, duration)
-traj_point = traj.evaluate(t)
+from src.se2_math import SE2Pose
 
-# traj_point contains:
-# - pose: [x, y, theta] in SPATIAL frame (T_si^des(t))
-# - velocity_spatial: [vx, vy, omega] in SPATIAL frame (time derivative)
-# - velocity_body: [vx_b, vy_b, omega] in BODY frame (i^V_i^des(t))
+pose = SE2Pose(x=100.0, y=200.0, theta=np.pi/4)
+T = pose.to_matrix()  # 3x3 transformation matrix
+arr = pose.to_array()  # [x, y, theta] array
 ```
 
-**Conversion:**
+---
+
+## Velocity Conventions
+
+### Spatial Frame Velocity (Time Derivative)
 ```python
-# Spatial velocity (time derivative of pose)
-velocity_spatial = np.array([dx/dt, dy/dt, dθ/dt])
-
-# Convert to body twist
-velocity_body = world_to_body_velocity(pose, velocity_spatial)
-# This implements: i^V_i = Ad_{T_si}^{-1} * s^V_i
+velocity_spatial = [vx_s, vy_s, ω]
 ```
+- Direct time derivative of pose: `d[x, y, θ]/dt`
+- Note: This is **NOT** in MR order (angular last)
 
-**Output:**
-- Desired pose: `T_si^des(t)` (spatial frame)
-- Desired twist: `i^V_i^des(t)` (body frame)
-
-#### 3. Impedance Controller
-
-**Input:**
+### Body Frame Twist (MR Convention)
 ```python
-def compute_wrench(
-    current_pose,        # T_si: Current pose in SPATIAL frame [x, y, theta]
-    desired_pose,        # T_si^des: Desired pose in SPATIAL frame [x, y, theta]
-    measured_wrench,     # External wrench in BODY frame [fx, fy, tau]
-    current_velocity,    # s^V_i: Current velocity in SPATIAL frame [vx, vy, omega]
-    desired_velocity     # i^V_i^des: Desired velocity in BODY frame [vx_b, vy_b, omega]
-)
+body_twist = [ω, vx_b, vy_b]
 ```
+- **MR convention: angular first!**
+- Velocity of body frame origin expressed in body frame
+- Related to spatial velocity via Adjoint transformation
 
-**Processing:**
+### Conversion Functions
 ```python
-# 1. Compute pose error in body frame
-error_pos_spatial = desired_pose[:2] - current_pose[:2]
-R_si = rotation_matrix(current_pose[2])
-error_pos_body = R_si.T @ error_pos_spatial
+from src.se2_math import spatial_to_body_twist, body_to_spatial_twist
 
-error_angle = normalize_angle(desired_pose[2] - current_pose[2])
+# Spatial twist (MR order: [ω, vx_s, vy_s]) to body twist
+body_twist = spatial_to_body_twist(pose, spatial_twist_mr)
 
-# 2. Convert current spatial velocity to body frame
-current_twist_body = world_to_body_velocity(current_pose, current_velocity)
-
-# 3. Compute twist error in body frame
-error_twist_body = desired_velocity - current_twist_body
-# (both are in body frame now)
-
-# 4. Impedance control law in body frame
-force_body = K * error_pos_body + D * error_twist_body[:2]
-torque = K_angular * error_angle + D_angular * error_twist_body[2]
+# Body twist to spatial twist (MR order)
+spatial_twist_mr = body_to_spatial_twist(pose, body_twist)
 ```
 
-**Output:**
-- Wrench command in BODY frame: `[fx, fy, τ]`
+---
 
-#### 4. Robot/Environment
+## Wrench Conventions
 
-**Input:**
-- Wrench in body frame: `[fx, fy, τ]`
-
-**Processing:**
-- Robot dynamics integrate the wrench
-- Updates pose and velocity
-
-**Output:**
-- New pose: `T_si` (spatial frame)
-- New velocity: typically in spatial frame
-
-## Implementation Details
-
-### In `trajectory_generator.py`
-
+### Body Frame Wrench (MR Convention)
 ```python
-class TrajectoryPoint:
-    pose: np.ndarray              # [x, y, theta] in spatial frame
-    velocity_spatial: np.ndarray  # [vx, vy, omega] in spatial frame
-    velocity_body: np.ndarray     # [vx_b, vy_b, omega] in body frame
-    acceleration: np.ndarray      # [ax, ay, alpha] in spatial frame
+wrench = [τ, fx, fy]
 ```
+- **MR convention: torque first!**
+- `τ`: Torque about body frame z-axis (N·m)
+- `fx`, `fy`: Force in body frame (N)
 
-Key implementation:
+### Wrench Transformation
 ```python
-# Compute spatial velocity from spline derivatives
-vx_spatial = self.spline_x(t_norm, 1) / self.duration
-vy_spatial = self.spline_y(t_norm, 1) / self.duration
-omega = self.spline_theta(t_norm, 1) / self.duration
+from src.se2_math import wrench_body_to_spatial, wrench_spatial_to_body
 
-velocity_spatial = np.array([vx_spatial, vy_spatial, omega])
-
-# Convert to body twist
-velocity_body = world_to_body_velocity(pose, velocity_spatial)
+# Transform wrench between frames
+wrench_spatial = wrench_body_to_spatial(pose, wrench_body)
+wrench_body = wrench_spatial_to_body(pose, wrench_spatial)
 ```
 
-### In `task_space_impedance.py`
+---
 
+## Adjoint Representation
+
+### Adjoint Matrix Ad_T
+For T ∈ SE(2) with rotation R and translation p = [px, py]:
+```
+Ad_T = [ 1     0      0   ]
+       [ py   R11    R12  ]
+       [-px   R21    R22  ]
+```
+
+Transforms twists from body to spatial frame:
+```
+V_spatial = Ad_T · V_body
+```
+
+### Inverse Adjoint
+```
+V_body = Ad_{T^{-1}} · V_spatial
+```
+
+### Implementation
 ```python
-def compute_wrench(
-    current_pose,        # Spatial frame
-    desired_pose,        # Spatial frame
-    measured_wrench,     # Body frame
-    current_velocity,    # Spatial frame (optional)
-    desired_velocity     # Body frame (optional)
-):
-    # Convert current spatial velocity to body frame
-    current_twist_body = world_to_body_velocity(current_pose, current_velocity)
+from src.se2_math import se2_adjoint
 
-    # Compute errors in body frame
-    error_twist_body = desired_velocity - current_twist_body
-
-    # Apply impedance law
-    wrench_body = K * error_pose + D * error_twist
-
-    return wrench_body  # Body frame
+T = SE2Pose(x, y, theta).to_matrix()
+Ad = se2_adjoint(T)  # 3x3 Adjoint matrix
 ```
 
-### In `impedance_learning_env.py`
+---
 
+## Lie Algebra Operations
+
+### Exponential Map (se(2) → SE(2))
 ```python
-# Get trajectory targets
-desired_poses, desired_twists = self._get_trajectory_targets()
-# desired_poses: (2, 3) in spatial frame
-# desired_twists: (2, 3) in body frame
+from src.se2_math import se2_exp
 
-# Compute wrench
-wrench = controller.compute_wrench(
-    current_pose=obs['ee_poses'][i],        # Spatial frame
-    desired_pose=desired_poses[i],          # Spatial frame
-    measured_wrench=obs['external_wrenches'][i],  # Body frame
-    current_velocity=obs['ee_twists'][i],   # Spatial frame
-    desired_velocity=desired_twists[i]      # Body frame
-)
+xi = np.array([omega, vx, vy])  # se(2) element (MR order)
+T = se2_exp(xi)  # SE(2) transformation matrix
 ```
 
-## Mathematical Background
-
-### SE(2) Lie Group
-- Element: `T = [[R, p], [0, 1]]` where `R ∈ SO(2)`, `p ∈ ℝ²`
-- Represents transformation from body to spatial frame
-
-### se(2) Lie Algebra
-- Element: `ξ = [v, ω]` where `v ∈ ℝ²`, `ω ∈ ℝ`
-- Represents velocity/twist
-
-### Adjoint Transformation
-Transforms velocities between frames:
-```
-s^V = Ad_{T_si} * i^V
-i^V = Ad_{T_si}^{-1} * s^V
-```
-
-Where:
+### Logarithm Map (SE(2) → se(2))
 ```python
-Ad_{T_si} = [[R, J*p],
-             [0, 1]]
+from src.se2_math import se2_log
 
-R: Rotation matrix
-p: Position vector
-J: 2D perpendicular matrix [[0, -1], [1, 0]]
+T = SE2Pose(x, y, theta).to_matrix()
+xi = se2_log(T)  # se(2) element [omega, vx, vy] (MR order)
 ```
 
-In code:
+### Pose Error Computation
 ```python
-def world_to_body_velocity(pose, vel_world):
-    theta = pose[2]
-    R = rotation_matrix(theta)  # 2x2 rotation matrix
-
-    vel_body = np.zeros(3)
-    vel_body[:2] = R.T @ vel_world[:2]  # Rotate linear velocity
-    vel_body[2] = vel_world[2]          # Angular velocity unchanged
-
-    return vel_body
+# Error in body frame via log map
+T_current = SE2Pose.from_array(current_pose).to_matrix()
+T_desired = SE2Pose.from_array(desired_pose).to_matrix()
+T_error = se2_inverse(T_current) @ T_desired
+error = se2_log(T_error)  # [omega_e, vx_e, vy_e] in body frame
 ```
 
-### Body Twist from Pose Trajectory
+---
 
-Given a pose trajectory `T_si(t)`, the body twist is:
+## Screw Decomposition
 
-```
-i^V_i = log(T_si^{-1} * dT_si/dt)
-```
+### Screw Axis Definition
+For an articulated joint, the screw axis describes the allowed motion:
 
-For small time steps:
-```
-i^V_i ≈ log(T_si^{-1} * T_si(t + dt)) / dt
-```
-
-Or using the adjoint:
-```
-i^V_i = Ad_{T_si}^{-1} * s^V_i
+**Revolute Joint:**
+```python
+# Unit screw for revolute joint
+# ω = 1 (unit angular velocity)
+# v = ω × r where r is position from body to joint axis
+B_revolute = np.array([1.0, ry, -rx])  # [sω, sx, sy] MR order
 ```
 
-where `s^V_i = [ẋ, ẏ, θ̇]` is the time derivative of pose.
+**Prismatic Joint:**
+```python
+# Unit screw for prismatic joint
+# ω = 0 (no rotation)
+# v = unit direction of sliding
+B_prismatic = np.array([0.0, vx, vy])  # [sω, sx, sy] MR order
+```
+
+### Projection Operators
+```python
+# Parallel projection
+P_parallel = (S @ S.T) / (S.T @ S)
+
+# Perpendicular projection
+P_perpendicular = I - P_parallel
+```
+
+---
+
+## Integration
+
+### Twist Integration on SE(2)
+```python
+from src.se2_math import integrate_twist
+
+# Proper SE(2) integration using exponential map
+new_pose = integrate_twist(current_pose, body_twist, dt)
+```
+
+### Velocity Integration (Simple)
+```python
+from src.se2_math import integrate_velocity
+
+# Integrate body twist over timestep
+new_pose = integrate_velocity(current_pose, body_twist, dt)
+```
+
+---
 
 ## Common Pitfalls
 
-### ❌ WRONG: Using spatial velocity for impedance control
+### 1. Wrong Order
 ```python
-# WRONG - mixing frames!
-error_vel = desired_velocity_spatial - current_velocity_spatial
-force = K * error_pos + D * error_vel  # ← WRONG if error_pos is in body frame
+# WRONG (old convention)
+twist = [vx, vy, omega]
+
+# CORRECT (Modern Robotics)
+twist = [omega, vx, vy]
 ```
 
-### ✅ CORRECT: Convert to body frame first
+### 2. Wrong Frame
 ```python
-# CORRECT
-current_twist_body = world_to_body_velocity(pose, current_vel_spatial)
-desired_twist_body = world_to_body_velocity(desired_pose, desired_vel_spatial)
-# OR desired_twist_body is already provided in body frame from trajectory generator
+# WRONG: Using spatial velocity as body velocity
+wrench = D @ spatial_velocity  # Error!
 
-error_twist_body = desired_twist_body - current_twist_body
-force_body = K * error_pos_body + D * error_twist_body[:2]
+# CORRECT: Convert first, then use body velocity
+body_velocity = spatial_to_body_twist(pose, spatial_velocity_mr)
+wrench = D @ body_velocity
 ```
 
-### ❌ WRONG: Using time derivative of cubic spline as body twist
+### 3. Missing Adjoint Transform
 ```python
-# WRONG
-vx = spline_x.derivative(t)  # This is spatial velocity!
-twist_body = [vx, vy, omega]  # ← WRONG! This is spatial, not body
+# WRONG: Simple rotation
+v_body = R.T @ v_spatial  # Ignores p × ω term!
+
+# CORRECT: Full Adjoint transformation
+v_body = spatial_to_body_twist(pose, v_spatial_mr)
 ```
 
-### ✅ CORRECT: Convert spatial velocity to body twist
-```python
-# CORRECT
-vx_spatial = spline_x.derivative(t)
-vy_spatial = spline_y.derivative(t)
-omega = spline_theta.derivative(t)
+---
 
-velocity_spatial = [vx_spatial, vy_spatial, omega]
-pose = [x, y, theta]
+## Summary Table
 
-velocity_body = world_to_body_velocity(pose, velocity_spatial)
-```
+| Quantity | Order | Frame | Example |
+|----------|-------|-------|---------|
+| Pose | [x, y, θ] | Spatial | `[100, 200, 0.5]` |
+| Body Twist | [ω, vx, vy] | Body | `[0.1, 10, 5]` |
+| Spatial Velocity | [vx, vy, ω] | Spatial | `[10, 5, 0.1]` (NOT MR order) |
+| Wrench | [τ, fx, fy] | Body | `[5.0, 20, 10]` |
+| Screw (revolute) | [1, ry, -rx] | Body | `[1.0, 5, -10]` |
+| Screw (prismatic) | [0, vx, vy] | Body | `[0.0, 1, 0]` |
 
-### ❌ WRONG: Applying wrench in wrong frame
-```python
-# WRONG
-wrench_spatial = K * error  # Computed in spatial frame
-robot.apply_wrench(wrench_spatial)  # ← WRONG if robot expects body frame
-```
-
-### ✅ CORRECT: Compute wrench in body frame
-```python
-# CORRECT
-error_body = world_to_body_velocity(pose, error_spatial)
-wrench_body = K * error_body
-robot.apply_wrench(wrench_body)  # Correct!
-```
-
-## Verification Checklist
-
-When implementing or debugging:
-
-- [ ] Poses are in spatial frame
-- [ ] Desired twists from trajectory are in body frame
-- [ ] Current velocities are converted from spatial to body frame
-- [ ] Impedance control computes errors in body frame
-- [ ] Output wrenches are in body frame
-- [ ] All frame conversions use `world_to_body_velocity` / `body_to_world_velocity`
+---
 
 ## References
 
 1. Lynch, K. M., & Park, F. C. (2017). *Modern Robotics: Mechanics, Planning, and Control*. Cambridge University Press.
-   - Chapter 3: Rigid-Body Motions
-   - Chapter 8: Open-Chain Dynamics
-   - Chapter 11: Force Control
-
 2. Murray, R. M., Li, Z., & Sastry, S. S. (1994). *A Mathematical Introduction to Robotic Manipulation*. CRC Press.
-   - Chapter 2: Lie Groups and Lie Algebras
-   - Chapter 4: Manipulator Kinematics
 
-## Contact
+---
 
-For questions about frame conventions or SE(2) mathematics, please refer to the source code documentation in:
-- `src/se2_math.py`: SE(2) mathematics utilities
-- `src/trajectory_generator.py`: Trajectory generation with proper frame handling
-- `src/ll_controllers/task_space_impedance.py`: Impedance controller implementation
+**Last Updated:** 2025-11-27  
+**Convention:** Modern Robotics (Lynch & Park)

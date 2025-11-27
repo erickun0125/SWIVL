@@ -136,11 +136,8 @@ class PDController:
             # Convert to body twist [omega, vx_b, vy_b]
             current_twist_body = spatial_to_body_twist(current_pose, current_vel_spatial_mr)
             
-            # Convert to internal PD convention [vx_b, vy_b, omega]
-            vel_body = np.array([current_twist_body[1], current_twist_body[2], current_twist_body[0]])
-
-            # Velocity error in body frame
-            error_vel_body = desired_vel_body - vel_body
+            # Velocity error in body frame (linear only: [vx_b, vy_b])
+            error_vel_body = desired_vel_body[:2] - np.array([current_twist_body[1], current_twist_body[2]])
             error_omega = desired_twist_body[0] - current_twist_body[0]
 
         else:
@@ -149,13 +146,14 @@ class PDController:
                 derror_pos_body = (error_pos_body - self.prev_error_pos) / self.dt
                 error_vel_body = -derror_pos_body
             else:
-                error_vel_body = desired_vel_body  # Assume current vel = 0
+                # Assume current vel = 0, so error = desired (linear only: [vx_b, vy_b])
+                error_vel_body = desired_vel_body[:2]
 
             if self.prev_error_angle is not None:
                 derror_angle = (error_angle - self.prev_error_angle) / self.dt
                 error_omega = -derror_angle
             else:
-                error_omega = omega_d
+                error_omega = desired_twist_body[0]  # Assume current omega = 0
 
             # Store current errors for next iteration
             self.prev_error_pos = error_pos_body.copy()

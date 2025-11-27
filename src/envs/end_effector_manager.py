@@ -452,26 +452,28 @@ class EndEffectorManager:
             space: Pymunk space
             data: User data
         """
-        # Shared contact normal for all points in this contact set
-        normal = arbiter.contact_point_set.normal
-        contact_normal = Vec2d(normal.x, normal.y)
-
-        for contact in arbiter.contact_point_set.points:
-            # Get the impulse (force * dt)
-            impulse = contact_normal * contact.normal_impulse
+        # Get total impulse from arbiter (pymunk 6.x compatible)
+        total_impulse = arbiter.total_impulse
+        impulse = Vec2d(total_impulse.x, total_impulse.y)
+        
+        # Use first contact point for position
+        if arbiter.contact_point_set.points:
+            contact = arbiter.contact_point_set.points[0]
             contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
+        else:
+            return True
 
-            # Check both shapes involved in collision and only process gripper shapes
-            for shape in arbiter.shapes:
-                if shape.collision_type != 1:
-                    continue
-                contact_body = shape.body
+        # Check both shapes involved in collision and only process gripper shapes
+        for shape in arbiter.shapes:
+            if shape.collision_type != 1:
+                continue
+            contact_body = shape.body
 
-                # Determine which gripper this body belongs to
-                for gripper in self.grippers:
-                    if contact_body in (gripper.base_body, gripper.left_jaw, gripper.right_jaw):
-                        gripper.add_contact_impulse(impulse, contact_point, contact_body)
-                        break
+            # Determine which gripper this body belongs to
+            for gripper in self.grippers:
+                if contact_body in (gripper.base_body, gripper.left_jaw, gripper.right_jaw):
+                    gripper.add_contact_impulse(impulse, contact_point, contact_body)
+                    break
 
         return True
 

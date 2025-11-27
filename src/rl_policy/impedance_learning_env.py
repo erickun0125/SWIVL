@@ -812,12 +812,25 @@ class ImpedanceLearningEnv(gym.Env):
 
         # 3. Smoothness penalty
         if self.prev_impedance_params is not None:
-            damping_change = np.linalg.norm(
-                impedance_params['damping'] - self.prev_impedance_params['damping']
-            )
-            stiffness_change = np.linalg.norm(
-                impedance_params['stiffness'] - self.prev_impedance_params['stiffness']
-            )
+            if self.config.controller_type == 'se2_impedance':
+                damping_change = np.linalg.norm(
+                    impedance_params['damping'] - self.prev_impedance_params['damping']
+                )
+                stiffness_change = np.linalg.norm(
+                    impedance_params['stiffness'] - self.prev_impedance_params['stiffness']
+                )
+            elif self.config.controller_type == 'screw_decomposed':
+                damping_change = np.linalg.norm(
+                    np.array([impedance_params['D_parallel'], impedance_params['D_perpendicular']]) -
+                    np.array([self.prev_impedance_params['D_parallel'], self.prev_impedance_params['D_perpendicular']])
+                )
+                stiffness_change = np.linalg.norm(
+                    np.array([impedance_params['K_parallel'], impedance_params['K_perpendicular']]) -
+                    np.array([self.prev_impedance_params['K_parallel'], self.prev_impedance_params['K_perpendicular']])
+                )
+            else:
+                damping_change = 0.0
+                stiffness_change = 0.0
             smoothness_penalty = damping_change + stiffness_change
             reward -= self.config.smoothness_weight * smoothness_penalty
 

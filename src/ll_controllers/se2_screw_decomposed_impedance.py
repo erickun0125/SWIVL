@@ -387,6 +387,14 @@ class SE2ScrewDecomposedImpedanceController:
 
         return wrench_out
 
+    def reset(self):
+        """Reset controller state."""
+        self.last_theta = None
+        self.last_theta_dot = None
+        self.last_e_perp = None
+        self.last_V_e_perp = None
+        self.last_tau_ext = None
+
     @staticmethod
     def create_from_standard_params(screw_axis: np.ndarray,
                                     M_parallel: float,

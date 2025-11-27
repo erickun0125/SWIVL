@@ -137,7 +137,7 @@ class ArticulatedObject:
         # Create shape
         shape = pymunk.Poly(body, main_verts)
         shape.color = pygame.Color("LightSlateGray")
-        shape.friction = 1.0
+        shape.friction = 100.0
         shape.filter = pymunk.ShapeFilter(categories=0b10)  # Object category
         shape.collision_type = 2  # Object collision type
 

@@ -1,10 +1,11 @@
 #!/bin/bash
-# BiArt Environment Setup Script for Conda
+# SWIVL Environment Setup Script for Conda
+# Supports Ubuntu 22.04 with NVIDIA GPUs (CUDA 12.x)
 
 set -e  # Exit on error
 
 echo "======================================"
-echo "BiArt Environment Setup"
+echo "SWIVL Environment Setup"
 echo "======================================"
 echo ""
 
@@ -45,30 +46,91 @@ echo "Activating environment..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ${ENV_NAME}
 
-# Install conda packages
+# Install conda packages (pygame and pymunk work better from conda-forge)
 echo ""
 echo "Installing packages from conda-forge..."
 conda install -c conda-forge pygame pymunk -y
 
-# Install pip packages
+# Install core pip packages
 echo ""
-echo "Installing packages from pip..."
-pip install gymnasium numpy opencv-python shapely
+echo "Installing core pip packages..."
+pip install gymnasium numpy opencv-python shapely scipy
+
+# Install PyTorch with CUDA support
+# For CUDA 12.x compatibility (works with driver 580.x and CUDA 13.0)
+echo ""
+echo "Installing PyTorch with CUDA support..."
+echo "Note: Using CUDA 12.8 wheels (compatible with CUDA 12.x+ drivers)"
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# Install RL libraries
+echo ""
+echo "Installing RL libraries..."
+pip install stable-baselines3 tensorboard
+
+# Install the SWIVL package in development mode
+echo ""
+echo "Installing SWIVL package in development mode..."
+pip install -e .
 
 # Verify installation
 echo ""
+echo "======================================"
 echo "Verifying installation..."
+echo "======================================"
+
+echo ""
+echo "Checking core packages..."
 python -c "import gymnasium; print(f'✓ gymnasium {gymnasium.__version__}')"
 python -c "import pygame; print(f'✓ pygame {pygame.__version__}')"
 python -c "import pymunk; print(f'✓ pymunk {pymunk.version}')"
 python -c "import cv2; print(f'✓ opencv {cv2.__version__}')"
 python -c "import shapely; print(f'✓ shapely {shapely.__version__}')"
 python -c "import numpy; print(f'✓ numpy {numpy.__version__}')"
+python -c "import scipy; print(f'✓ scipy {scipy.__version__}')"
 
-# Test BiArt environment
 echo ""
-echo "Testing BiArt environment..."
-python -c "import sys; sys.path.insert(0, '.'); import gym_biart; print('✓ BiArt environment imported successfully')"
+echo "Checking PyTorch and CUDA..."
+python -c "
+import torch
+print(f'✓ torch {torch.__version__}')
+print(f'  CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'  CUDA version: {torch.version.cuda}')
+    print(f'  GPU: {torch.cuda.get_device_name(0)}')
+"
+
+echo ""
+echo "Checking RL packages..."
+python -c "import stable_baselines3; print(f'✓ stable-baselines3 {stable_baselines3.__version__}')"
+python -c "import tensorboard; print(f'✓ tensorboard')"
+
+echo ""
+echo "Testing SWIVL package..."
+python -c "
+from src.envs import BiArtEnv
+from src.ll_controllers import SE2ImpedanceController, SE2ScrewDecomposedImpedanceController
+from src.se2_math import se2_exp, se2_log
+from src.se2_dynamics import SE2Dynamics, SE2RobotParams
+print('✓ SWIVL package imported successfully')
+"
+
+# Quick functional test
+echo ""
+echo "Running quick functional test..."
+python -c "
+import warnings
+warnings.filterwarnings('ignore')
+from src.envs import BiArtEnv
+import numpy as np
+
+env = BiArtEnv(render_mode='rgb_array', joint_type='revolute')
+obs, info = env.reset()
+action = np.zeros(6)
+obs2, reward, _, _, _ = env.step(action)
+env.close()
+print('✓ BiArtEnv functional test passed')
+"
 
 echo ""
 echo "======================================"
@@ -78,8 +140,15 @@ echo ""
 echo "To activate the environment, run:"
 echo "  conda activate ${ENV_NAME}"
 echo ""
-echo "To test the environment visually, run:"
-echo "  python gym_biart/example.py"
+echo "Quick start commands:"
+echo "  # Run teleoperation demo"
+echo "  python scripts/demos/demo_teleoperation.py revolute"
+echo ""
+echo "  # Run screw decomposition example"
+echo "  python examples/screw_decomposed_bimanual_control.py"
+echo ""
+echo "  # Run tests"
+echo "  python scripts/tests/test_controllers.py"
 echo ""
 echo "To deactivate, run:"
 echo "  conda deactivate"
