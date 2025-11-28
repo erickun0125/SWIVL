@@ -1,13 +1,17 @@
 """
 End-Effector Manager
 
-Manages parallel gripper end-effectors including:
-- Physical properties (mass, dimensions)
-- 1-DOF parallel gripper mechanics
-- Constant grasping force application
-- External wrench sensing in body frame
+Manages parallel gripper end-effectors:
+- U-shaped (ㄷ) parallel gripper with one fixed jaw and one moving jaw
+- Constant grasping force on the moving jaw
+- External wrench sensing in body frame (Modern Robotics convention)
 
-This manager is used by BiArt environment for EE-related operations.
+Gripper Structure:
+- Base body: main EE body, control target
+- Fixed jaw: rigidly attached to base (as shape)
+- Moving jaw: prismatic joint with base, gripping force applied
+
+Left/Right grippers are mirror-symmetric for bimanual manipulation.
 """
 
 import numpy as np
@@ -17,32 +21,54 @@ from typing import Tuple, Optional, List
 from dataclasses import dataclass
 import pygame
 
-from src.se2_math import spatial_to_body_twist
+# Note: We use simple rotation for velocity frame conversion, NOT spatial_to_body_twist.
+# spatial_to_body_twist includes p × ω terms which are only needed for SE(2) twists
+# observed from different points, not for point velocities (body origin velocity).
 
 
 @dataclass
 class GripperConfig:
     """Configuration for parallel gripper."""
-    base_mass: float = 10.0
+    # Mass properties
+    base_mass: float = 1.0
     jaw_mass: float = 0.1
-    base_width: float = 16.0
+    
+    # Dimensions (pixels)
+    base_width: float = 20.0
     base_height: float = 8.0
     jaw_length: float = 20.0
     jaw_thickness: float = 4.0
-    max_opening: float = 20.0
-    min_opening: float = 2.0  # Minimum opening to prevent collision
-    grip_force: float = 1.0
-    target_object_width: float = 12.0
+    
+    # Jaw positioning: distance from base edge to jaw center
+    jaw_offset_from_edge: float = 2.0
+    
+    # Grip parameters
+    grip_force: float = 15.0
+    
+    @property
+    def initial_opening(self) -> float:
+        """Initial opening between jaws."""
+        # Jaws are positioned at base_width/2 - jaw_offset_from_edge from center
+        jaw_position = self.base_width / 2 - self.jaw_offset_from_edge
+        return 2 * jaw_position  # Distance between two jaws
+    
+    @property
+    def min_opening(self) -> float:
+        """Minimum opening (when fully closed)."""
+        return self.jaw_thickness  # Can't close past jaw thickness
 
 
 class ParallelGripper:
     """
-    1-DOF parallel gripper with constant closing force.
-
-    Components:
-    - Base body (main EE body, control target)
-    - Left jaw (prismatic joint)
-    - Right jaw (prismatic joint)
+    1-DOF parallel gripper with one fixed jaw and one moving jaw.
+    
+    Structure:
+    - Base body with fixed jaw attached as shape
+    - Moving jaw connected via prismatic joint (GrooveJoint)
+    - Grip force applied only to moving jaw
+    
+    Left gripper: fixed jaw on left, moving jaw on right (closes leftward)
+    Right gripper: fixed jaw on right, moving jaw on left (closes rightward)
     """
 
     def __init__(
@@ -51,223 +77,197 @@ class ParallelGripper:
         position: Tuple[float, float],
         angle: float,
         name: str,
-        base_mass: float = 0.8,
-        jaw_mass: float = 0.1,
-        base_width: float = 16.0,
-        base_height: float = 8.0,
-        jaw_length: float = 20.0,
-        jaw_thickness: float = 4.0,
-        max_opening: float = 20.0,
-        min_opening: float = 2.0,
-        grip_force: float = 15.0,
-        target_object_width: float = 12.0
+        config: GripperConfig
     ):
         """
         Initialize parallel gripper.
 
         Args:
             space: Pymunk space
-            position: Initial position (x, y)
+            position: Initial position (x, y) of base center
             angle: Initial angle (radians)
-            name: Gripper name ("left" or "right")
-            base_mass: Mass of base body
-            jaw_mass: Mass of each jaw
-            base_width: Width of base
-            base_height: Height of base
-            jaw_length: Length of each jaw
-            jaw_thickness: Thickness of jaws
-            max_opening: Maximum opening between jaws
-            min_opening: Minimum opening between jaws
-            grip_force: Constant closing force (Newtons)
+            name: "left" or "right" - determines jaw configuration
+            config: Gripper configuration
         """
         self.space = space
         self.name = name
-        self.grip_force = grip_force
+        self.config = config
+        
+        # Determine which side is fixed/moving based on gripper name
+        # Left gripper: fixed left, moving right (物体를 오른쪽에서 왼쪽으로 밀어 잡음)
+        # Right gripper: fixed right, moving left (物体를 왼쪽에서 오른쪽으로 밀어 잡음)
+        self.is_left_gripper = (name == "left")
+        
+        # Colors
+        color = pygame.Color("RoyalBlue") if self.is_left_gripper else pygame.Color("Crimson")
+        
+        # Create base body with fixed jaw
+        self._create_base_with_fixed_jaw(position, angle, color)
+        
+        # Create moving jaw
+        self._create_moving_jaw(angle, color)
+        
+        # External wrench tracking (MR convention: [tau, fx, fy])
+        self.external_wrench = np.zeros(3)
+        self.contact_impulses: List[Tuple[Vec2d, Vec2d, pymunk.Body]] = []
 
-        # Store dimensions
-        self.base_width = base_width
-        self.base_height = base_height
-        self.jaw_length = jaw_length
-        self.jaw_thickness = jaw_thickness
-        self.max_opening = max_opening
-        self.min_opening = min_opening
-        self.target_object_width = target_object_width
-
-        # Color
-        color = pygame.Color("RoyalBlue") if name == "left" else pygame.Color("Crimson")
-
-        # Create base body
+    def _create_base_with_fixed_jaw(self, position: Tuple[float, float], angle: float, color):
+        """Create base body with fixed jaw as attached shape."""
+        cfg = self.config
+        
+        # Base body vertices (centered at origin)
         base_verts = [
-            (-base_width/2, -base_height/2),
-            (base_width/2, -base_height/2),
-            (base_width/2, base_height/2),
-            (-base_width/2, base_height/2),
+            (-cfg.base_width/2, -cfg.base_height/2),
+            (cfg.base_width/2, -cfg.base_height/2),
+            (cfg.base_width/2, cfg.base_height/2),
+            (-cfg.base_width/2, cfg.base_height/2),
         ]
-        base_inertia = pymunk.moment_for_poly(base_mass, base_verts)
-        self.base_body = pymunk.Body(base_mass, base_inertia, body_type=pymunk.Body.DYNAMIC)
+        
+        # Fixed jaw position (in base local frame)
+        if self.is_left_gripper:
+            # Left gripper: fixed jaw on left side
+            fixed_jaw_x = -cfg.base_width/2 + cfg.jaw_offset_from_edge
+        else:
+            # Right gripper: fixed jaw on right side
+            fixed_jaw_x = cfg.base_width/2 - cfg.jaw_offset_from_edge
+        
+        # Fixed jaw vertices (relative to base origin)
+        # Jaw extends upward (+y) from base top
+        fixed_jaw_verts = [
+            (fixed_jaw_x - cfg.jaw_thickness/2, cfg.base_height/2),
+            (fixed_jaw_x + cfg.jaw_thickness/2, cfg.base_height/2),
+            (fixed_jaw_x + cfg.jaw_thickness/2, cfg.base_height/2 + cfg.jaw_length),
+            (fixed_jaw_x - cfg.jaw_thickness/2, cfg.base_height/2 + cfg.jaw_length),
+        ]
+        
+        # Calculate total mass and inertia
+        base_inertia = pymunk.moment_for_poly(cfg.base_mass, base_verts)
+        jaw_inertia = pymunk.moment_for_poly(cfg.jaw_mass, fixed_jaw_verts)
+        total_mass = cfg.base_mass + cfg.jaw_mass
+        total_inertia = base_inertia + jaw_inertia
+        
+        # Create body
+        self.base_body = pymunk.Body(total_mass, total_inertia, body_type=pymunk.Body.DYNAMIC)
         self.base_body.position = position
         self.base_body.angle = angle
-        self.base_body.name = name
-
+        self.base_body.name = self.name
+        
+        # Create base shape
         base_shape = pymunk.Poly(self.base_body, base_verts)
         base_shape.color = color
         base_shape.friction = 0.5
         base_shape.filter = pymunk.ShapeFilter(categories=0b01)
         base_shape.collision_type = 1  # Gripper collision type
-
-        space.add(self.base_body, base_shape)
-        self.base_shape = base_shape
-
-        # Create left jaw
-        left_jaw_verts = [
-            (-jaw_thickness/2, 0),
-            (jaw_thickness/2, 0),
-            (jaw_thickness/2, jaw_length),
-            (-jaw_thickness/2, jaw_length),
-        ]
-        left_jaw_inertia = pymunk.moment_for_poly(jaw_mass, left_jaw_verts)
-        self.left_jaw = pymunk.Body(jaw_mass, left_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
-        # Initial opening respects expected object width with safety margin
-        link_width = self.target_object_width
-        safety_margin = 1.2
-        required_opening = (link_width * safety_margin) / 2.0
-        default_opening = max_opening * 0.4
-        initial_half_opening = min(max_opening * 0.5, max(required_opening, default_opening))
-        self.left_jaw.position = self.base_body.local_to_world((-initial_half_opening, base_height/2))
-        self.left_jaw.angle = angle
-
-        left_jaw_shape = pymunk.Poly(self.left_jaw, left_jaw_verts)
-        left_jaw_shape.color = color
-        left_jaw_shape.friction = 1.0
-        left_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
-        left_jaw_shape.collision_type = 1
-
-        space.add(self.left_jaw, left_jaw_shape)
-        self.left_jaw_shape = left_jaw_shape
-
-        # Create right jaw
-        right_jaw_verts = left_jaw_verts
-        right_jaw_inertia = pymunk.moment_for_poly(jaw_mass, right_jaw_verts)
-        self.right_jaw = pymunk.Body(jaw_mass, right_jaw_inertia, body_type=pymunk.Body.DYNAMIC)
-        self.right_jaw.position = self.base_body.local_to_world((initial_half_opening, base_height/2))
-        self.right_jaw.angle = angle
-
-        right_jaw_shape = pymunk.Poly(self.right_jaw, right_jaw_verts)
-        right_jaw_shape.color = color
-        right_jaw_shape.friction = 1.0
-        right_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
-        right_jaw_shape.collision_type = 1
-
-        space.add(self.right_jaw, right_jaw_shape)
-        self.right_jaw_shape = right_jaw_shape
-
-        # Create prismatic joints (GrooveJoint)
-        # Define grooves in base frame
-        # Left groove: from -max_opening/2 to -min_opening/2
-        left_groove_start = Vec2d(-max_opening/2, base_height/2)
-        left_groove_end = Vec2d(-min_opening/2, base_height/2)
         
-        # Right groove: from min_opening/2 to max_opening/2
-        right_groove_start = Vec2d(min_opening/2, base_height/2)
-        right_groove_end = Vec2d(max_opening/2, base_height/2)
+        # Create fixed jaw shape (attached to same body)
+        fixed_jaw_shape = pymunk.Poly(self.base_body, fixed_jaw_verts)
+        fixed_jaw_shape.color = color
+        fixed_jaw_shape.friction = 1.0
+        fixed_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
+        fixed_jaw_shape.collision_type = 1
+        
+        self.space.add(self.base_body, base_shape, fixed_jaw_shape)
+        self.base_shape = base_shape
+        self.fixed_jaw_shape = fixed_jaw_shape
+        
+        # Store fixed jaw position for reference
+        self.fixed_jaw_x = fixed_jaw_x
 
-        left_anchor = Vec2d(-jaw_thickness/2, 0)
-        self.left_joint = pymunk.GrooveJoint(
-            self.base_body, self.left_jaw,
-            left_groove_start, left_groove_end,
-            left_anchor
+    def _create_moving_jaw(self, angle: float, color):
+        """Create moving jaw with prismatic constraint."""
+        cfg = self.config
+        
+        # Moving jaw position (opposite side from fixed jaw)
+        if self.is_left_gripper:
+            # Left gripper: moving jaw on right side
+            moving_jaw_x = cfg.base_width/2 - cfg.jaw_offset_from_edge
+            # Groove allows movement from current position toward fixed jaw
+            groove_start = Vec2d(moving_jaw_x, cfg.base_height/2)
+            groove_end = Vec2d(self.fixed_jaw_x + cfg.jaw_thickness, cfg.base_height/2)
+            grip_direction = -1  # Move leftward (negative x)
+        else:
+            # Right gripper: moving jaw on left side
+            moving_jaw_x = -cfg.base_width/2 + cfg.jaw_offset_from_edge
+            # Groove allows movement from current position toward fixed jaw
+            groove_start = Vec2d(moving_jaw_x, cfg.base_height/2)
+            groove_end = Vec2d(self.fixed_jaw_x - cfg.jaw_thickness, cfg.base_height/2)
+            grip_direction = 1  # Move rightward (positive x)
+        
+        self.grip_direction = grip_direction
+        
+        # Moving jaw vertices (local to jaw body, origin at bottom center)
+        jaw_verts = [
+            (-cfg.jaw_thickness/2, 0),
+            (cfg.jaw_thickness/2, 0),
+            (cfg.jaw_thickness/2, cfg.jaw_length),
+            (-cfg.jaw_thickness/2, cfg.jaw_length),
+        ]
+        
+        # Create moving jaw body
+        jaw_inertia = pymunk.moment_for_poly(cfg.jaw_mass, jaw_verts)
+        self.moving_jaw = pymunk.Body(cfg.jaw_mass, jaw_inertia, body_type=pymunk.Body.DYNAMIC)
+        self.moving_jaw.position = self.base_body.local_to_world((moving_jaw_x, cfg.base_height/2))
+        self.moving_jaw.angle = angle
+        
+        # Create jaw shape
+        moving_jaw_shape = pymunk.Poly(self.moving_jaw, jaw_verts)
+        moving_jaw_shape.color = color
+        moving_jaw_shape.friction = 1.0
+        moving_jaw_shape.filter = pymunk.ShapeFilter(categories=0b01)
+        moving_jaw_shape.collision_type = 1
+        
+        self.space.add(self.moving_jaw, moving_jaw_shape)
+        self.moving_jaw_shape = moving_jaw_shape
+        
+        # Create prismatic joint (GrooveJoint)
+        anchor = Vec2d(0, 0)  # Jaw origin (bottom center)
+        self.jaw_joint = pymunk.GrooveJoint(
+            self.base_body, self.moving_jaw,
+            groove_start, groove_end,
+            anchor
         )
-        self.left_joint.collide_bodies = False
-        space.add(self.left_joint)
-
-        right_anchor = Vec2d(jaw_thickness/2, 0)
-        self.right_joint = pymunk.GrooveJoint(
-            self.base_body, self.right_jaw,
-            right_groove_start, right_groove_end,
-            right_anchor
-        )
-        self.right_joint.collide_bodies = False
-        space.add(self.right_joint)
-
-        # Rotation constraint for jaws
-        self.left_rotation = pymunk.GearJoint(self.base_body, self.left_jaw, 0, 1)
-        self.left_rotation.max_force = 1e5
-        self.left_rotation.collide_bodies = False
-        space.add(self.left_rotation)
-
-        self.right_rotation = pymunk.GearJoint(self.base_body, self.right_jaw, 0, 1)
-        self.right_rotation.max_force = 1e5
-        self.right_rotation.collide_bodies = False
-        space.add(self.right_rotation)
-
-        # External wrench tracking
-        # Following Modern Robotics convention: [tau, fx, fy]
-        self.external_wrench = np.zeros(3)  # [tau, fx, fy] in body frame (MR convention!)
-        self.contact_impulses = []  # Store contact impulses during step
-        self.space = space
+        self.jaw_joint.collide_bodies = False
+        self.space.add(self.jaw_joint)
+        
+        # Rotation constraint (jaw stays parallel to base)
+        self.rotation_constraint = pymunk.GearJoint(self.base_body, self.moving_jaw, 0, 1)
+        self.rotation_constraint.max_force = 1e5
+        self.rotation_constraint.collide_bodies = False
+        self.space.add(self.rotation_constraint)
 
     def remove_from_space(self):
-        """Remove all pymunk entities associated with this gripper."""
+        """Remove all pymunk entities from space."""
         components = [
             self.base_shape,
-            self.left_jaw_shape,
-            self.right_jaw_shape,
+            self.fixed_jaw_shape,
+            self.moving_jaw_shape,
             self.base_body,
-            self.left_jaw,
-            self.right_jaw,
-            self.left_joint,
-            self.right_joint,
-            self.left_rotation,
-            self.right_rotation,
+            self.moving_jaw,
+            self.jaw_joint,
+            self.rotation_constraint,
         ]
-        # space.remove accepts duplicates gracefully; filter None just in case
         self.space.remove(*[c for c in components if c is not None])
         self.contact_impulses = []
 
     def apply_grip_force(self):
         """
-        Apply constant closing force to both jaws.
+        Apply constant closing force to moving jaw.
         
         Implements internal force pair (action-reaction):
-        - Force F applied to jaw (towards center)
-        - Reaction force -F applied to base body (away from center)
+        - Force F applied to moving jaw (toward fixed jaw)
+        - Reaction force -F applied to base body
         """
-        # Closing direction: inward (toward center)
-        # In base frame, left jaw moves +x, right jaw moves -x
-        # But rotated by base angle
+        force_mag = self.config.grip_force
         
-        # Force magnitude
-        force_mag = self.grip_force
+        # Force direction in base local frame
+        force_local = Vec2d(self.grip_direction * force_mag, 0)
+        force_world = force_local.rotated(self.base_body.angle)
         
-        # Left Jaw: Needs force in +x direction (local)
-        left_force_local = Vec2d(force_mag, 0)
-        left_force_world = left_force_local.rotated(self.base_body.angle)
+        # Apply to moving jaw
+        self.moving_jaw.apply_force_at_world_point(force_world, self.moving_jaw.position)
         
-        # Apply to left jaw
-        self.left_jaw.apply_force_at_world_point(
-            left_force_world,
-            self.left_jaw.position
-        )
-        # Apply reaction to base body (at jaw position)
-        self.base_body.apply_force_at_world_point(
-            -left_force_world,
-            self.left_jaw.position
-        )
-
-        # Right Jaw: Needs force in -x direction (local)
-        right_force_local = Vec2d(-force_mag, 0)
-        right_force_world = right_force_local.rotated(self.base_body.angle)
-        
-        # Apply to right jaw
-        self.right_jaw.apply_force_at_world_point(
-            right_force_world,
-            self.right_jaw.position
-        )
-        # Apply reaction to base body (at jaw position)
-        self.base_body.apply_force_at_world_point(
-            -right_force_world,
-            self.right_jaw.position
-        )
+        # Apply reaction to base body
+        self.base_body.apply_force_at_world_point(-force_world, self.moving_jaw.position)
 
     def get_pose(self) -> np.ndarray:
         """Get gripper pose [x, y, theta]."""
@@ -278,40 +278,28 @@ class ParallelGripper:
         ])
 
     def get_velocity(self) -> np.ndarray:
-        """Get gripper velocity [vx, vy, omega]."""
+        """Get gripper spatial velocity [vx, vy, omega]."""
         return np.array([
             self.base_body.velocity.x,
             self.base_body.velocity.y,
             self.base_body.angular_velocity
         ])
 
-    def set_pose(self, pose: np.ndarray):
-        """Set gripper pose [x, y, theta]."""
-        self.base_body.position = (pose[0], pose[1])
-        self.base_body.angle = pose[2]
-
-    def set_velocity(self, velocity: np.ndarray):
-        """Set gripper velocity [vx, vy, omega]."""
-        self.base_body.velocity = (velocity[0], velocity[1])
-        self.base_body.angular_velocity = velocity[2]
-
     def apply_wrench(self, wrench: np.ndarray):
         """
-        Apply wrench command (in body frame).
+        Apply wrench command in body frame.
 
-        Following Modern Robotics convention:
         Args:
-            wrench: [tau, fx, fy] in body frame (MR convention: torque first!)
+            wrench: [tau, fx, fy] in body frame (MR convention)
         """
-        # Parse wrench (MR convention: [tau, fx, fy])
         tau, fx_body, fy_body = wrench
-
+        
+        # Transform force to world frame
         cos_theta = np.cos(self.base_body.angle)
         sin_theta = np.sin(self.base_body.angle)
-
         fx_world = cos_theta * fx_body - sin_theta * fy_body
         fy_world = sin_theta * fx_body + cos_theta * fy_body
-
+        
         # Apply to base body
         self.base_body.apply_force_at_world_point(
             (fx_world, fy_world),
@@ -319,96 +307,64 @@ class ParallelGripper:
         )
         self.base_body.torque += tau
 
-    def add_contact_impulse(self, impulse: Vec2d, contact_point: Vec2d, contact_body=None):
-        """
-        Add a contact impulse from collision callback.
-
-        Args:
-            impulse: Contact impulse in world frame
-            contact_point: Contact point in world frame
-            contact_body: Pymunk body where contact occurred (base_body, left_jaw, or right_jaw)
-                         If None, assumes base_body
-        """
-        if contact_body is None:
-            contact_body = self.base_body
+    def add_contact_impulse(self, impulse: Vec2d, contact_point: Vec2d, contact_body: pymunk.Body):
+        """Record contact impulse for wrench computation."""
         self.contact_impulses.append((impulse, contact_point, contact_body))
 
     def compute_external_wrench(self, dt: float) -> np.ndarray:
         """
         Compute external wrench from accumulated contact impulses.
 
-        Improved to handle jaw contacts properly by computing torque contribution
-        from jaw contact points correctly.
-
         Args:
-            dt: Time duration over which impulses were accumulated (control_dt)
+            dt: Time duration for impulse-to-force conversion
 
         Returns:
-            External wrench [tau, fx, fy] in body frame (MR convention!)
+            External wrench [tau, fx, fy] in body frame (MR convention)
         """
         if not self.contact_impulses:
-            return np.zeros(3)
+            self.external_wrench = np.zeros(3)
+            return self.external_wrench.copy()
 
-        # Accumulate forces and torques in world frame
         total_force_world = Vec2d(0, 0)
         total_torque = 0.0
 
-        for impulse, contact_point, contact_body in self.contact_impulses:
-            # Add impulse directly (will divide by dt at the end)
+        for impulse, contact_point, _ in self.contact_impulses:
             total_force_world += impulse
-
-            # Compute torque about base body center
-            # Note: Even if contact is on jaw, we compute torque w.r.t. base center
-            # because jaw forces are transmitted to base through prismatic joint
+            
+            # Torque about base body center
             r = contact_point - self.base_body.position
-            # Torque = r × Impulse (Angular impulse)
-            torque = r.x * impulse.y - r.y * impulse.x
-            total_torque += torque
+            total_torque += r.x * impulse.y - r.y * impulse.x
 
-        # Convert accumulated impulses to average force/torque over dt
+        # Convert impulse to force
         total_force_world /= dt
         total_torque /= dt
 
-        # Transform force from world frame to body frame
+        # Transform to body frame
         cos_theta = np.cos(self.base_body.angle)
         sin_theta = np.sin(self.base_body.angle)
-
         fx_body = cos_theta * total_force_world.x + sin_theta * total_force_world.y
         fy_body = -sin_theta * total_force_world.x + cos_theta * total_force_world.y
 
-        # Store and return
-        # Following Modern Robotics convention: [τ, fx, fy] (torque first!)
         self.external_wrench = np.array([total_torque, fx_body, fy_body])
-
-        # Clear impulses for next step
         self.contact_impulses = []
-
+        
         return self.external_wrench.copy()
 
-    def clear_contact_impulses(self):
-        """Clear accumulated contact impulses."""
-        self.contact_impulses = []
-
     def get_external_wrench(self) -> np.ndarray:
-        """Get most recent external wrench measurement."""
+        """Get most recent external wrench [tau, fx, fy]."""
         return self.external_wrench.copy()
 
 
 class EndEffectorManager:
     """
-    Manager for all end-effectors in the environment.
-
-    Handles:
-    - Creation and initialization of parallel grippers
-    - Gripper force application
-    - External wrench sensing
-    - State queries
+    Manager for bimanual parallel grippers.
+    
+    Handles creation, control, and sensing for dual grippers.
     """
 
     def __init__(
         self,
         space: pymunk.Space,
-        num_grippers: int = 2,
         config: Optional[GripperConfig] = None,
         dt: float = 0.01
     ):
@@ -417,105 +373,67 @@ class EndEffectorManager:
 
         Args:
             space: Pymunk space
-            num_grippers: Number of grippers
-            config: Optional gripper configuration
-            dt: Physics timestep for force computation
+            config: Gripper configuration
+            dt: Physics timestep
         """
         self.space = space
-        self.num_grippers = num_grippers
+        self.config = config or GripperConfig()
         self.dt = dt
-
-        # Use provided config or default
-        if config is None:
-            config = GripperConfig()
-
-        # Store config as dict for backward compatibility
-        self.gripper_params = {
-            'base_mass': config.base_mass,
-            'jaw_mass': config.jaw_mass,
-            'base_width': config.base_width,
-            'base_height': config.base_height,
-            'jaw_length': config.jaw_length,
-            'jaw_thickness': config.jaw_thickness,
-            'max_opening': config.max_opening,
-            'min_opening': config.min_opening,
-            'grip_force': config.grip_force,
-            'target_object_width': config.target_object_width
-        }
-
-        # Grippers will be created during reset
-        self.grippers = []
-
-        # Setup collision handlers for force sensing
+        self.grippers: List[ParallelGripper] = []
+        
         self._setup_collision_handlers()
 
     def reset(self, initial_poses: np.ndarray):
         """
-        Reset end-effectors.
+        Reset grippers at specified poses.
 
         Args:
-            initial_poses: Array of shape (num_grippers, 3) with initial poses
+            initial_poses: Shape (2, 3) with poses [x, y, theta] for [left, right]
         """
-        # Remove old grippers if they exist
+        # Remove existing grippers
         for gripper in self.grippers:
             gripper.remove_from_space()
-
         self.grippers = []
 
         # Create new grippers
         names = ["left", "right"]
-        for i in range(self.num_grippers):
+        for i, name in enumerate(names):
             gripper = ParallelGripper(
                 space=self.space,
                 position=(initial_poses[i, 0], initial_poses[i, 1]),
                 angle=initial_poses[i, 2],
-                name=names[i] if i < len(names) else f"gripper_{i}",
-                **self.gripper_params
+                name=name,
+                config=self.config
             )
             self.grippers.append(gripper)
 
     def _setup_collision_handlers(self):
         """Setup collision handlers for force sensing."""
-        # Collision type 1 is for grippers
-        # We'll handle collisions between grippers and objects (collision type 2)
+        # Gripper (type 1) vs Object (type 2)
         handler = self.space.add_collision_handler(1, 2)
         handler.post_solve = self._handle_collision
 
     def _handle_collision(self, arbiter, space, data):
-        """
-        Collision callback to record contact forces.
-
-        Improved to handle jaw contacts properly by identifying which body
-        (base, left_jaw, or right_jaw) the contact occurred on.
-
-        Args:
-            arbiter: Collision arbiter containing contact information
-            space: Pymunk space
-            data: User data
-        """
-        # Get total impulse from arbiter (pymunk 6.x compatible)
-        total_impulse = arbiter.total_impulse
-        impulse = Vec2d(total_impulse.x, total_impulse.y)
+        """Record contact impulses from collisions."""
+        impulse = Vec2d(arbiter.total_impulse.x, arbiter.total_impulse.y)
         
-        # Use first contact point for position
-        if arbiter.contact_point_set.points:
-            contact = arbiter.contact_point_set.points[0]
-            contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
-        else:
+        if not arbiter.contact_point_set.points:
             return True
+            
+        contact = arbiter.contact_point_set.points[0]
+        contact_point = Vec2d(contact.point_a.x, contact.point_a.y)
 
-        # Check both shapes involved in collision and only process gripper shapes
+        # Find which gripper was involved
         for shape in arbiter.shapes:
             if shape.collision_type != 1:
                 continue
             contact_body = shape.body
-
-            # Determine which gripper this body belongs to
+            
             for gripper in self.grippers:
-                if contact_body in (gripper.base_body, gripper.left_jaw, gripper.right_jaw):
+                if contact_body in (gripper.base_body, gripper.moving_jaw):
                     gripper.add_contact_impulse(impulse, contact_point, contact_body)
                     break
-
+        
         return True
 
     def apply_grip_forces(self):
@@ -523,75 +441,64 @@ class EndEffectorManager:
         for gripper in self.grippers:
             gripper.apply_grip_force()
 
+    def apply_wrenches(self, wrenches: np.ndarray):
+        """Apply wrench commands to grippers."""
+        for i, gripper in enumerate(self.grippers):
+            gripper.apply_wrench(wrenches[i])
+
     def update_external_wrenches(self, dt: float):
-        """
-        Compute external wrenches from accumulated contact impulses.
-        
-        Args:
-            dt: Time duration to average forces over (control_dt)
-        """
+        """Compute external wrenches from contact impulses."""
         for gripper in self.grippers:
             gripper.compute_external_wrench(dt)
 
-    def step(self):
-        """
-        Backwards-compatible helper: apply grip forces and update wrenches.
-        Uses internal dt (physics timestep) as default.
-        """
-        self.apply_grip_forces()
-        self.update_external_wrenches(self.dt)
-
     def get_poses(self) -> np.ndarray:
-        """Get all gripper poses."""
+        """Get gripper poses (2, 3)."""
         return np.array([g.get_pose() for g in self.grippers])
 
     def get_velocities(self) -> np.ndarray:
-        """
-        Get all gripper velocities in spatial frame.
-
-        Returns:
-            Array of shape (num_grippers, 3) with spatial velocities [vx_s, vy_s, omega]
-        """
+        """Get spatial velocities [vx, vy, omega] (2, 3)."""
         return np.array([g.get_velocity() for g in self.grippers])
 
     def get_body_twists(self) -> np.ndarray:
         """
-        Get all gripper body frame twists.
-
-        Following Modern Robotics convention:
-        Converts spatial velocities to body frame twists [ω, vx_b, vy_b]
-
-        Returns:
-            Array of shape (num_grippers, 3) with body twists [omega, vx_b, vy_b] (MR convention!)
+        Get body frame velocities [omega, vx_b, vy_b] (MR convention) (2, 3).
+        
+        IMPORTANT: We use simple rotation to convert world-frame point velocity
+        to body-frame velocity. This is NOT the SE(2) adjoint map!
+        
+        For point velocity (velocity of body origin):
+            v_body = R^T @ v_world
+            
+        The adjoint map (with p × ω term) is only needed when transforming
+        SE(2) twists observed from different points.
         """
         body_twists = []
         for gripper in self.grippers:
-            pose = gripper.get_pose()  # [x, y, theta]
-            vel_spatial = gripper.get_velocity()  # [vx_s, vy_s, omega]
-
-            # Convert to MR convention [omega, vx_s, vy_s]
-            # get_velocity() returns [vx_s, vy_s, omega], but spatial_to_body_twist expects [omega, vx_s, vy_s]
-            vel_spatial_mr = np.array([vel_spatial[2], vel_spatial[0], vel_spatial[1]])
-
-            # Convert spatial velocity to body twist (MR convention)
-            twist_body = spatial_to_body_twist(pose, vel_spatial_mr)
-            body_twists.append(twist_body)
+            pose = gripper.get_pose()
+            vel = gripper.get_velocity()  # [vx, vy, omega] in world frame
+            
+            # Extract components
+            vx_world, vy_world, omega = vel
+            theta = pose[2]
+            
+            # Simple rotation: v_body = R^T @ v_world
+            # R^T = [[cos, sin], [-sin, cos]]
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            
+            vx_body = cos_theta * vx_world + sin_theta * vy_world
+            vy_body = -sin_theta * vx_world + cos_theta * vy_world
+            # Angular velocity is frame-independent in 2D
+            
+            # MR convention: [omega, vx, vy]
+            body_twists.append(np.array([omega, vx_body, vy_body]))
+            
         return np.array(body_twists)
 
-    def apply_wrenches(self, wrenches: np.ndarray):
-        """
-        Apply wrench commands to all grippers.
-
-        Args:
-            wrenches: Array of shape (num_grippers, 3) with wrenches in body frame
-        """
-        for i, gripper in enumerate(self.grippers):
-            gripper.apply_wrench(wrenches[i])
-
     def get_external_wrenches(self) -> np.ndarray:
-        """Get external wrenches for all grippers."""
+        """Get external wrenches [tau, fx, fy] (2, 3)."""
         return np.array([g.get_external_wrench() for g in self.grippers])
 
     def get_gripper(self, idx: int) -> ParallelGripper:
-        """Get gripper by index."""
+        """Get gripper by index (0=left, 1=right)."""
         return self.grippers[idx]

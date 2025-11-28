@@ -20,7 +20,12 @@ from scipy.interpolate import CubicSpline, interp1d
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, SE2Pose, spatial_to_body_twist
+from src.se2_math import normalize_angle, SE2Pose
+
+# Note: We use simple rotation for velocity frame conversion, NOT spatial_to_body_twist.
+# The trajectory velocity is dpose/dt which represents point velocity of body origin.
+# For point velocities, use simple rotation: v_body = R^T @ v_world
+# The adjoint map (with p × ω term) is only for SE(2) twists observed from different points.
 
 
 @dataclass
@@ -167,12 +172,19 @@ class CubicSplineTrajectory:
         velocity_spatial = np.array([vx_spatial, vy_spatial, omega])  # Pose derivative form
         acceleration = np.array([ax, ay, alpha])
 
-        # Convert spatial velocity to body twist
-        # Body twist: velocity expressed in the body frame
-        # Note: spatial_to_body_twist expects MR convention [omega, vx, vy]
-        # We have velocity_spatial as pose derivative [vx, vy, omega], so reorder:
-        velocity_spatial_mr = np.array([omega, vx_spatial, vy_spatial])  # MR convention
-        velocity_body = spatial_to_body_twist(pose, velocity_spatial_mr)
+        # Convert spatial velocity to body frame velocity
+        # Use simple rotation (NOT adjoint map!) for point velocity:
+        # v_body = R^T @ v_world where R^T = [[cos, sin], [-sin, cos]]
+        theta = pose[2]
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        vx_body = cos_theta * vx_spatial + sin_theta * vy_spatial
+        vy_body = -sin_theta * vx_spatial + cos_theta * vy_spatial
+        # Angular velocity is frame-independent in 2D
+        
+        # MR convention: [omega, vx, vy]
+        velocity_body = np.array([omega, vx_body, vy_body])
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 
@@ -275,11 +287,19 @@ class MinimumJerkTrajectory:
         # Compute acceleration
         acceleration = s_ddot * delta_pose
 
-        # Convert spatial velocity to body twist
-        # Note: spatial_to_body_twist expects MR convention [omega, vx, vy]
-        # We have velocity_spatial as [vx, vy, omega], so reorder:
-        velocity_spatial_mr = np.array([velocity_spatial[2], velocity_spatial[0], velocity_spatial[1]])
-        velocity_body = spatial_to_body_twist(pose, velocity_spatial_mr)
+        # Convert spatial velocity to body frame velocity
+        # Use simple rotation (NOT adjoint map!) for point velocity:
+        # v_body = R^T @ v_world
+        vx_spatial, vy_spatial, omega = velocity_spatial
+        theta = pose[2]
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        vx_body = cos_theta * vx_spatial + sin_theta * vy_spatial
+        vy_body = -sin_theta * vx_spatial + cos_theta * vy_spatial
+        
+        # MR convention: [omega, vx, vy]
+        velocity_body = np.array([omega, vx_body, vy_body])
 
         return TrajectoryPoint(pose, velocity_spatial, velocity_body, acceleration, t)
 

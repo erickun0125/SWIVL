@@ -1,13 +1,16 @@
 """
 Object Manager
 
-Manages articulated objects including:
-- Multi-link objects with various joint types (revolute, prismatic, fixed)
-- Pymunk physics joints (PivotJoint, GrooveJoint, etc.)
-- Grasping frames for each link
-- Object state queries and updates
+Manages articulated objects for bimanual manipulation:
+- Two-link objects with 1-DOF joints (revolute, prismatic, fixed)
+- Pymunk physics constraints
+- Grasping frames for gripper attachment
+- Joint axis screws for screw-decomposed control
 
-This manager is used by BiArt environment for object-related operations.
+Joint Types:
+- Revolute: rotation around connection point (PivotJoint)
+- Prismatic: sliding along link axis (GrooveJoint)
+- Fixed: rigid connection (PivotJoint + DampedRotarySpring)
 """
 
 import numpy as np
@@ -29,34 +32,42 @@ class JointType(Enum):
 
 
 @dataclass
+class ObjectConfig:
+    """Configuration for articulated object."""
+    link_length: float = 40.0
+    link_width: float = 11.0
+    link_mass: float = 0.1
+
+
+@dataclass
 class GraspingFrame:
     """
-    Grasping frame for a link.
-
+    Grasping frame for gripper attachment.
+    
     Defined in link's local coordinate frame.
-    EE's body frame should align with this frame when grasping.
+    Gripper's body frame aligns with this frame when grasping.
     """
-    link_id: int
-    local_pose: np.ndarray  # [x, y, theta] in link's local frame
-    gripper_name: str  # Which gripper grasps at this frame
+    link_id: int  # 0 for link1, 1 for link2
+    local_pose: np.ndarray  # [x, y, theta] in link frame
+    gripper_name: str  # "left" or "right"
 
 
 class ArticulatedObject:
     """
-    Multi-link articulated object with joints.
-
-    Currently supports two-link objects with single joint.
+    Two-link articulated object with 1-DOF joint.
+    
+    Link coordinate system:
+    - Origin at link center
+    - X-axis along link length
+    - Y-axis perpendicular to link
     """
 
     def __init__(
         self,
         space: pymunk.Space,
         joint_type: JointType,
-        link_length: float = 40.0,
-        link_width: float = 12.0,
-        link_mass: float = 0.5,
-        initial_pose: Optional[np.ndarray] = None,
-        initial_angle: float = 0.0
+        config: ObjectConfig,
+        initial_pose: np.ndarray
     ):
         """
         Initialize articulated object.
@@ -64,579 +75,339 @@ class ArticulatedObject:
         Args:
             space: Pymunk space
             joint_type: Type of joint connecting links
-            link_length: Length of each link
-            link_width: Width of each link
-            link_mass: Mass of each link
+            config: Object configuration
             initial_pose: Initial pose of link1 center [x, y, theta]
-            initial_angle: Initial angle (if initial_pose not provided)
         """
         self.space = space
         self.joint_type = joint_type
-        self.link_length = link_length
-        self.link_width = link_width
-        self.link_mass = link_mass
-
-        # Default initial pose
-        if initial_pose is None:
-            initial_pose = np.array([256.0, 256.0, initial_angle])
-
-        # Create links and joint
-        self.link1, self.link2, self.joint, self.aux_joints = self._create_links_and_joint(
-            initial_pose
-        )
-
+        self.config = config
+        
+        # Create links and joints
+        self.link1, self.link2, self.primary_joint, self.aux_joints = \
+            self._create_links_and_joint(initial_pose)
+        
         # Define grasping frames
         self.grasping_frames = self._define_grasping_frames()
 
-    def remove_from_space(self):
-        """Remove all pymunk entities for this object."""
-        components: List[pymunk.Shape] = []
-        components.extend(list(self.link1.shapes))
-        components.extend(list(self.link2.shapes))
-        components.extend(self.aux_joints)
-        components.append(self.joint)
-        components.append(self.link1)
-        components.append(self.link2)
-        self.space.remove(*components)
-
-    def _create_link(
-        self,
-        position: Tuple[float, float],
-        angle: float,
-        name: str
-    ) -> Tuple[pymunk.Body, List[pymunk.Shape]]:
-        """
-        Create a single link with grasping part.
-
-        Args:
-            position: Position (x, y)
-            angle: Angle (radians)
-            name: Link name
-
-        Returns:
-            (body, shapes) tuple
-        """
-        # Main body vertices
-        l, w = self.link_length, self.link_width
-        main_verts = [
-            (-l/2, -w/2),
-            (l/2, -w/2),
-            (l/2, w/2),
-            (-l/2, w/2),
+    def _create_link(self, position: Tuple[float, float], angle: float, name: str) -> pymunk.Body:
+        """Create a single link body with shape."""
+        cfg = self.config
+        
+        # Link vertices (centered at origin)
+        verts = [
+            (-cfg.link_length/2, -cfg.link_width/2),
+            (cfg.link_length/2, -cfg.link_width/2),
+            (cfg.link_length/2, cfg.link_width/2),
+            (-cfg.link_length/2, cfg.link_width/2),
         ]
-
-        # Calculate moment of inertia
-        inertia = pymunk.moment_for_poly(self.link_mass, main_verts)
-
-        # Create body
-        body = pymunk.Body(self.link_mass, inertia, body_type=pymunk.Body.DYNAMIC)
+        
+        inertia = pymunk.moment_for_poly(cfg.link_mass, verts)
+        body = pymunk.Body(cfg.link_mass, inertia, body_type=pymunk.Body.DYNAMIC)
         body.position = position
         body.angle = angle
         body.name = name
-
-        # Create shape
-        shape = pymunk.Poly(body, main_verts)
+        
+        shape = pymunk.Poly(body, verts)
         shape.color = pygame.Color("LightSlateGray")
         shape.friction = 100.0
         shape.filter = pymunk.ShapeFilter(categories=0b10)  # Object category
         shape.collision_type = 2  # Object collision type
-
+        
         self.space.add(body, shape)
+        return body
 
-        return body, [shape]
-
-    def _create_links_and_joint(
-        self,
-        link1_pose: np.ndarray
-    ) -> Tuple[pymunk.Body, pymunk.Body, pymunk.Constraint, List[pymunk.Constraint]]:
-        """
-        Create two links connected by a joint.
-
-        Args:
-            link1_pose: Pose of link1 [x, y, theta]
-
-        Returns:
-            (link1_body, link2_body, primary_joint, auxiliary_joints)
-        """
+    def _create_links_and_joint(self, link1_pose: np.ndarray):
+        """Create two links connected by joint."""
+        cfg = self.config
+        
         # Create link 1
-        link1_body, link1_shapes = self._create_link(
+        link1 = self._create_link(
             (link1_pose[0], link1_pose[1]),
             link1_pose[2],
             "link1"
         )
-
-        # Calculate connection point (link1's right end in world frame)
-        link1_end_local = Vec2d(self.link_length / 2, 0)
-        connection_point = link1_body.local_to_world(link1_end_local)
-
-        # Determine link2 initial configuration
+        
+        # Connection point (link1's right end)
+        connection_local = Vec2d(cfg.link_length / 2, 0)
+        connection_world = link1.local_to_world(connection_local)
+        
+        # Determine link2 initial configuration based on joint type
         if self.joint_type == JointType.REVOLUTE:
-            # Start at random relative angle within limits
-            # Since limits are -pi to pi, we can start anywhere, e.g. -90 deg for V-shape
-            initial_relative_angle = -np.pi / 2
-            link2_angle = link1_pose[2] + initial_relative_angle
-            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
-            link2_center = connection_point + link2_start_to_center
-
+            # Start with -90° relative angle (V-shape)
+            relative_angle = -np.pi / 2
+            link2_angle = link1_pose[2] + relative_angle
+            link2_offset = Vec2d(cfg.link_length / 2, 0).rotated(link2_angle)
+            link2_center = connection_world + link2_offset
+            
         elif self.joint_type == JointType.PRISMATIC:
-            # Links stay aligned
+            # Links stay aligned, start at center of sliding range
             link2_angle = link1_pose[2]
-            # Start at center of range (state = 0)
-            # Link2 left end aligns with Link1 center? No, that's -L/2 limit.
-            # Let's say state 0 means Link2 left end is at Link1 right end (fully extended).
-            # No, usually 0 is a neutral position.
-            # Let's define 0 as Link2 left end is at Link1 right end (L/2).
-            # Range [-L/2, L/2] -> Link2 left end from 0 to L.
+            # Link2 left end at link1 center (joint state = 0)
+            link2_center = link1.local_to_world(Vec2d(cfg.link_length / 2, 0))
             
-            # Let's stick to the Groove definition below:
-            # Groove: [-L/2, L/2] relative to Link1 center.
-            # Anchor: Link2 left end.
-            # So Link2 left end moves from -L/2 to L/2 in Link1 frame.
-            
-            # Initial pos: state = 0 -> Link2 left end at 0 (Link1 center)
-            link2_left_end_in_link1 = Vec2d(0, 0)
-            
-            # Convert to world to find Link2 center
-            # Link2 center is L/2 away from its left end
-            link2_center_in_link1 = link2_left_end_in_link1 + Vec2d(self.link_length/2, 0)
-            
-            # Transform to world
-            link2_center = link1_body.local_to_world(link2_center_in_link1)
-
         else:  # FIXED
-            # Rigidly aligned
             link2_angle = link1_pose[2]
-            link2_start_to_center = Vec2d(self.link_length / 2, 0).rotated(link2_angle)
-            link2_center = connection_point + link2_start_to_center
-
+            link2_offset = Vec2d(cfg.link_length / 2, 0).rotated(link2_angle)
+            link2_center = connection_world + link2_offset
+        
         # Create link 2
-        link2_body, link2_shapes = self._create_link(
-            link2_center,
-            link2_angle,
-            "link2"
-        )
-
-        # Create joints using Pymunk constraints
-        auxiliary_joints = []
-
+        link2 = self._create_link(link2_center, link2_angle, "link2")
+        
+        # Create joint constraints
+        aux_joints = []
+        
         if self.joint_type == JointType.REVOLUTE:
-            # PivotJoint: allows rotation around connection point
-            primary_joint = pymunk.PivotJoint(link1_body, link2_body, connection_point)
+            # PivotJoint allows rotation around connection point
+            primary_joint = pymunk.PivotJoint(link1, link2, connection_world)
             primary_joint.collide_bodies = False
-
-            # Add rotary limit: full range -180 to 180 degrees
-            angle_limit = pymunk.RotaryLimitJoint(
-                link1_body, link2_body,
-                -np.pi,  # -180°
-                np.pi    # 180°
-            )
-            angle_limit.collide_bodies = False
-            self.space.add(angle_limit)
-            auxiliary_joints.append(angle_limit)
-
+            
+            # Rotary limits: -180° to 180°
+            limit = pymunk.RotaryLimitJoint(link1, link2, -np.pi, np.pi)
+            limit.collide_bodies = False
+            self.space.add(limit)
+            aux_joints.append(limit)
+            
         elif self.joint_type == JointType.PRISMATIC:
-            # GrooveJoint: allows sliding along link1's x-axis
-            # Define range: [-L/2, L/2] relative to Link1 center
-            groove_start = Vec2d(-self.link_length / 2, 0)
-            groove_end = Vec2d(self.link_length / 2, 0)
-            anchor = Vec2d(-self.link_length / 2, 0)  # Link2's left end
-
+            # GrooveJoint allows sliding along link1's x-axis
+            groove_start = Vec2d(-cfg.link_length / 2, 0)
+            groove_end = Vec2d(cfg.link_length / 2, 0)
+            anchor = Vec2d(-cfg.link_length / 2, 0)  # Link2's left end
+            
             primary_joint = pymunk.GrooveJoint(
-                link1_body, link2_body,
+                link1, link2,
                 groove_start, groove_end,
                 anchor
             )
             primary_joint.collide_bodies = False
-
-            # GearJoint to prevent rotation (keeps links parallel)
-            # Phase 0, Ratio 1 means link2 angle = link1 angle
-            rotational_constraint = pymunk.GearJoint(link1_body, link2_body, 0, 1)
-            rotational_constraint.max_force = 1e10
-            rotational_constraint.collide_bodies = False
-            self.space.add(rotational_constraint)
-            auxiliary_joints.append(rotational_constraint)
-
+            
+            # GearJoint prevents rotation (keeps links parallel)
+            gear = pymunk.GearJoint(link1, link2, 0, 1)
+            gear.max_force = 1e10
+            gear.collide_bodies = False
+            self.space.add(gear)
+            aux_joints.append(gear)
+            
         else:  # FIXED
-            # DampedRotarySpring: very stiff rotational constraint
-            rotary_spring = pymunk.DampedRotarySpring(link1_body, link2_body, 0, 1e8, 1e6)
-            self.space.add(rotary_spring)
-            auxiliary_joints.append(rotary_spring)
-
-            # PivotJoint: rigid position constraint
-            primary_joint = pymunk.PivotJoint(link1_body, link2_body, connection_point)
+            # Rigid connection
+            primary_joint = pymunk.PivotJoint(link1, link2, connection_world)
             primary_joint.collide_bodies = False
-
+            
+            # Very stiff rotational spring
+            spring = pymunk.DampedRotarySpring(link1, link2, 0, 1e8, 1e6)
+            self.space.add(spring)
+            aux_joints.append(spring)
+        
         self.space.add(primary_joint)
-
-        return link1_body, link2_body, primary_joint, auxiliary_joints
+        return link1, link2, primary_joint, aux_joints
 
     def _define_grasping_frames(self) -> Dict[str, GraspingFrame]:
         """
-        Define grasping frames for each link.
-
-        For two-link object:
-        - Left gripper grasps link1's left side (offset -length/4)
-        - Right gripper grasps link2's right side (offset +length/4)
-        - Frame orientation: 90° relative to link (jaws perpendicular to link)
-
-        Returns:
-            Dictionary {gripper_name: GraspingFrame}
+        Define grasping frames for each gripper.
+        
+        Left gripper grasps link1's left side (perpendicular approach)
+        Right gripper grasps link2's right side (perpendicular approach)
         """
-        frames = {}
+        cfg = self.config
+        
+        return {
+            "left": GraspingFrame(
+                link_id=0,
+                local_pose=np.array([-cfg.link_length / 4, 0.0, -np.pi / 2]),
+                gripper_name="left"
+            ),
+            "right": GraspingFrame(
+                link_id=1,
+                local_pose=np.array([cfg.link_length / 4, 0.0, np.pi / 2]),
+                gripper_name="right"
+            )
+        }
 
-        # Left gripper → Link1, left side, perpendicular
-        frames["left"] = GraspingFrame(
-            link_id=0,
-            local_pose=np.array([-self.link_length / 4, 0.0, -np.pi / 2]),
-            gripper_name="left"
-        )
-
-        # Right gripper → Link2, right side, perpendicular
-        frames["right"] = GraspingFrame(
-            link_id=1,
-            local_pose=np.array([self.link_length / 4, 0.0, np.pi / 2]),
-            gripper_name="right"
-        )
-
-        return frames
+    def remove_from_space(self):
+        """Remove all pymunk entities."""
+        components = []
+        components.extend(list(self.link1.shapes))
+        components.extend(list(self.link2.shapes))
+        components.extend(self.aux_joints)
+        components.append(self.primary_joint)
+        components.append(self.link1)
+        components.append(self.link2)
+        self.space.remove(*components)
 
     def get_link_poses(self) -> np.ndarray:
-        """
-        Get poses of all links.
-
-        Returns:
-            Array of shape (2, 3) with poses [x, y, theta]
-        """
+        """Get poses of both links (2, 3)."""
         return np.array([
             [self.link1.position.x, self.link1.position.y, self.link1.angle],
             [self.link2.position.x, self.link2.position.y, self.link2.angle]
         ])
 
     def get_link_velocities(self) -> np.ndarray:
-        """
-        Get velocities of all links.
-
-        Returns:
-            Array of shape (2, 3) with velocities [vx, vy, omega]
-        """
+        """Get velocities of both links (2, 3)."""
         return np.array([
             [self.link1.velocity.x, self.link1.velocity.y, self.link1.angular_velocity],
             [self.link2.velocity.x, self.link2.velocity.y, self.link2.angular_velocity]
         ])
 
     def get_grasping_pose(self, gripper_name: str) -> np.ndarray:
-        """
-        Get world-frame pose of grasping frame for a gripper.
-
-        Args:
-            gripper_name: "left" or "right"
-
-        Returns:
-            Grasping frame pose [x, y, theta] in world frame
-        """
-        if gripper_name not in self.grasping_frames:
-            raise ValueError(f"Unknown gripper: {gripper_name}")
-
+        """Get world-frame pose of grasping frame."""
         frame = self.grasping_frames[gripper_name]
-
-        # Get link pose
-        link_poses = self.get_link_poses()
-        link_pose = link_poses[frame.link_id]
-
+        link_pose = self.get_link_poses()[frame.link_id]
+        
         # Transform local grasp pose to world frame
-        link_T = SE2Pose.from_array(link_pose).to_matrix()
-        grasp_local_T = SE2Pose.from_array(frame.local_pose).to_matrix()
-        grasp_world_T = link_T @ grasp_local_T
-
-        return SE2Pose.from_matrix(grasp_world_T).to_array()
+        T_link = SE2Pose.from_array(link_pose).to_matrix()
+        T_grasp_local = SE2Pose.from_array(frame.local_pose).to_matrix()
+        T_grasp_world = T_link @ T_grasp_local
+        
+        return SE2Pose.from_matrix(T_grasp_world).to_array()
 
     def get_all_grasping_poses(self) -> Dict[str, np.ndarray]:
-        """
-        Get all grasping frame poses.
-
-        Returns:
-            Dictionary {gripper_name: world_pose}
-        """
-        return {
-            name: self.get_grasping_pose(name)
-            for name in self.grasping_frames.keys()
-        }
-
-    def get_joint_axis_screws(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get joint axis as SE(2) unit screws in each end effector (grasping) frame.
-
-        Returns body twist representation of joint axis as seen from each EE frame.
-        This is configuration-invariant - depends only on grasping frames and joint geometry.
-
-        Following Modern Robotics convention: Screw = [sω, sx, sy]
-
-        For revolute joint:
-            B = [omega, v_x, v_y] where v = omega × r (r is position to joint axis)
-            Normalized: [1, r_y, -r_x] (unit angular velocity, MR convention)
-
-        For prismatic joint:
-            B = [0, v_x, v_y] where [v_x, v_y] is unit direction of sliding (MR convention)
-
-        Returns:
-            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw [sω, sx, sy]
-        """
-        # Get joint connection point and direction in link frames
-        if self.joint_type == JointType.REVOLUTE:
-            # Connection point is at link1's right end (local coords)
-            joint_pos_link1 = np.array([self.link_length / 2, 0.0])
-            # In link2, it's at the left end
-            joint_pos_link2 = np.array([-self.link_length / 2, 0.0])
-
-        elif self.joint_type == JointType.PRISMATIC:
-            # Joint axis direction is along link1's x-axis
-            joint_direction_link1 = np.array([1.0, 0.0])
-            # Same direction in link2 (parallel constraint)
-            joint_direction_link2 = np.array([1.0, 0.0])
-
-        else:  # FIXED
-            # No motion allowed - return zero screws
-            return np.zeros(3), np.zeros(3)
-
-        # Compute screw in each grasping frame
-        B_left = self._compute_joint_screw_in_grasp_frame("left",
-                                                           joint_pos_link1 if self.joint_type == JointType.REVOLUTE else None,
-                                                           joint_direction_link1 if self.joint_type == JointType.PRISMATIC else None)
-        B_right = self._compute_joint_screw_in_grasp_frame("right",
-                                                            joint_pos_link2 if self.joint_type == JointType.REVOLUTE else None,
-                                                            joint_direction_link2 if self.joint_type == JointType.PRISMATIC else None)
-
-        return B_left, B_right
-
-    def _compute_joint_screw_in_grasp_frame(self,
-                                             gripper_name: str,
-                                             joint_pos_link: Optional[np.ndarray] = None,
-                                             joint_dir_link: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Compute joint axis screw in grasping frame.
-
-        NORMALIZATION CONVENTION:
-        - Revolute joints: Angular velocity component ω normalized to 1
-                          B = [1, ry, -rx], ||B|| = sqrt(1 + ry^2 + rx^2) (NOT unit norm!)
-                          Represents twist from unit angular velocity ω=1
-        - Prismatic joints: Linear velocity component v normalized to 1
-                           B = [0, vx, vy], ||B|| = 1 (unit norm!)
-                           Represents twist from unit linear velocity along joint axis
-
-        Args:
-            gripper_name: "left" or "right"
-            joint_pos_link: Joint position in link frame [x, y] (for revolute)
-            joint_dir_link: Joint direction in link frame [dx, dy] (for prismatic)
-
-        Returns:
-            SE(2) screw in grasping frame (3,) following normalization convention above
-        """
-        # Get grasping frame
-        grasp_frame = self.grasping_frames[gripper_name]
-
-        # Grasping frame pose in link frame (T_link_grasp)
-        T_link_grasp = SE2Pose.from_array(grasp_frame.local_pose).to_matrix()
-
-        # Invert to get T_grasp_link (grasp frame relative to link)
-        T_grasp_link = se2_inverse(T_link_grasp)
-
-        # Extract rotation and translation from T_grasp_link
-        # T_grasp_link transforms points from link frame to grasp frame
-        R_grasp_link = T_grasp_link[:2, :2]  # Rotation matrix
-        t_grasp_link = T_grasp_link[:2, 2]   # Translation vector
-
-        if self.joint_type == JointType.REVOLUTE:
-            # Transform joint position to grasp frame
-            joint_pos_grasp = R_grasp_link @ joint_pos_link + t_grasp_link
-
-            # SE(2) screw for revolute: [omega, v_x, v_y] (MR convention!)
-            # This represents v = omega × r with omega = 1 (unit angular velocity)
-            rx, ry = joint_pos_grasp
-            # MR convention: [1, r_y, -r_x] (angular component first!)
-            B = np.array([1.0, ry, -rx])
-
-            # IMPORTANT NOTE ON NORMALIZATION:
-            # This screw is NOT normalized to unit norm! ||B|| = sqrt(1 + ry^2 + rx^2)
-            # This is intentional: it represents the twist induced by unit angular velocity.
-            # The screw decomposition controller handles non-unit screws via projection operators.
-            # Normalizing would lose information about the physical distance to joint center.
-
-        elif self.joint_type == JointType.PRISMATIC:
-            # Transform joint direction to grasp frame (only rotation, no translation)
-            joint_dir_grasp = R_grasp_link @ joint_dir_link
-
-            # SE(2) screw for prismatic: [omega, v_x, v_y] (MR convention!)
-            # Normalize to ensure unit velocity
-            joint_dir_grasp_normalized = joint_dir_grasp / np.linalg.norm(joint_dir_grasp)
-            # MR convention: [0, vx, vy] (angular component first, which is 0 for prismatic!)
-            B = np.array([0.0, joint_dir_grasp_normalized[0], joint_dir_grasp_normalized[1]])
-
-            # IMPORTANT NOTE ON NORMALIZATION:
-            # This screw IS normalized to unit norm: ||B|| = 1
-            # This represents unit linear velocity along the sliding direction.
-            # Different normalization convention from revolute joints is intentional!
-
-        else:
-            B = np.zeros(3)
-
-        return B
+        """Get all grasping frame poses in world frame."""
+        return {name: self.get_grasping_pose(name) for name in self.grasping_frames}
 
     def get_joint_state(self) -> float:
         """
         Get current joint state.
-
-        For revolute: relative angle (radians)
-        For prismatic: relative position (pixels)
-        For fixed: 0
-
-        Returns:
-            Joint state value
+        
+        Revolute: relative angle (radians)
+        Prismatic: relative position (pixels)
+        Fixed: 0
         """
         if self.joint_type == JointType.REVOLUTE:
-            # Relative angle between links
             return normalize_angle(self.link2.angle - self.link1.angle)
-
-        elif self.joint_type == JointType.PRISMATIC:
-            # Distance along link1's axis
-            # Link2's left end in Link1's frame
-            link2_left_end_local = Vec2d(-self.link_length / 2, 0)
-            link2_left_end_world = self.link2.local_to_world(link2_left_end_local)
-            pos_in_link1 = self.link1.world_to_local(link2_left_end_world)
             
-            # Our groove is defined from -L/2 to L/2 relative to Link1 center
-            # pos_in_link1.x corresponds to the joint state directly
+        elif self.joint_type == JointType.PRISMATIC:
+            # Position of link2's left end in link1's frame
+            link2_left = Vec2d(-self.config.link_length / 2, 0)
+            link2_left_world = self.link2.local_to_world(link2_left)
+            pos_in_link1 = self.link1.world_to_local(link2_left_world)
             return pos_in_link1.x
+            
+        return 0.0
 
-        else:  # FIXED
-            return 0.0
-
-    def set_link_poses(self, poses: np.ndarray):
+    def get_joint_axis_screws(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Set link poses.
-
-        Args:
-            poses: Array of shape (2, 3) with poses [x, y, theta]
+        Get joint axis as SE(2) unit screws in each grasping frame.
+        
+        Configuration-invariant kinematic constraint information.
+        
+        Revolute: B = [1, r_y, -r_x] where r is position to joint center
+        Prismatic: B = [0, v_x, v_y] where v is unit sliding direction
+        Fixed: B = [0, 0, 0]
+        
+        Returns:
+            (B_left, B_right) - screws in left and right grasping frames
         """
-        self.link1.position = (poses[0, 0], poses[0, 1])
-        self.link1.angle = poses[0, 2]
-        self.link2.position = (poses[1, 0], poses[1, 1])
-        self.link2.angle = poses[1, 2]
+        if self.joint_type == JointType.FIXED:
+            return np.zeros(3), np.zeros(3)
+        
+        cfg = self.config
+        
+        if self.joint_type == JointType.REVOLUTE:
+            # Joint at link1's right end (in link1 frame)
+            joint_pos_link1 = np.array([cfg.link_length / 2, 0.0])
+            # Joint at link2's left end (in link2 frame)
+            joint_pos_link2 = np.array([-cfg.link_length / 2, 0.0])
+            
+            B_left = self._compute_revolute_screw("left", joint_pos_link1)
+            B_right = self._compute_revolute_screw("right", joint_pos_link2)
+            
+        else:  # PRISMATIC
+            # Sliding direction along x-axis in link frame
+            joint_dir = np.array([1.0, 0.0])
+            
+            B_left = self._compute_prismatic_screw("left", joint_dir)
+            B_right = self._compute_prismatic_screw("right", joint_dir)
+        
+        return B_left, B_right
 
-    def set_link_velocities(self, velocities: np.ndarray):
-        """
-        Set link velocities.
+    def _compute_revolute_screw(self, gripper_name: str, joint_pos_link: np.ndarray) -> np.ndarray:
+        """Compute revolute joint screw in grasping frame."""
+        frame = self.grasping_frames[gripper_name]
+        
+        # Transform from link frame to grasp frame
+        T_link_grasp = SE2Pose.from_array(frame.local_pose).to_matrix()
+        T_grasp_link = se2_inverse(T_link_grasp)
+        
+        R = T_grasp_link[:2, :2]
+        t = T_grasp_link[:2, 2]
+        
+        # Joint position in grasp frame
+        joint_pos_grasp = R @ joint_pos_link + t
+        rx, ry = joint_pos_grasp
+        
+        # Screw: [omega=1, ry, -rx] (twist from unit angular velocity)
+        return np.array([1.0, ry, -rx])
 
-        Args:
-            velocities: Array of shape (2, 3) with velocities [vx, vy, omega]
-        """
-        self.link1.velocity = (velocities[0, 0], velocities[0, 1])
-        self.link1.angular_velocity = velocities[0, 2]
-        self.link2.velocity = (velocities[1, 0], velocities[1, 1])
-        self.link2.angular_velocity = velocities[1, 2]
+    def _compute_prismatic_screw(self, gripper_name: str, joint_dir_link: np.ndarray) -> np.ndarray:
+        """Compute prismatic joint screw in grasping frame."""
+        frame = self.grasping_frames[gripper_name]
+        
+        T_link_grasp = SE2Pose.from_array(frame.local_pose).to_matrix()
+        T_grasp_link = se2_inverse(T_link_grasp)
+        
+        R = T_grasp_link[:2, :2]
+        
+        # Transform direction (rotation only)
+        joint_dir_grasp = R @ joint_dir_link
+        joint_dir_grasp /= np.linalg.norm(joint_dir_grasp)
+        
+        # Screw: [omega=0, vx, vy] (twist from unit linear velocity)
+        return np.array([0.0, joint_dir_grasp[0], joint_dir_grasp[1]])
 
 
 class ObjectManager:
     """
-    Manager for articulated objects in the environment.
-
-    Handles:
-    - Object creation and initialization
-    - Grasping frame queries
-    - Object state queries
+    Manager for articulated objects.
+    
+    Handles object lifecycle, state queries, and kinematic information.
     """
 
     def __init__(
         self,
         space: pymunk.Space,
         joint_type: str = "revolute",
-        object_params: Optional[dict] = None
+        config: Optional[ObjectConfig] = None
     ):
         """
         Initialize object manager.
 
         Args:
             space: Pymunk space
-            joint_type: Type of joint ("revolute", "prismatic", "fixed")
-            object_params: Optional object parameters
+            joint_type: "revolute", "prismatic", or "fixed"
+            config: Object configuration
         """
         self.space = space
         self.joint_type = JointType(joint_type)
-
-        # Default object parameters
-        default_params = {
-            'link_length': 40.0,
-            'link_width': 12.0,
-            'link_mass': 1.0  # Increased from 0.5 for better stability vs gripper
-        }
-
-        self.object_params = {**default_params, **(object_params or {})}
-
-        # Object will be created during reset
+        self.config = config or ObjectConfig()
         self.object: Optional[ArticulatedObject] = None
 
-    def reset(self, initial_pose: Optional[np.ndarray] = None):
-        """
-        Reset object.
-
-        Args:
-            initial_pose: Optional initial pose of link1 [x, y, theta]
-        """
-        # Remove old object if exists
+    def reset(self, initial_pose: np.ndarray):
+        """Reset object at specified pose."""
         if self.object is not None:
             self.object.remove_from_space()
-
-        # Create new object
+        
         self.object = ArticulatedObject(
             space=self.space,
             joint_type=self.joint_type,
-            initial_pose=initial_pose,
-            **self.object_params
+            config=self.config,
+            initial_pose=initial_pose
         )
 
-    def get_grasping_poses(self) -> Dict[str, np.ndarray]:
-        """Get all grasping frame poses in world frame."""
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
-        return self.object.get_all_grasping_poses()
-
     def get_link_poses(self) -> np.ndarray:
-        """Get link poses."""
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
+        """Get link poses (2, 3)."""
         return self.object.get_link_poses()
 
     def get_link_velocities(self) -> np.ndarray:
-        """Get link velocities."""
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
+        """Get link velocities (2, 3)."""
         return self.object.get_link_velocities()
+
+    def get_grasping_poses(self) -> Dict[str, np.ndarray]:
+        """Get grasping frame poses in world frame."""
+        return self.object.get_all_grasping_poses()
 
     def get_joint_state(self) -> float:
         """Get joint state."""
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
         return self.object.get_joint_state()
 
-    def get_object(self) -> ArticulatedObject:
-        """Get the articulated object."""
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
-        return self.object
-
     def get_joint_axis_screws(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get joint axis as SE(2) unit screws in each end effector frame.
-
-        This is configuration-invariant kinematic constraint information.
-        Returns body twist representation of joint axis as seen from each EE frame.
-
-        Following Modern Robotics convention: Screw = [sω, sx, sy]
-
-        Returns:
-            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw
-                - For revolute: [1, r_y, -r_x] (r is position to joint center, MR convention)
-                - For prismatic: [0, v_x, v_y] (v is unit sliding direction, MR convention)
-        """
-        if self.object is None:
-            raise RuntimeError("Object not initialized. Call reset() first.")
+        """Get joint axis screws in grasping frames."""
         return self.object.get_joint_axis_screws()

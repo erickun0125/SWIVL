@@ -12,15 +12,19 @@ proportional and derivative terms to generate wrench commands.
 Following Modern Robotics (Lynch & Park) convention:
 - Output wrench: F = [τ, fx, fy]^T (torque first!)
 
-Note: This controller works with spatial/world frame velocities as input
-(not body twists), since it's a simple PD controller without dynamics.
+Frame conventions:
+- World/Spatial frame: Standard 2D coordinates (x right, y up in math convention)
+- Body frame: Attached to the gripper (x forward, y left)
+- Pymunk uses y-down in screen coordinates, but physics is standard math convention
+- Velocities are point velocities (body origin velocity), not SE(2) twists
+  Therefore, frame conversion uses simple rotation, NOT the adjoint map.
 """
 
 import numpy as np
 from typing import Optional
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, spatial_to_body_twist
+from src.se2_math import normalize_angle
 
 
 @dataclass
@@ -82,17 +86,19 @@ class PDController:
         Compute control wrench to track desired trajectory.
 
         Following Modern Robotics convention:
-        - Output wrench: [τ, fx, fy]
+        - Output wrench: [τ, fx, fy] in body frame
 
-        Note: This controller works with spatial/world frame velocities
-        (not body twists) since it's a simple PD controller.
+        IMPORTANT: Velocities here are POINT velocities (velocity of body origin),
+        NOT SE(2) twists. Therefore, we use simple rotation for frame conversion,
+        NOT the adjoint map. The adjoint includes p × ω terms which are only needed
+        when transforming twists observed from different points.
 
         Args:
             current_pose: Current pose [x, y, theta] in world frame
             desired_pose: Desired pose [x, y, theta] in world frame
-            desired_velocity: Desired velocity [vx, vy, omega] in spatial/world frame
-            desired_acceleration: Desired acceleration [ax, ay, alpha] in spatial/world frame (usually zero)
-            current_velocity: Optional current velocity [vx, vy, omega] in spatial/world frame
+            desired_velocity: Desired velocity [vx, vy, omega] in world frame
+            desired_acceleration: Desired acceleration [ax, ay, alpha] in world frame (usually zero)
+            current_velocity: Optional current velocity [vx, vy, omega] in world frame
 
         Returns:
             Wrench [tau, fx, fy] in body frame (MR convention!)
@@ -101,13 +107,16 @@ class PDController:
         x, y, theta = current_pose
         x_d, y_d, theta_d = desired_pose
 
-        # Compute position error in world frame
-        error_pos_world = np.array([x_d - x, y_d - y])
-
-        # Transform position error to body frame
+        # Rotation matrix components (R^T transforms world → body)
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
 
+        # Compute position error in world frame
+        error_pos_world = np.array([x_d - x, y_d - y])
+
+        # Transform position error to body frame using R^T
+        # R = [[cos, -sin], [sin, cos]] (body → world)
+        # R^T = [[cos, sin], [-sin, cos]] (world → body)
         error_pos_body = np.array([
             cos_theta * error_pos_world[0] + sin_theta * error_pos_world[1],
             -sin_theta * error_pos_world[0] + cos_theta * error_pos_world[1]
@@ -117,28 +126,31 @@ class PDController:
         error_angle = normalize_angle(theta_d - theta)
 
         # Transform desired velocity to body frame
-        # desired_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
-        desired_vel_spatial_mr = np.array([desired_velocity[2], desired_velocity[0], desired_velocity[1]])
-        # Use proper adjoint map to get body twist [omega, vx_b, vy_b]
-        desired_twist_body = spatial_to_body_twist(current_pose, desired_vel_spatial_mr)
+        # For point velocity, use simple rotation (NO p × ω term!)
+        # desired_velocity is [vx, vy, omega] in world frame
+        vx_d_world, vy_d_world, omega_d = desired_velocity
         
-        # MR convention to PD internal convention (linear first for calculation convenience)
-        # PD uses: [vx_b, vy_b, omega]
-        desired_vel_body = np.array([desired_twist_body[1], desired_twist_body[2], desired_twist_body[0]])
+        # Linear velocity: v_body = R^T @ v_world
+        vx_d_body = cos_theta * vx_d_world + sin_theta * vy_d_world
+        vy_d_body = -sin_theta * vx_d_world + cos_theta * vy_d_world
+        # Angular velocity is frame-independent in 2D
+        
+        desired_vel_body = np.array([vx_d_body, vy_d_body, omega_d])
 
         # Compute velocity error
         if current_velocity is not None:
-            # Use provided velocity for error computation
-            # current_velocity is [vx_s, vy_s, omega]
+            # Transform current velocity to body frame (same rotation)
+            vx_world, vy_world, omega = current_velocity
             
-            # Convert to MR [omega, vx_s, vy_s]
-            current_vel_spatial_mr = np.array([current_velocity[2], current_velocity[0], current_velocity[1]])
-            # Convert to body twist [omega, vx_b, vy_b]
-            current_twist_body = spatial_to_body_twist(current_pose, current_vel_spatial_mr)
+            vx_body = cos_theta * vx_world + sin_theta * vy_world
+            vy_body = -sin_theta * vx_world + cos_theta * vy_world
             
-            # Velocity error in body frame (linear only: [vx_b, vy_b])
-            error_vel_body = desired_vel_body[:2] - np.array([current_twist_body[1], current_twist_body[2]])
-            error_omega = desired_twist_body[0] - current_twist_body[0]
+            # Velocity error in body frame
+            error_vel_body = np.array([
+                vx_d_body - vx_body,
+                vy_d_body - vy_body
+            ])
+            error_omega = omega_d - omega
 
         else:
             # Estimate velocity error from finite differences
@@ -146,20 +158,20 @@ class PDController:
                 derror_pos_body = (error_pos_body - self.prev_error_pos) / self.dt
                 error_vel_body = -derror_pos_body
             else:
-                # Assume current vel = 0, so error = desired (linear only: [vx_b, vy_b])
-                error_vel_body = desired_vel_body[:2]
+                # Assume current vel = 0, so error = desired
+                error_vel_body = np.array([vx_d_body, vy_d_body])
 
             if self.prev_error_angle is not None:
                 derror_angle = (error_angle - self.prev_error_angle) / self.dt
                 error_omega = -derror_angle
             else:
-                error_omega = desired_twist_body[0]  # Assume current omega = 0
+                error_omega = omega_d  # Assume current omega = 0
 
             # Store current errors for next iteration
             self.prev_error_pos = error_pos_body.copy()
             self.prev_error_angle = error_angle
 
-        # PD control law with feedforward
+        # PD control law
         # Force in body frame
         force_body = (
             self.gains.kp_linear * error_pos_body +
@@ -173,10 +185,9 @@ class PDController:
         )
 
         # Add feedforward term if desired acceleration provided
-        # (Usually zero, but included for completeness)
         if desired_acceleration is not None:
             ax_d, ay_d, alpha_d = desired_acceleration
-            # Transform to body frame
+            # Transform to body frame (same rotation)
             accel_body = np.array([
                 cos_theta * ax_d + sin_theta * ay_d,
                 -sin_theta * ax_d + cos_theta * ay_d

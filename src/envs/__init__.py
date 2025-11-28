@@ -10,7 +10,7 @@ This package provides SE(2) bimanual manipulation environments:
 
 from src.envs.biart import BiArtEnv
 from src.envs.end_effector_manager import EndEffectorManager, GripperConfig
-from src.envs.object_manager import ObjectManager, JointType
+from src.envs.object_manager import ObjectManager, ObjectConfig, JointType
 from src.envs.reward_manager import RewardManager, RewardWeights
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     'EndEffectorManager',
     'GripperConfig',
     'ObjectManager',
+    'ObjectConfig',
     'JointType',
     'RewardManager',
     'RewardWeights',

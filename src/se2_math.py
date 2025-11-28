@@ -677,22 +677,60 @@ def inverse_transform_point(pose: np.ndarray, point: np.ndarray) -> np.ndarray:
     return p_body[:2]
 
 
-# Backward compatibility aliases (deprecated, will be removed)
+# ==============================================================================
+# DEPRECATED FUNCTIONS - DO NOT USE FOR POINT VELOCITIES!
+# ==============================================================================
+#
+# WARNING: These functions use the SE(2) adjoint map which includes p × ω terms.
+# This is INCORRECT for converting point velocities between frames!
+#
+# For POINT VELOCITY (velocity of body origin):
+#     v_body = R^T @ v_world  (simple rotation, NO p × ω term!)
+#
+# The adjoint map is ONLY correct for SE(2) twists observed from different points.
+#
+# Use simple rotation instead:
+#     cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+#     vx_body = cos_theta * vx_world + sin_theta * vy_world
+#     vy_body = -sin_theta * vx_world + cos_theta * vy_world
+#
+# ==============================================================================
+
 def body_to_world_velocity(pose: np.ndarray, vel_body: np.ndarray) -> np.ndarray:
     """
-    DEPRECATED: Use body_to_spatial_twist() instead.
-
-    Maintained for backward compatibility.
+    DEPRECATED: This function incorrectly uses the adjoint map for point velocities!
+    
+    For point velocity, use simple rotation: v_world = R @ v_body
+    
+    Only use body_to_spatial_twist() for proper SE(2) twists observed from
+    different reference points (not the body origin).
     """
+    import warnings
+    warnings.warn(
+        "body_to_world_velocity is deprecated and may give incorrect results for point velocities. "
+        "For point velocity, use simple rotation: v_world = R @ v_body",
+        DeprecationWarning,
+        stacklevel=2
+    )
     return body_to_spatial_twist(pose, vel_body)
 
 
 def world_to_body_velocity(pose: np.ndarray, vel_world: np.ndarray) -> np.ndarray:
     """
-    DEPRECATED: Use spatial_to_body_twist() instead.
-
-    Maintained for backward compatibility.
+    DEPRECATED: This function incorrectly uses the adjoint map for point velocities!
+    
+    For point velocity, use simple rotation: v_body = R^T @ v_world
+    
+    Only use spatial_to_body_twist() for proper SE(2) twists observed from
+    different reference points (not the body origin).
     """
+    import warnings
+    warnings.warn(
+        "world_to_body_velocity is deprecated and may give incorrect results for point velocities. "
+        "For point velocity, use simple rotation: v_body = R^T @ v_world",
+        DeprecationWarning,
+        stacklevel=2
+    )
     return spatial_to_body_twist(pose, vel_world)
 
 
@@ -702,8 +740,15 @@ def world_to_body_acceleration(
     accel_world: np.ndarray
 ) -> np.ndarray:
     """
-    DEPRECATED: Use spatial_to_body_acceleration() instead.
-
-    Maintained for backward compatibility.
+    DEPRECATED: This function may give incorrect results for point accelerations!
+    
+    For point acceleration, use simple rotation: a_body = R^T @ a_world
     """
+    import warnings
+    warnings.warn(
+        "world_to_body_acceleration is deprecated. "
+        "For point acceleration, use simple rotation: a_body = R^T @ a_world",
+        DeprecationWarning,
+        stacklevel=2
+    )
     return spatial_to_body_acceleration(pose, vel_world, accel_world)

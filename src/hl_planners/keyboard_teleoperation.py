@@ -17,7 +17,11 @@ import pygame
 from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass
 
-from src.se2_math import normalize_angle, integrate_velocity, world_to_body_velocity
+from src.se2_math import normalize_angle, integrate_velocity
+
+# Note: We use simple rotation for velocity frame conversion, NOT the deprecated
+# world_to_body_velocity which incorrectly includes p × ω terms.
+# For point velocity: v_body = R^T @ v_world
 # from src.envs.grasping_frames import GraspingFrameManager # Removed: Not available
 
 class KinematicConstraintSolver:
@@ -334,10 +338,23 @@ class KeyboardTeleoperationPlanner:
 
         desired_poses = np.zeros((2, 3))
         for i in range(2):
-            spatial = spatial_twists[i]
-            spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])  # [omega, vx, vy]
-            body_twist = world_to_body_velocity(current_ee_poses[i], spatial_mr)
+            spatial = spatial_twists[i]  # [vx, vy, omega] in world frame
+            pose = current_ee_poses[i]
+            theta = pose[2]
+            
+            # Convert world frame velocity to body frame using simple rotation
+            # v_body = R^T @ v_world (NO p × ω term for point velocity!)
+            vx_world, vy_world, omega = spatial
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            
+            vx_body = cos_theta * vx_world + sin_theta * vy_world
+            vy_body = -sin_theta * vx_world + cos_theta * vy_world
+            
+            # MR convention: [omega, vx, vy]
+            body_twist = np.array([omega, vx_body, vy_body])
             desired_body_twists[i] = body_twist
+            
             desired_poses[i] = integrate_velocity(
                 self.prev_desired_poses[i],
                 body_twist,

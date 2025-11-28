@@ -2,20 +2,20 @@
 BiArt (Bimanual Articulated object manipulation) Environment
 
 SE(2) environment for bimanual manipulation of articulated objects.
-Features:
-- Dual arm robots with dynamic end-effectors
-- Wrench command control (force, moment)
-- U-shaped (ㄷ) grippers with parallel grip
-- Articulated objects (revolute, prismatic, fixed joints)
-- External wrench sensing
 
-Architecture:
-- EndEffectorManager: Manages parallel grippers with jaw mechanics and wrench sensing
-- ObjectManager: Manages articulated objects with pymunk joints and grasping frames
-- RewardManager: Computes rewards for RL training
+Features:
+- Dual parallel grippers with 1-DOF jaw mechanism
+- Articulated objects with revolute, prismatic, or fixed joints
+- Wrench-based control (Modern Robotics convention)
+- External wrench sensing from contact forces
+
+Physical Units (Pymunk convention):
+- Length: pixels (512×512 workspace)
+- Mass: arbitrary units
+- Time: seconds
+- Force/Torque: mass × pixels/second²
 """
 
-import collections
 import os
 import warnings
 from typing import Any, Dict, Optional, Tuple, Union
@@ -25,117 +25,70 @@ import gymnasium as gym
 import numpy as np
 
 with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", "pkg_resources is deprecated as an API", category=DeprecationWarning)
+    warnings.filterwarnings("ignore", "pkg_resources is deprecated as an API", DeprecationWarning)
     import pygame
 
 import pymunk
 import pymunk.pygame_util
-import shapely.geometry as sg
 from gymnasium import spaces
-from pymunk.vec2d import Vec2d
 
 from .pymunk_override import DrawOptions
 from .end_effector_manager import EndEffectorManager, GripperConfig
-from .object_manager import ObjectManager, JointType
+from .object_manager import ObjectManager, ObjectConfig, JointType
 from .reward_manager import RewardManager, RewardWeights
 
-ObservationType = Union[Dict[str, np.ndarray], np.ndarray]
 
 RENDER_MODES = ["rgb_array"]
 if os.environ.get("MUJOCO_GL") != "egl":
     RENDER_MODES.append("human")
 
 
-def pymunk_to_shapely(body, shapes):
-    """Convert pymunk body and shapes to shapely geometry."""
-    geoms = []
-    for shape in shapes:
-        if isinstance(shape, pymunk.shapes.Poly):
-            verts = [body.local_to_world(v) for v in shape.get_vertices()]
-            verts += [verts[0]]
-            geoms.append(sg.Polygon(verts))
-        else:
-            raise RuntimeError(f"Unsupported shape type {type(shape)}")
-    geom = sg.MultiPolygon(geoms)
-    return geom
-
-
 class BiArtEnv(gym.Env):
     """
-    BiArt (Bimanual Articulated object manipulation) Environment
-
-    SE(2) environment for bimanual manipulation of articulated objects.
-
-    ## Physical Units (Pymunk/Pygame Convention)
+    Bimanual Articulated object manipulation Environment.
     
-    - **Length**: pixels (workspace is 512×512 pixels)
-    - **Mass**: arbitrary mass units (default: 1.0 for links, 0.8 for gripper base)
-    - **Time**: seconds (control_hz=10 Hz, physics_hz=100 Hz)
-    - **Velocity**: pixels/second
-    - **Angular velocity**: radians/second
-    - **Force**: mass × pixels/second² (default max: 100.0)
-    - **Torque**: mass × pixels²/second² (default max: 50.0)
-    - **Inertia**: mass × pixels²
-    - **Damping**: dimensionless coefficient (space.damping=0.95)
+    Action Space:
+        Wrench commands for both grippers (MR convention):
+        [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
     
-    The goal is to manipulate an articulated object with two robot grippers to reach a goal configuration.
-
-    ## Action Space
-
-    The action space consists of wrench commands for both grippers (Modern Robotics convention):
-    [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
-    - left_tau: moment (torque) in body frame of left gripper (MR convention: angular first!)
-    - left_fx, left_fy: forces in body frame of left gripper
-    - right_tau, right_fx, right_fy: same for right gripper
-
-    ## Observation Space
-
-    If `obs_type` is set to `state`, the observation is a dictionary with:
-    - 'ee_poses': (2, 3) array - poses of both grippers [x, y, theta] in spatial frame
-    - 'ee_twists': (2, 3) array - velocities of both grippers [vx, vy, omega] in spatial frame
-    - 'link_poses': (2, 3) array - poses of object links [x, y, theta]
-    - 'external_wrenches': (2, 3) array - external wrenches [tau, fx, fy] in body frame (MR convention!)
-
-    ## Rewards
-
-    The reward consists of:
-    - Tracking reward: how well the object follows desired trajectory
-    - Safety reward: penalizes excessive contact forces
-
-    ## Arguments
-
-    * `obs_type`: (str) The observation type. Can be "state", "pixels", etc.
-    * `joint_type`: (str) Type of articulated joint: "revolute", "prismatic", "fixed", or "none" (no object)
-    * `render_mode`: (str) Rendering mode
+    Observation Space (state mode):
+        Dictionary with:
+        - ee_poses: (2, 3) gripper poses [x, y, theta]
+        - ee_twists: (2, 3) spatial velocities [vx, vy, omega]
+        - ee_body_twists: (2, 3) body twists [omega, vx, vy] (MR convention)
+        - link_poses: (2, 3) object link poses
+        - external_wrenches: (2, 3) body wrenches [tau, fx, fy] (MR convention)
     """
 
     metadata = {"render_modes": RENDER_MODES, "render_fps": 10}
 
     def __init__(
         self,
-        obs_type="state",
-        render_mode="rgb_array",
-        joint_type="revolute",
-        observation_width=96,
-        observation_height=96,
-        visualization_width=680,
-        visualization_height=680,
-        control_hz=10,
-        physics_hz=100,
+        obs_type: str = "state",
+        render_mode: str = "rgb_array",
+        joint_type: str = "revolute",
+        observation_width: int = 96,
+        observation_height: int = 96,
+        visualization_width: int = 680,
+        visualization_height: int = 680,
+        control_hz: int = 10,
+        physics_hz: int = 100,
     ):
         """
-        Initialize BiArt environment and underlying physics.
+        Initialize environment.
 
-        NOTE: `_setup()` is invoked here to create the physics space once.
-        Always call `reset()` before interacting to randomize the initial
-        configuration and establish fresh grasps.
+        Args:
+            obs_type: "state" or "pixels"
+            render_mode: "rgb_array" or "human"
+            joint_type: "revolute", "prismatic", "fixed", or "none"
+            control_hz: Control frequency
+            physics_hz: Physics simulation frequency
         """
         super().__init__()
 
-        # Environment configuration
         self.obs_type = obs_type
         self.render_mode = render_mode
-        self.joint_type = joint_type  # "revolute", "prismatic", or "fixed"
+        self.joint_type = joint_type
 
         # Rendering settings
         self.observation_width = observation_width
@@ -146,158 +99,120 @@ class BiArtEnv(gym.Env):
         # Physics parameters
         self.control_hz = control_hz
         self.physics_hz = physics_hz
-        self.dt = 1.0 / physics_hz  # Physics timestep
+        self.dt = 1.0 / physics_hz
         self.physics_steps_per_control = physics_hz // control_hz
 
-        # Object parameters (for ObjectManager)
-        self.link_length = 40.0
-        self.link_width = 12.0
-        self.link_mass = 1.0
-
-        # Gripper parameters (for EndEffectorManager)
+        # Configuration
         self.gripper_config = GripperConfig()
+        self.object_config = ObjectConfig()
 
         # Managers (initialized in _setup)
-        self.ee_manager = None
-        self.object_manager = None
-        self.reward_manager = None
+        self.space: Optional[pymunk.Space] = None
+        self.ee_manager: Optional[EndEffectorManager] = None
+        self.object_manager: Optional[ObjectManager] = None
+        self.reward_manager: Optional[RewardManager] = None
 
-        # Physics space (initialized in _setup)
-        self.space = None
-
-        # Action and observation spaces
-        self._initialize_spaces()
+        # State
+        self.goal_pose: Optional[np.ndarray] = None
+        self._last_action: Optional[np.ndarray] = None
 
         # Rendering
         self.window = None
         self.clock = None
 
-        # State tracking
-        self._last_action = None
-        self.goal_pose = None  # Set in reset
-
-        # Initialize physics and managers once
+        # Initialize spaces and physics
+        self._initialize_spaces()
         self._setup()
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces."""
-        # Action space: wrench commands for both grippers (MR convention)
-        # [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
         max_force = 100.0
         max_torque = 50.0
         max_velocity = 500.0
         max_angular_velocity = 10.0
 
+        # Action: wrench for both grippers [tau, fx, fy] × 2
         self.action_space = spaces.Box(
-            low=np.array([-max_torque, -max_force, -max_force, -max_torque, -max_force, -max_force]),
-            high=np.array([max_torque, max_force, max_force, max_torque, max_force, max_force]),
+            low=np.array([-max_torque, -max_force, -max_force] * 2),
+            high=np.array([max_torque, max_force, max_force] * 2),
             dtype=np.float32
         )
 
-        # Observation space
         if self.obs_type == "state":
-            # Dictionary observation with separate fields
             self.observation_space = spaces.Dict({
                 'ee_poses': spaces.Box(
-                    low=np.array([[0, 0, -np.pi], [0, 0, -np.pi]]),
-                    high=np.array([[512, 512, np.pi], [512, 512, np.pi]]),
+                    low=np.array([[0, 0, -np.pi]] * 2),
+                    high=np.array([[512, 512, np.pi]] * 2),
                     dtype=np.float32
                 ),
                 'ee_twists': spaces.Box(
-                    low=np.array([
-                        [-max_velocity, -max_velocity, -max_angular_velocity],
-                        [-max_velocity, -max_velocity, -max_angular_velocity]
-                    ]),
-                    high=np.array([
-                        [max_velocity, max_velocity, max_angular_velocity],
-                        [max_velocity, max_velocity, max_angular_velocity]
-                    ]),
+                    low=np.array([[-max_velocity, -max_velocity, -max_angular_velocity]] * 2),
+                    high=np.array([[max_velocity, max_velocity, max_angular_velocity]] * 2),
                     dtype=np.float32
                 ),
                 'ee_body_twists': spaces.Box(
-                    low=np.array([
-                        [-max_angular_velocity, -max_velocity, -max_velocity],
-                        [-max_angular_velocity, -max_velocity, -max_velocity]
-                    ]),
-                    high=np.array([
-                        [max_angular_velocity, max_velocity, max_velocity],
-                        [max_angular_velocity, max_velocity, max_velocity]
-                    ]),
+                    low=np.array([[-max_angular_velocity, -max_velocity, -max_velocity]] * 2),
+                    high=np.array([[max_angular_velocity, max_velocity, max_velocity]] * 2),
                     dtype=np.float32
                 ),
                 'link_poses': spaces.Box(
-                    low=np.array([[0, 0, -np.pi], [0, 0, -np.pi]]),
-                    high=np.array([[512, 512, np.pi], [512, 512, np.pi]]),
+                    low=np.array([[0, 0, -np.pi]] * 2),
+                    high=np.array([[512, 512, np.pi]] * 2),
                     dtype=np.float32
                 ),
                 'external_wrenches': spaces.Box(
-                    low=np.array([
-                        [-max_torque, -max_force, -max_force],  # MR convention: [tau, fx, fy]
-                        [-max_torque, -max_force, -max_force]
-                    ]),
-                    high=np.array([
-                        [max_torque, max_force, max_force],  # MR convention: [tau, fx, fy]
-                        [max_torque, max_force, max_force]
-                    ]),
+                    low=np.array([[-max_torque, -max_force, -max_force]] * 2),
+                    high=np.array([[max_torque, max_force, max_force]] * 2),
                     dtype=np.float32
                 )
             })
         elif self.obs_type == "pixels":
             self.observation_space = spaces.Box(
-                low=0,
-                high=255,
+                low=0, high=255,
                 shape=(self.observation_height, self.observation_width, 3),
                 dtype=np.uint8
             )
         else:
-            raise ValueError(f"Unknown obs_type {self.obs_type}")
+            raise ValueError(f"Unknown obs_type: {self.obs_type}")
 
     def _setup(self):
-        """Setup the physics simulation."""
+        """Setup physics simulation."""
         if self.space is not None:
             return
 
         # Create physics space
         self.space = pymunk.Space()
-        self.space.gravity = 0, 0  # No gravity in SE(2)
-        self.space.damping = 0.95  # Adjusted damping for better dynamics (was 0.99)
+        self.space.gravity = (0, 0)
+        self.space.damping = 0.95
 
-        # Add walls
+        # Add boundary walls
         walls = [
-            self._add_segment((5, 506), (5, 5), 2),
-            self._add_segment((5, 5), (506, 5), 2),
-            self._add_segment((506, 5), (506, 506), 2),
-            self._add_segment((5, 506), (506, 506), 2),
+            pymunk.Segment(self.space.static_body, (5, 506), (5, 5), 2),
+            pymunk.Segment(self.space.static_body, (5, 5), (506, 5), 2),
+            pymunk.Segment(self.space.static_body, (506, 5), (506, 506), 2),
+            pymunk.Segment(self.space.static_body, (5, 506), (506, 506), 2),
         ]
+        for wall in walls:
+            wall.color = pygame.Color("LightGray")
+            wall.friction = 0.5
         self.space.add(*walls)
 
-        # Initialize managers
-        # Create ObjectManager only if we have an object (joint_type != 'none')
-        if self.joint_type != 'none':
-            object_params = {
-                'link_length': self.link_length,
-                'link_width': self.link_width,
-                'link_mass': self.link_mass
-            }
-
-            self.object_manager = ObjectManager(
-                space=self.space,
-                joint_type=self.joint_type,  # Pass as string
-                object_params=object_params
-            )
-        else:
-            # No object - set to None
-            self.object_manager = None
-
-        # Create EndEffectorManager
+        # Create managers
         self.ee_manager = EndEffectorManager(
             space=self.space,
-            num_grippers=2,
             config=self.gripper_config,
             dt=self.dt
         )
 
-        # Create RewardManager
+        if self.joint_type != "none":
+            self.object_manager = ObjectManager(
+                space=self.space,
+                joint_type=self.joint_type,
+                config=self.object_config
+            )
+        else:
+            self.object_manager = None
+
         self.reward_manager = RewardManager(
             weights=RewardWeights(),
             success_threshold_pos=20.0,
@@ -305,377 +220,262 @@ class BiArtEnv(gym.Env):
             max_wrench_threshold=200.0
         )
 
-        # Goal pose will be set in reset
-
-
-    def _add_segment(self, a, b, radius):
-        """Add a static segment (wall) to the environment."""
-        shape = pymunk.Segment(self.space.static_body, a, b, radius)
-        shape.color = pygame.Color("LightGray")
-        shape.friction = 0.5
-        return shape
-
-    def step(self, action):
+    def step(self, action: np.ndarray):
         """
-        Step the environment.
+        Step environment.
 
-        Following Modern Robotics convention:
         Args:
-            action: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy] (MR convention!)
-                   OR shape (2, 3) array
+            action: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
         """
-        # Store action
         self._last_action = action
-
-        # Parse wrenches from action (MR convention: [tau, fx, fy])
+        
+        # Parse wrenches
         action = np.asarray(action)
         if action.shape == (2, 3):
             wrenches = action
         elif action.shape == (6,):
-            wrenches = np.array([
-                action[:3],   # Left gripper wrench [tau, fx, fy]
-                action[3:]    # Right gripper wrench [tau, fx, fy]
-            ])
+            wrenches = action.reshape(2, 3)
         else:
-            raise ValueError(f"Invalid action shape: {action.shape}. Expected (6,) or (2, 3).")
-
-        # Apply wrenches to grippers
-        self.ee_manager.apply_wrenches(wrenches)
+            raise ValueError(f"Invalid action shape: {action.shape}")
 
         # Physics simulation
         for _ in range(self.physics_steps_per_control):
-            # Apply commanded wrenches every physics substep
             self.ee_manager.apply_wrenches(wrenches)
-
-            # Apply grip forces and step physics
             self.ee_manager.apply_grip_forces()
             self.space.step(self.dt)
 
-        # Update external wrench measurements once per control step
-        # We pass the total control duration to correctly scale accumulated impulses into average forces
+        # Update wrench measurements
         control_dt = self.dt * self.physics_steps_per_control
         self.ee_manager.update_external_wrenches(control_dt)
 
         # Get current states
-        current_ee_poses = self.ee_manager.get_poses()
-        current_link_poses = self.object_manager.get_link_poses() if self.object_manager else current_ee_poses.copy()
+        ee_poses = self.ee_manager.get_poses()
+        link_poses = self.object_manager.get_link_poses() if self.object_manager else ee_poses.copy()
         external_wrenches = self.ee_manager.get_external_wrenches()
 
-        # Compute reward using RewardManager
-        if self.object_manager:
-            # Task is to manipulate the object, so we track object poses.
-            # We primarily track Link 1 (base link) against goal_pose.
-            link2_goal = self._compute_link2_goal_pose(self.goal_pose)
-            desired_link_poses = np.array([self.goal_pose, link2_goal])
-            
-            applied_wrenches = wrenches
+        # Compute reward
+        reward_info = self._compute_reward(link_poses, wrenches, external_wrenches)
 
-            reward_info = self.reward_manager.compute_reward(
-                current_poses=current_link_poses,  # Track object links!
-                desired_poses=desired_link_poses,
-                current_velocities=self.object_manager.get_link_velocities(),  # Track object velocity
-                desired_velocities=np.zeros((2, 3)),  # Goal is static
-                applied_wrenches=applied_wrenches,
-                external_wrenches=external_wrenches
-            )
+        # Check safety and termination
+        is_safe, safety_msg = self._check_safety()
+        
+        if not is_safe:
+            terminated = True
+            reward_info["total_reward"] -= 100.0
+            info = {"safety_violation": safety_msg}
         else:
-            # No object - track end-effector poses directly
-            desired_ee_poses = np.array([self.goal_pose, self.goal_pose])  # Simple goal for testing
-            
-            reward_info = self.reward_manager.compute_reward(
-                current_poses=current_ee_poses,
-                desired_poses=desired_ee_poses,
-                current_velocities=self.ee_manager.get_velocities(),
-                desired_velocities=np.zeros((2, 3)),
-                applied_wrenches=wrenches,
-                external_wrenches=external_wrenches
-            )
+            terminated = reward_info["is_success"] or reward_info["is_failure"]
+            info = {}
 
-        # Get observation
-        observation = self.get_obs()
-
-        # Build info dict
-        info = {
+        info.update({
             "is_success": reward_info["is_success"],
             "is_failure": reward_info["is_failure"],
-            "total_reward": reward_info["total_reward"],
-            "pose_tracking": reward_info["pose_tracking"],
-            "velocity_tracking": reward_info["velocity_tracking"],
-            "energy_efficiency": reward_info["energy_efficiency"],
-            "safety": reward_info["safety"],
-            "bonus": reward_info["bonus"],
-        }
-
-        # Check safety constraints
-        is_safe, safety_message = self._check_safety()
-        if not is_safe:
-            # Safety violation - terminate episode
-            terminated = True
-            info["safety_violation"] = safety_message
-            # Add penalty to reward
-            reward_info["total_reward"] -= 100.0  # Large safety penalty
-        else:
-            # Check termination from reward manager
-            terminated = reward_info["is_success"] or reward_info["is_failure"]
-
-        truncated = False
+        })
 
         if self.render_mode == "human":
             self.render()
 
-        return observation, reward_info["total_reward"], terminated, truncated, info
+        return self.get_obs(), reward_info["total_reward"], terminated, False, info
 
     def reset(
         self,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None
-    ) -> Tuple[ObservationType, Dict[str, Any]]:
-        """Reset the environment."""
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+        """Reset environment."""
         super().reset(seed=seed)
 
         # Randomize goal pose
-        goal_x = self.np_random.integers(200, 312)
-        goal_y = self.np_random.integers(200, 312)
-        goal_theta = self.np_random.uniform(-np.pi/2, np.pi/2)
-        self.goal_pose = np.array([goal_x, goal_y, goal_theta])
+        self.goal_pose = np.array([
+            self.np_random.integers(200, 312),
+            self.np_random.integers(200, 312),
+            self.np_random.uniform(-np.pi/2, np.pi/2)
+        ], dtype=np.float32)
 
         if self.object_manager:
-            # With object: randomize object position and grasp it
-            obj_x = self.np_random.integers(220, 292)
-            obj_y = self.np_random.integers(220, 292)
-            obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)
-
-            initial_pose = np.array([obj_x, obj_y, obj_angle])
-
-            # Reset object (creates links and joints)
+            # Initialize object
+            initial_pose = np.array([
+                self.np_random.integers(220, 292),
+                self.np_random.integers(220, 292),
+                self.np_random.uniform(-np.pi/4, np.pi/4)
+            ])
             self.object_manager.reset(initial_pose)
 
-            # Let object settle with joint constraints
+            # Let object settle
             for _ in range(20):
                 self.space.step(self.dt)
 
-            # Get grasping poses from object manager
+            # Initialize grippers at grasping poses
             grasping_poses = self.object_manager.get_grasping_poses()
+            ee_poses = np.array([grasping_poses["left"], grasping_poses["right"]])
+            self.ee_manager.reset(ee_poses)
 
-            # Initialize EEs at grasping frames
-            ee_initial_poses = np.array([
-                grasping_poses["left"],
-                grasping_poses["right"]
-            ])
-
-            self.ee_manager.reset(ee_initial_poses)
-
-            # Settle grippers with grip forces
+            # Let grippers settle
             for _ in range(50):
                 self.ee_manager.apply_grip_forces()
                 self.space.step(self.dt)
-            # Update wrenches with correct accumulation time (settling duration)
             self.ee_manager.update_external_wrenches(self.dt * 50)
         else:
-            # No object: spawn end-effectors at random positions in workspace
-            left_x = self.np_random.integers(100, 200)
-            left_y = self.np_random.integers(200, 300)
-            left_theta = self.np_random.uniform(-np.pi, np.pi)
-            
-            right_x = self.np_random.integers(312, 412)
-            right_y = self.np_random.integers(200, 300)
-            right_theta = self.np_random.uniform(-np.pi, np.pi)
-            
-            ee_initial_poses = np.array([
-                [left_x, left_y, left_theta],
-                [right_x, right_y, right_theta]
+            # No object: random gripper positions
+            ee_poses = np.array([
+                [self.np_random.integers(100, 200),
+                 self.np_random.integers(200, 300),
+                 self.np_random.uniform(-np.pi, np.pi)],
+                [self.np_random.integers(312, 412),
+                 self.np_random.integers(200, 300),
+                 self.np_random.uniform(-np.pi, np.pi)]
             ])
+            self.ee_manager.reset(ee_poses)
             
-            self.ee_manager.reset(ee_initial_poses)
-            
-            # Brief settling
             for _ in range(10):
                 self.space.step(self.dt)
             self.ee_manager.update_external_wrenches(self.dt * 10)
 
-        # Get initial observation
-        observation: ObservationType = self.get_obs()
-        info: Dict[str, Any] = {"is_success": False}
-
         if self.render_mode == "human":
             self.render()
 
-        return observation, info
+        return self.get_obs(), {"is_success": False}
 
-    def get_obs(self) -> ObservationType:
-        """
-        Get observation.
-        
-        Note on Twists:
-        - 'ee_twists': Spatial frame twist [vx, vy, omega] (standard order)
-        - 'ee_body_twists': Body frame twist [omega, vx, vy] (Modern Robotics convention)
-        """
+    def get_obs(self) -> Union[Dict[str, np.ndarray], np.ndarray]:
+        """Get observation."""
         if self.obs_type == "state":
-            # Get states from managers
-            ee_poses = self.ee_manager.get_poses()  # (2, 3) - spatial frame
-            ee_twists_spatial = self.ee_manager.get_velocities()  # (2, 3) - spatial frame velocities [vx_s, vy_s, omega]
-            ee_body_twists = self.ee_manager.get_body_twists()  # (2, 3) - body frame twists [omega, vx_b, vy_b] (MR convention!)
-            link_poses = self.object_manager.get_link_poses() if self.object_manager else ee_poses.copy()  # (2, 3)
-            external_wrenches = self.ee_manager.get_external_wrenches()  # (2, 3) - body frame [tau, fx, fy] (MR convention!)
-
-            # Return dictionary observation
-            obs = {
+            ee_poses = self.ee_manager.get_poses()
+            link_poses = self.object_manager.get_link_poses() if self.object_manager else ee_poses.copy()
+            
+            return {
                 'ee_poses': ee_poses.astype(np.float32),
-                'ee_twists': ee_twists_spatial.astype(np.float32),  # Keep old name for compatibility
-                'ee_body_twists': ee_body_twists.astype(np.float32),  # New: proper body twists
+                'ee_twists': self.ee_manager.get_velocities().astype(np.float32),
+                'ee_body_twists': self.ee_manager.get_body_twists().astype(np.float32),
                 'link_poses': link_poses.astype(np.float32),
-                'external_wrenches': external_wrenches.astype(np.float32)
+                'external_wrenches': self.ee_manager.get_external_wrenches().astype(np.float32)
             }
-
-            return obs
-
-        elif self.obs_type == "pixels":
-            return self._render()
-
         else:
-            raise ValueError(f"Unknown obs_type: {self.obs_type}")
+            return self._render_frame()
 
-    def get_joint_axis_screws(self):
-        """
-        Get joint axis as SE(2) unit screws in each end effector frame.
-
-        Returns body twist representation of object's joint axis as seen from
-        each EE frame. This is configuration-invariant kinematic constraint
-        information that depends only on grasping frames and joint geometry.
-
-        Returns:
-            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw,
-            or None if no object is present:
-                - For revolute: [r_y, -r_x, 1] (r is position to joint center)
-                - For prismatic: [v_x, v_y, 0] (v is unit sliding direction)
-                - For fixed: [0, 0, 0] (no motion)
-                - For none: None (no object)
-
-        Example:
-            >>> B_left, B_right = env.get_joint_axis_screws()
-            >>> # B_left describes how left EE moves when joint rotates/slides
-            >>> # with unit velocity in joint space
-        """
+    def get_joint_axis_screws(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Get joint axis screws for screw-decomposed control."""
         if self.object_manager is None:
             return None
         return self.object_manager.get_joint_axis_screws()
 
+    def _compute_reward(self, current_poses, wrenches, external_wrenches) -> Dict:
+        """Compute reward using RewardManager."""
+        if self.object_manager:
+            link2_goal = self._compute_link2_goal(self.goal_pose)
+            desired_poses = np.array([self.goal_pose, link2_goal])
+            velocities = self.object_manager.get_link_velocities()
+        else:
+            desired_poses = np.array([self.goal_pose, self.goal_pose])
+            velocities = self.ee_manager.get_velocities()
+
+        return self.reward_manager.compute_reward(
+            current_poses=current_poses,
+            desired_poses=desired_poses,
+            current_velocities=velocities,
+            desired_velocities=np.zeros((2, 3)),
+            applied_wrenches=wrenches,
+            external_wrenches=external_wrenches
+        )
+
+    def _compute_link2_goal(self, link1_goal: np.ndarray, joint_state: float = 0.0) -> np.ndarray:
+        """Compute link2 goal pose from link1 goal."""
+        cfg = self.object_config
+        joint_type = self.object_manager.joint_type
+
+        if joint_type == JointType.REVOLUTE:
+            link2_theta = link1_goal[2] + joint_state
+            joint_x = link1_goal[0] + (cfg.link_length / 2) * np.cos(link1_goal[2])
+            joint_y = link1_goal[1] + (cfg.link_length / 2) * np.sin(link1_goal[2])
+            link2_x = joint_x + (cfg.link_length / 2) * np.cos(link2_theta)
+            link2_y = joint_y + (cfg.link_length / 2) * np.sin(link2_theta)
+            return np.array([link2_x, link2_y, link2_theta])
+
+        elif joint_type == JointType.PRISMATIC:
+            link2_x = link1_goal[0] + joint_state * np.cos(link1_goal[2])
+            link2_y = link1_goal[1] + joint_state * np.sin(link1_goal[2])
+            return np.array([link2_x, link2_y, link1_goal[2]])
+
+        else:  # FIXED
+            offset_x = cfg.link_length * np.cos(link1_goal[2])
+            offset_y = cfg.link_length * np.sin(link1_goal[2])
+            return np.array([link1_goal[0] + offset_x, link1_goal[1] + offset_y, link1_goal[2]])
+
     def _check_safety(self) -> Tuple[bool, str]:
-        """
-        Check safety constraints.
+        """Check safety constraints."""
+        ws_min, ws_max = 10.0, 502.0
 
-        Returns:
-            Tuple of (is_safe, violation_message)
-        """
-        # 1. Workspace limits (with margin)
-        workspace_min = 10.0  # pixels
-        workspace_max = 502.0  # pixels
+        # Check gripper positions
+        for i, pose in enumerate(self.ee_manager.get_poses()):
+            if not (ws_min <= pose[0] <= ws_max and ws_min <= pose[1] <= ws_max):
+                return False, f"EE {i} out of workspace"
 
-        ee_poses = self.ee_manager.get_poses()
-        for i, pose in enumerate(ee_poses):
-            x, y = pose[0], pose[1]
-            if x < workspace_min or x > workspace_max or y < workspace_min or y > workspace_max:
-                return False, f"EE {i} out of workspace: ({x:.1f}, {y:.1f})"
-
-        # Skip object-related checks if no object
         if self.object_manager is None:
             return True, ""
 
-        # 2. Joint limits (for articulated object)
+        # Check joint limits
         joint_state = self.object_manager.get_joint_state()
         joint_type = self.object_manager.joint_type
 
         if joint_type == JointType.REVOLUTE:
-            # Full range limits: -180° to 180°
-            min_angle = -np.pi
-            max_angle = np.pi
-            if joint_state < min_angle or joint_state > max_angle:
+            if not (-np.pi <= joint_state <= np.pi):
                 return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}°"
-
+                
         elif joint_type == JointType.PRISMATIC:
-            # Sliding limits (relative to link length)
-            link_length = self.object_manager.object.link_length
-            min_slide = -link_length * 0.5
-            max_slide = link_length * 0.5
-            if joint_state < min_slide or joint_state > max_slide:
-                return False, f"Joint position out of limits: {joint_state:.1f} (limits: [{min_slide:.1f}, {max_slide:.1f}])"
+            limit = self.object_config.link_length * 0.5
+            if not (-limit <= joint_state <= limit):
+                return False, f"Joint position out of limits: {joint_state:.1f}"
 
-        # 3. Link poses within workspace
-        link_poses = self.object_manager.get_link_poses()
-        for i, pose in enumerate(link_poses):
-            x, y = pose[0], pose[1]
-            if x < workspace_min or x > workspace_max or y < workspace_min or y > workspace_max:
-                return False, f"Link {i} out of workspace: ({x:.1f}, {y:.1f})"
+        # Check link positions
+        for i, pose in enumerate(self.object_manager.get_link_poses()):
+            if not (ws_min <= pose[0] <= ws_max and ws_min <= pose[1] <= ws_max):
+                return False, f"Link {i} out of workspace"
 
         return True, ""
 
-    def _compute_link2_goal_pose(self, link1_goal: np.ndarray, desired_joint_state: float = 0.0) -> np.ndarray:
-        """
-        Compute goal pose for link 2 based on link 1 goal and desired joint state.
-        """
-        joint_type = self.object_manager.joint_type
-
-        if joint_type == JointType.REVOLUTE:
-            link2_theta = link1_goal[2] + desired_joint_state
-
-            joint_x = link1_goal[0] + (self.link_length / 2.0) * np.cos(link1_goal[2])
-            joint_y = link1_goal[1] + (self.link_length / 2.0) * np.sin(link1_goal[2])
-
-            link2_x = joint_x + (self.link_length / 2.0) * np.cos(link2_theta)
-            link2_y = joint_y + (self.link_length / 2.0) * np.sin(link2_theta)
-
-            return np.array([link2_x, link2_y, link2_theta])
-
-        if joint_type == JointType.PRISMATIC:
-            offset = desired_joint_state
-            link2_x = link1_goal[0] + offset * np.cos(link1_goal[2])
-            link2_y = link1_goal[1] + offset * np.sin(link1_goal[2])
-            return np.array([link2_x, link2_y, link1_goal[2]])
-
-        # Fixed joint: maintain rigid offset
-        offset_x = self.link_length * np.cos(link1_goal[2])
-        offset_y = self.link_length * np.sin(link1_goal[2])
-        return np.array([link1_goal[0] + offset_x, link1_goal[1] + offset_y, link1_goal[2]])
-
-    def _draw(self):
-        """Draw the environment."""
-        # Create screen
+    def _draw(self) -> pygame.Surface:
+        """Draw environment to pygame surface (for external rendering)."""
         screen = pygame.Surface((512, 512))
         screen.fill((255, 255, 255))
-        draw_options = DrawOptions(screen)
 
-        # Draw goal pose
-        goal_x, goal_y, goal_theta = self.goal_pose
-        goal_size = 30
-        goal_rect = [
-            (goal_x - goal_size, goal_y - goal_size),
-            (goal_x + goal_size, goal_y - goal_size),
-            (goal_x + goal_size, goal_y + goal_size),
-            (goal_x - goal_size, goal_y + goal_size),
-        ]
-        goal_rect_pygame = [pymunk.pygame_util.to_pygame(p, screen) for p in goal_rect]
-        pygame.draw.polygon(screen, pygame.Color("LightGreen"), goal_rect_pygame, 2)
+        # Draw goal
+        if self.goal_pose is not None:
+            gx, gy, _ = self.goal_pose
+            goal_rect = pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60)
+            pygame.draw.rect(screen, pygame.Color("LightGreen"), goal_rect, 2)
 
         # Draw physics objects
+        draw_options = DrawOptions(screen)
         self.space.debug_draw(draw_options)
 
         return screen
 
-    def _render(self, visualize=False):
-        """Render the environment."""
-        width, height = (
-            (self.visualization_width, self.visualization_height)
-            if visualize
-            else (self.observation_width, self.observation_height)
-        )
+    def _render_frame(self, visualize: bool = False) -> np.ndarray:
+        """Render environment to image."""
+        width = self.visualization_width if visualize else self.observation_width
+        height = self.visualization_height if visualize else self.observation_height
 
-        screen = self._draw()
+        # Create surface
+        screen = pygame.Surface((512, 512))
+        screen.fill((255, 255, 255))
 
+        # Draw goal
+        gx, gy, _ = self.goal_pose
+        goal_rect = pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60)
+        pygame.draw.rect(screen, pygame.Color("LightGreen"), goal_rect, 2)
+
+        # Draw physics objects
+        draw_options = DrawOptions(screen)
+        self.space.debug_draw(draw_options)
+
+        # Convert to numpy and resize
+        img = np.transpose(pygame.surfarray.array3d(screen), (1, 0, 2))
+        return cv2.resize(img, (width, height))
+
+    def render(self) -> Optional[np.ndarray]:
+        """Render environment."""
         if self.render_mode == "rgb_array":
-            img = np.transpose(np.array(pygame.surfarray.pixels3d(screen)), axes=(1, 0, 2))
-            img = cv2.resize(img, (width, height))
-            return img
-
+            return self._render_frame(visualize=True)
+            
         elif self.render_mode == "human":
             if self.window is None:
                 pygame.init()
@@ -684,43 +484,27 @@ class BiArtEnv(gym.Env):
             if self.clock is None:
                 self.clock = pygame.time.Clock()
 
+            screen = pygame.Surface((512, 512))
+            screen.fill((255, 255, 255))
+            
+            # Draw goal
+            gx, gy, _ = self.goal_pose
+            pygame.draw.rect(screen, pygame.Color("LightGreen"), 
+                           pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60), 2)
+            
+            # Draw physics
+            draw_options = DrawOptions(screen)
+            self.space.debug_draw(draw_options)
+
             self.window.blit(screen, screen.get_rect())
             pygame.event.pump()
             self.clock.tick(self.metadata["render_fps"])
             pygame.display.update()
-
-        else:
-            raise ValueError(f"Unknown render_mode: {self.render_mode}")
-
-    def render(self):
-        """Render the environment."""
-        return self._render(visualize=True)
+            
+        return None
 
     def close(self):
-        """Close the environment."""
+        """Close environment."""
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
-
-    def _get_info(self):
-        """Get info dict."""
-        ee_poses = self.ee_manager.get_poses()
-        external_wrenches = self.ee_manager.get_external_wrenches()
-        
-        info = {
-            "left_gripper_pose": ee_poses[0],
-            "right_gripper_pose": ee_poses[1],
-            "external_wrench_left": external_wrenches[0],
-            "external_wrench_right": external_wrenches[1],
-            "goal_pose": self.goal_pose.copy(),
-        }
-        
-        if self.object_manager:
-            link_poses = self.object_manager.get_link_poses()
-            info["link1_pose"] = link_poses[0]
-            info["link2_pose"] = link_poses[1]
-        else:
-            info["link1_pose"] = None
-            info["link2_pose"] = None
-            
-        return info
