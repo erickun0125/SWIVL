@@ -13,11 +13,12 @@ All planners output desired poses at 10 Hz for the low-level controller.
 from src.hl_planners.flow_matching import FlowMatchingPolicy
 from src.hl_planners.diffusion_policy import DiffusionPolicy
 from src.hl_planners.act import ACTPolicy
-from src.hl_planners.teleoperation import TeleoperationPlanner
+from src.hl_planners.teleoperation import MultiEEPlanner, CoordinatedMotionPlanner
 
 __all__ = [
     'FlowMatchingPolicy',
     'DiffusionPolicy',
     'ACTPolicy',
-    'TeleoperationPlanner',
+    'MultiEEPlanner',
+    'CoordinatedMotionPlanner',
 ]

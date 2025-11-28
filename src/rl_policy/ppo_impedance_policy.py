@@ -178,11 +178,14 @@ class ImpedanceLoggingCallback(BaseCallback):
             # First 6 per arm: [damping (3), stiffness (3)]
             # Total 12: arm0 (6) + arm1 (6)
 
+            # Flatten buffer to (N, action_dim)
+            flat_actions = actions.reshape(-1, actions.shape[-1])
+
             # Compute statistics
-            damping_mean = np.mean(actions[:, [0, 1, 2, 6, 7, 8]])
-            damping_std = np.std(actions[:, [0, 1, 2, 6, 7, 8]])
-            stiffness_mean = np.mean(actions[:, [3, 4, 5, 9, 10, 11]])
-            stiffness_std = np.std(actions[:, [3, 4, 5, 9, 10, 11]])
+            damping_mean = np.mean(flat_actions[:, [0, 1, 2, 6, 7, 8]])
+            damping_std = np.std(flat_actions[:, [0, 1, 2, 6, 7, 8]])
+            stiffness_mean = np.mean(flat_actions[:, [3, 4, 5, 9, 10, 11]])
+            stiffness_std = np.std(flat_actions[:, [3, 4, 5, 9, 10, 11]])
 
             # Log to tensorboard
             self.logger.record('impedance/damping_mean', damping_mean)

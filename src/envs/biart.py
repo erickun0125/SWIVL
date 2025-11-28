@@ -62,10 +62,22 @@ def pymunk_to_shapely(body, shapes):
 
 class BiArtEnv(gym.Env):
     """
-    ## Description
+    BiArt (Bimanual Articulated object manipulation) Environment
 
-    BiArt (Bimanual Articulated object manipulation) environment for SE(2) dual arm manipulation.
+    SE(2) environment for bimanual manipulation of articulated objects.
 
+    ## Physical Units (Pymunk/Pygame Convention)
+    
+    - **Length**: pixels (workspace is 512×512 pixels)
+    - **Mass**: arbitrary mass units (default: 1.0 for links, 0.8 for gripper base)
+    - **Time**: seconds (control_hz=10 Hz, physics_hz=100 Hz)
+    - **Velocity**: pixels/second
+    - **Angular velocity**: radians/second
+    - **Force**: mass × pixels/second² (default max: 100.0)
+    - **Torque**: mass × pixels²/second² (default max: 50.0)
+    - **Inertia**: mass × pixels²
+    - **Damping**: dimensionless coefficient (space.damping=0.95)
+    
     The goal is to manipulate an articulated object with two robot grippers to reach a goal configuration.
 
     ## Action Space
@@ -93,7 +105,7 @@ class BiArtEnv(gym.Env):
     ## Arguments
 
     * `obs_type`: (str) The observation type. Can be "state", "pixels", etc.
-    * `joint_type`: (str) Type of articulated joint: "revolute", "prismatic", or "fixed"
+    * `joint_type`: (str) Type of articulated joint: "revolute", "prismatic", "fixed", or "none" (no object)
     * `render_mode`: (str) Rendering mode
     """
 
@@ -110,7 +122,6 @@ class BiArtEnv(gym.Env):
         visualization_height=680,
         control_hz=10,
         physics_hz=100,
-        grip_force=15.0,  # Configurable gripper grip force
     ):
         """
         Initialize BiArt environment and underlying physics.
@@ -144,17 +155,7 @@ class BiArtEnv(gym.Env):
         self.link_mass = 1.0
 
         # Gripper parameters (for EndEffectorManager)
-        self.gripper_config = GripperConfig(
-            base_mass=0.8,
-            jaw_mass=0.1,
-            base_width=25.0,
-            base_height=8.0,
-            jaw_length=20.0,
-            jaw_thickness=4.0,
-            max_opening=20.0,
-            grip_force=grip_force,  # Use configurable parameter
-            target_object_width=self.link_width
-        )
+        self.gripper_config = GripperConfig()
 
         # Managers (initialized in _setup)
         self.ee_manager = None
@@ -271,18 +272,22 @@ class BiArtEnv(gym.Env):
         self.space.add(*walls)
 
         # Initialize managers
-        # Create ObjectManager
-        object_params = {
-            'link_length': self.link_length,
-            'link_width': self.link_width,
-            'link_mass': self.link_mass
-        }
+        # Create ObjectManager only if we have an object (joint_type != 'none')
+        if self.joint_type != 'none':
+            object_params = {
+                'link_length': self.link_length,
+                'link_width': self.link_width,
+                'link_mass': self.link_mass
+            }
 
-        self.object_manager = ObjectManager(
-            space=self.space,
-            joint_type=self.joint_type,  # Pass as string
-            object_params=object_params
-        )
+            self.object_manager = ObjectManager(
+                space=self.space,
+                joint_type=self.joint_type,  # Pass as string
+                object_params=object_params
+            )
+        else:
+            # No object - set to None
+            self.object_manager = None
 
         # Create EndEffectorManager
         self.ee_manager = EndEffectorManager(
@@ -353,25 +358,38 @@ class BiArtEnv(gym.Env):
 
         # Get current states
         current_ee_poses = self.ee_manager.get_poses()
-        current_link_poses = self.object_manager.get_link_poses()
+        current_link_poses = self.object_manager.get_link_poses() if self.object_manager else current_ee_poses.copy()
         external_wrenches = self.ee_manager.get_external_wrenches()
 
         # Compute reward using RewardManager
-        # Task is to manipulate the object, so we track object poses.
-        # We primarily track Link 1 (base link) against goal_pose.
-        link2_goal = self._compute_link2_goal_pose(self.goal_pose)
-        desired_link_poses = np.array([self.goal_pose, link2_goal])
-        
-        applied_wrenches = wrenches
+        if self.object_manager:
+            # Task is to manipulate the object, so we track object poses.
+            # We primarily track Link 1 (base link) against goal_pose.
+            link2_goal = self._compute_link2_goal_pose(self.goal_pose)
+            desired_link_poses = np.array([self.goal_pose, link2_goal])
+            
+            applied_wrenches = wrenches
 
-        reward_info = self.reward_manager.compute_reward(
-            current_poses=current_link_poses,  # Track object links!
-            desired_poses=desired_link_poses,
-            current_velocities=self.object_manager.get_link_velocities(),  # Track object velocity
-            desired_velocities=np.zeros((2, 3)),  # Goal is static
-            applied_wrenches=applied_wrenches,
-            external_wrenches=external_wrenches
-        )
+            reward_info = self.reward_manager.compute_reward(
+                current_poses=current_link_poses,  # Track object links!
+                desired_poses=desired_link_poses,
+                current_velocities=self.object_manager.get_link_velocities(),  # Track object velocity
+                desired_velocities=np.zeros((2, 3)),  # Goal is static
+                applied_wrenches=applied_wrenches,
+                external_wrenches=external_wrenches
+            )
+        else:
+            # No object - track end-effector poses directly
+            desired_ee_poses = np.array([self.goal_pose, self.goal_pose])  # Simple goal for testing
+            
+            reward_info = self.reward_manager.compute_reward(
+                current_poses=current_ee_poses,
+                desired_poses=desired_ee_poses,
+                current_velocities=self.ee_manager.get_velocities(),
+                desired_velocities=np.zeros((2, 3)),
+                applied_wrenches=wrenches,
+                external_wrenches=external_wrenches
+            )
 
         # Get observation
         observation = self.get_obs()
@@ -421,37 +439,59 @@ class BiArtEnv(gym.Env):
         goal_theta = self.np_random.uniform(-np.pi/2, np.pi/2)
         self.goal_pose = np.array([goal_x, goal_y, goal_theta])
 
-        # Randomize object position and orientation
-        obj_x = self.np_random.integers(220, 292)
-        obj_y = self.np_random.integers(220, 292)
-        obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)
+        if self.object_manager:
+            # With object: randomize object position and grasp it
+            obj_x = self.np_random.integers(220, 292)
+            obj_y = self.np_random.integers(220, 292)
+            obj_angle = self.np_random.uniform(-np.pi/4, np.pi/4)
 
-        initial_pose = np.array([obj_x, obj_y, obj_angle])
+            initial_pose = np.array([obj_x, obj_y, obj_angle])
 
-        # Reset object (creates links and joints)
-        self.object_manager.reset(initial_pose)
+            # Reset object (creates links and joints)
+            self.object_manager.reset(initial_pose)
 
-        # Let object settle with joint constraints
-        for _ in range(20):
-            self.space.step(self.dt)
+            # Let object settle with joint constraints
+            for _ in range(20):
+                self.space.step(self.dt)
 
-        # Get grasping poses from object manager
-        grasping_poses = self.object_manager.get_grasping_poses()
+            # Get grasping poses from object manager
+            grasping_poses = self.object_manager.get_grasping_poses()
 
-        # Initialize EEs at grasping frames
-        ee_initial_poses = np.array([
-            grasping_poses["left"],
-            grasping_poses["right"]
-        ])
+            # Initialize EEs at grasping frames
+            ee_initial_poses = np.array([
+                grasping_poses["left"],
+                grasping_poses["right"]
+            ])
 
-        self.ee_manager.reset(ee_initial_poses)
+            self.ee_manager.reset(ee_initial_poses)
 
-        # Settle grippers with grip forces
-        for _ in range(50):
-            self.ee_manager.apply_grip_forces()
-            self.space.step(self.dt)
-        # Update wrenches with correct accumulation time (settling duration)
-        self.ee_manager.update_external_wrenches(self.dt * 50)
+            # Settle grippers with grip forces
+            for _ in range(50):
+                self.ee_manager.apply_grip_forces()
+                self.space.step(self.dt)
+            # Update wrenches with correct accumulation time (settling duration)
+            self.ee_manager.update_external_wrenches(self.dt * 50)
+        else:
+            # No object: spawn end-effectors at random positions in workspace
+            left_x = self.np_random.integers(100, 200)
+            left_y = self.np_random.integers(200, 300)
+            left_theta = self.np_random.uniform(-np.pi, np.pi)
+            
+            right_x = self.np_random.integers(312, 412)
+            right_y = self.np_random.integers(200, 300)
+            right_theta = self.np_random.uniform(-np.pi, np.pi)
+            
+            ee_initial_poses = np.array([
+                [left_x, left_y, left_theta],
+                [right_x, right_y, right_theta]
+            ])
+            
+            self.ee_manager.reset(ee_initial_poses)
+            
+            # Brief settling
+            for _ in range(10):
+                self.space.step(self.dt)
+            self.ee_manager.update_external_wrenches(self.dt * 10)
 
         # Get initial observation
         observation: ObservationType = self.get_obs()
@@ -475,7 +515,7 @@ class BiArtEnv(gym.Env):
             ee_poses = self.ee_manager.get_poses()  # (2, 3) - spatial frame
             ee_twists_spatial = self.ee_manager.get_velocities()  # (2, 3) - spatial frame velocities [vx_s, vy_s, omega]
             ee_body_twists = self.ee_manager.get_body_twists()  # (2, 3) - body frame twists [omega, vx_b, vy_b] (MR convention!)
-            link_poses = self.object_manager.get_link_poses()  # (2, 3)
+            link_poses = self.object_manager.get_link_poses() if self.object_manager else ee_poses.copy()  # (2, 3)
             external_wrenches = self.ee_manager.get_external_wrenches()  # (2, 3) - body frame [tau, fx, fy] (MR convention!)
 
             # Return dictionary observation
@@ -504,16 +544,20 @@ class BiArtEnv(gym.Env):
         information that depends only on grasping frames and joint geometry.
 
         Returns:
-            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw:
+            Tuple of (B_left, B_right) where each is shape (3,) SE(2) unit screw,
+            or None if no object is present:
                 - For revolute: [r_y, -r_x, 1] (r is position to joint center)
                 - For prismatic: [v_x, v_y, 0] (v is unit sliding direction)
                 - For fixed: [0, 0, 0] (no motion)
+                - For none: None (no object)
 
         Example:
             >>> B_left, B_right = env.get_joint_axis_screws()
             >>> # B_left describes how left EE moves when joint rotates/slides
             >>> # with unit velocity in joint space
         """
+        if self.object_manager is None:
+            return None
         return self.object_manager.get_joint_axis_screws()
 
     def _check_safety(self) -> Tuple[bool, str]:
@@ -532,6 +576,10 @@ class BiArtEnv(gym.Env):
             x, y = pose[0], pose[1]
             if x < workspace_min or x > workspace_max or y < workspace_min or y > workspace_max:
                 return False, f"EE {i} out of workspace: ({x:.1f}, {y:.1f})"
+
+        # Skip object-related checks if no object
+        if self.object_manager is None:
+            return True, ""
 
         # 2. Joint limits (for articulated object)
         joint_state = self.object_manager.get_joint_state()
@@ -657,15 +705,22 @@ class BiArtEnv(gym.Env):
     def _get_info(self):
         """Get info dict."""
         ee_poses = self.ee_manager.get_poses()
-        link_poses = self.object_manager.get_link_poses()
         external_wrenches = self.ee_manager.get_external_wrenches()
-
-        return {
+        
+        info = {
             "left_gripper_pose": ee_poses[0],
             "right_gripper_pose": ee_poses[1],
-            "link1_pose": link_poses[0],
-            "link2_pose": link_poses[1],
             "external_wrench_left": external_wrenches[0],
             "external_wrench_right": external_wrenches[1],
             "goal_pose": self.goal_pose.copy(),
         }
+        
+        if self.object_manager:
+            link_poses = self.object_manager.get_link_poses()
+            info["link1_pose"] = link_poses[0]
+            info["link2_pose"] = link_poses[1]
+        else:
+            info["link1_pose"] = None
+            info["link2_pose"] = None
+            
+        return info

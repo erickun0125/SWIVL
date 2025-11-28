@@ -29,7 +29,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from src.envs.biart import BiArtEnv
 from src.hl_planners.keyboard_teleoperation import KeyboardTeleoperationPlanner, TeleopConfig
-from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController, SE2ImpedanceConfig
+from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController
+from src.se2_dynamics import SE2RobotParams, SE2Dynamics
 from src.se2_math import world_to_body_velocity
 
 def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
@@ -63,13 +64,21 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
 
     # Initialize Controller (Low-Level)
     # We use impedance controller to track the desired poses from teleop
-    controller_config = SE2ImpedanceConfig(
-        stiffness_linear=np.array([500.0, 500.0]), # High stiffness for tracking
-        stiffness_angular=50.0,
-        damping_linear=np.array([20.0, 20.0]),
-        damping_angular=2.0
+    robot_params = SE2RobotParams(mass=1.0, inertia=0.1)
+    controller = SE2ImpedanceController.create_diagonal_impedance(
+        I_d=0.1,
+        m_d=1.0,
+        d_theta=2.0,
+        d_x=20.0,
+        d_y=20.0,
+        k_theta=50.0,
+        k_x=500.0,
+        k_y=500.0,
+        robot_params=robot_params,
+        model_matching=True,
+        max_force=100.0,
+        max_torque=50.0
     )
-    controller = SE2ImpedanceController(num_grippers=2, config=controller_config, dt=env.dt)
 
     # Data buffer
     all_demos = []
@@ -96,104 +105,109 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
         'desired_body_twists': []
     }
         
-        step_count = 0
-        done = False
+    step_count = 0
+    done = False
+    
+    while not done and step_count < max_steps:
+        # 1. Handle Pygame Events (Keyboard)
+        events = pygame.event.get()
+        keys = pygame.key.get_pressed()
         
-        while not done and step_count < max_steps:
-            # 1. Handle Pygame Events (Keyboard)
-            events = pygame.event.get()
-            keys = pygame.key.get_pressed()
-            
-            # Quit check
-            for event in events:
-                if event.type == pygame.QUIT:
-                    print("Collection aborted.")
-                    return
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        done = True # Finish this episode manually
-                    elif event.key == pygame.K_1:
-                        planner.config.controlled_gripper = "left"
-                        print("Controlling Left Gripper")
-                    elif event.key == pygame.K_2:
-                        planner.config.controlled_gripper = "right"
-                        print("Controlling Right Gripper")
+        # Quit check
+        for event in events:
+            if event.type == pygame.QUIT:
+                print("Collection aborted.")
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    done = True # Finish this episode manually
+                elif event.key == pygame.K_1:
+                    planner.config.controlled_gripper = "left"
+                    print("Controlling Left Gripper")
+                elif event.key == pygame.K_2:
+                    planner.config.controlled_gripper = "right"
+                    print("Controlling Right Gripper")
 
-            # 2. Get High-Level Action (Desired Poses) from Teleop Planner
-            # Note: planner expects dict {keycode: bool} for keys usually, but process_keyboard_input uses internal map
-            # Let's construct the key map expected by the planner
-            key_map = {
-                pygame.K_UP: keys[pygame.K_UP],
-                pygame.K_DOWN: keys[pygame.K_DOWN],
-                pygame.K_LEFT: keys[pygame.K_LEFT],
-                pygame.K_RIGHT: keys[pygame.K_RIGHT],
-                pygame.K_q: keys[pygame.K_q],
-                pygame.K_w: keys[pygame.K_w],
-                pygame.K_a: keys[pygame.K_a],
-                pygame.K_d: keys[pygame.K_d],
-            }
-            
-            hl_action = planner.get_action(
-                keyboard_events=key_map,
-                current_ee_poses=obs['ee_poses'],
-                current_link_poses=obs['link_poses'],
-                current_ee_velocities=obs['ee_twists'], # Note: using spatial twist here
-                current_link_velocities=None # Optional
-            )
-            
-            desired_poses = hl_action['desired_poses'] # (2, 3)
-            
-            # 3. Get Low-Level Action (Wrenches) from Controller
-            # Desired velocity is also available from planner for feedforward D term
-            desired_body_twists = hl_action['desired_body_twists']
-            
-            current_body_twists = np.zeros((2, 3))
-            for i in range(2):
-                spatial = obs['ee_twists'][i]
-                spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])
-                current_body_twists[i] = world_to_body_velocity(obs['ee_poses'][i], spatial_mr)
-
-            wrenches = controller.compute_control(
-                current_poses=obs['ee_poses'],
-                current_velocities=current_body_twists,
-                desired_poses=desired_poses,
-                desired_velocities=desired_body_twists
-            )
-            
-            # 4. Step Environment
-            next_obs, _, terminated, truncated, _ = env.step(wrenches)
-            
-            # 5. Record Data (s_t, a_t) -> We record OBSERVATION and HIGH-LEVEL ACTION (Desired Pose)
-            # Ideally we record the observation used to generate the action
-            episode_obs['ee_poses'].append(obs['ee_poses'])
-            episode_obs['link_poses'].append(obs['link_poses'])
-            episode_obs['external_wrenches'].append(obs['external_wrenches'])
-            if 'ee_body_twists' in obs:
-                episode_obs['ee_body_twists'].append(obs['ee_body_twists'])
-            else:
-                episode_obs['ee_body_twists'].append(np.zeros((2, 3)))
-            episode_actions['desired_poses'].append(desired_poses)
-            episode_actions['desired_body_twists'].append(desired_body_twists)
-            
-            obs = next_obs
-            step_count += 1
-            
-            if terminated or truncated:
-                done = True
-                
-            # Render
-            env.render()
-            
-        # End of episode
-        print(f"Episode finished. Steps: {step_count}")
+        # 2. Get High-Level Action (Desired Poses) from Teleop Planner
+        # Note: planner expects dict {keycode: bool} for keys usually, but process_keyboard_input uses internal map
+        # Let's construct the key map expected by the planner
+        key_map = {
+            pygame.K_UP: keys[pygame.K_UP],
+            pygame.K_DOWN: keys[pygame.K_DOWN],
+            pygame.K_LEFT: keys[pygame.K_LEFT],
+            pygame.K_RIGHT: keys[pygame.K_RIGHT],
+            pygame.K_q: keys[pygame.K_q],
+            pygame.K_w: keys[pygame.K_w],
+            pygame.K_a: keys[pygame.K_a],
+            pygame.K_d: keys[pygame.K_d],
+        }
         
-        if step_count > 10: # Only save meaningful episodes
-            all_demos.append({
-                'obs': episode_obs,
-                'action': episode_actions
-            })
+        hl_action = planner.get_action(
+            keyboard_events=key_map,
+            current_ee_poses=obs['ee_poses'],
+            current_link_poses=obs['link_poses'],
+            current_ee_velocities=obs['ee_twists'], # Note: using spatial twist here
+            current_link_velocities=None # Optional
+        )
+        
+        desired_poses = hl_action['desired_poses'] # (2, 3)
+        
+        # 3. Get Low-Level Action (Wrenches) from Controller
+        # Desired velocity is also available from planner for feedforward D term
+        desired_body_twists = hl_action['desired_body_twists']
+        
+        current_body_twists = np.zeros((2, 3))
+        for i in range(2):
+            spatial = obs['ee_twists'][i]
+            spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])
+            current_body_twists[i] = world_to_body_velocity(obs['ee_poses'][i], spatial_mr)
+
+        # Compute wrenches for each end-effector separately
+        wrenches = []
+        for i in range(2):
+            wrench, _ = controller.compute_control(
+                current_pose=obs['ee_poses'][i],
+                desired_pose=desired_poses[i],
+                body_twist_current=current_body_twists[i],
+                body_twist_desired=desired_body_twists[i]
+            )
+            wrenches.append(wrench)
+        wrenches = np.array(wrenches)
+        
+        # 4. Step Environment
+        next_obs, _, terminated, truncated, _ = env.step(wrenches)
+        
+        # 5. Record Data (s_t, a_t) -> We record OBSERVATION and HIGH-LEVEL ACTION (Desired Pose)
+        # Ideally we record the observation used to generate the action
+        episode_obs['ee_poses'].append(obs['ee_poses'])
+        episode_obs['link_poses'].append(obs['link_poses'])
+        episode_obs['external_wrenches'].append(obs['external_wrenches'])
+        if 'ee_body_twists' in obs:
+            episode_obs['ee_body_twists'].append(obs['ee_body_twists'])
         else:
-            print("Episode too short, discarding.")
+            episode_obs['ee_body_twists'].append(np.zeros((2, 3)))
+        episode_actions['desired_poses'].append(desired_poses)
+        episode_actions['desired_body_twists'].append(desired_body_twists)
+        
+        obs = next_obs
+        step_count += 1
+        
+        if terminated or truncated:
+            done = True
+            
+        # Render
+        env.render()
+        
+    # End of episode
+    print(f"Episode finished. Steps: {step_count}")
+    
+    if step_count > 10: # Only save meaningful episodes
+        all_demos.append({
+            'obs': episode_obs,
+            'action': episode_actions
+        })
+    else:
+        print("Episode too short, discarding.")
             
     # Save to HDF5
     print(f"\nSaving {len(all_demos)} demos to {output_path}...")

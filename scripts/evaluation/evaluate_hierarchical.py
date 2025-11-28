@@ -147,7 +147,7 @@ def evaluate_episode(
 
     while not (done or truncated):
         # Get action from RL policy
-        action, _ = ll_policy.predict(obs, deterministic=deterministic)
+        action = ll_policy.predict(obs, deterministic=deterministic)
 
         # Step environment
         next_obs, reward, done, truncated, info = env.step(action)
@@ -220,7 +220,16 @@ def save_results(
         # Remove trajectory data for JSON serialization
         results_to_save = []
         for ep in episode_results:
-            ep_data = {k: v for k, v in ep.items() if k != 'trajectory'}
+            ep_data = {}
+            for k, v in ep.items():
+                if k != 'trajectory':
+                    # Convert numpy types to Python types
+                    if isinstance(v, (np.integer, np.floating)):
+                        ep_data[k] = v.item()
+                    elif isinstance(v, np.bool_):
+                        ep_data[k] = bool(v)
+                    else:
+                        ep_data[k] = v
             results_to_save.append(ep_data)
         json.dump(results_to_save, f, indent=2)
     print(f"✓ Episode results saved to {results_path}")
@@ -325,7 +334,7 @@ def evaluate(
 
     # Load low-level policy
     print(f"\nLoading low-level policy from {ll_checkpoint}...")
-    ll_policy = PPOImpedancePolicy.load(ll_checkpoint, env=env)
+    ll_policy = PPOImpedancePolicy.load_from_file(ll_checkpoint, env=env)
     print(f"✓ Low-level policy loaded")
 
     # Evaluate

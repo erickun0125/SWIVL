@@ -287,7 +287,7 @@ class ArticulatedObject:
         # Left gripper → Link1, left side, perpendicular
         frames["left"] = GraspingFrame(
             link_id=0,
-            local_pose=np.array([-self.link_length / 4, 0.0, np.pi / 2]),
+            local_pose=np.array([-self.link_length / 4, 0.0, -np.pi / 2]),
             gripper_name="left"
         )
 

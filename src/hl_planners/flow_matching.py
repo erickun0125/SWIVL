@@ -56,7 +56,7 @@ class FlowMatchingNetwork(nn.Module):
         self.time_mlp = nn.Sequential(
             nn.Linear(1, config.hidden_dim // 4),
             nn.ReLU(),
-            nn.Linear(config.hidden_dim // 4, config.hidden_dim // 4)
+            nn.Linear(config.hidden_dim // 4, config.hidden_dim)
         )
 
         # State embedding
@@ -327,8 +327,10 @@ class FlowMatchingPolicy(nn.Module):
         ee_poses = observation['ee_poses'].flatten()
         link_poses = observation['link_poses'].flatten()
         wrenches = observation['external_wrenches'].flatten()
+        # Handle missing body twists gracefully (though env should provide it now)
+        body_twists = observation.get('ee_body_twists', np.zeros_like(ee_poses)).flatten()
 
-        state = np.concatenate([ee_poses, link_poses, wrenches])
+        state = np.concatenate([ee_poses, link_poses, wrenches, body_twists])
         return state
 
     def _get_context(self) -> torch.Tensor:

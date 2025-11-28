@@ -23,14 +23,15 @@ from src.se2_math import spatial_to_body_twist
 @dataclass
 class GripperConfig:
     """Configuration for parallel gripper."""
-    base_mass: float = 0.8
+    base_mass: float = 10.0
     jaw_mass: float = 0.1
     base_width: float = 16.0
     base_height: float = 8.0
     jaw_length: float = 20.0
     jaw_thickness: float = 4.0
     max_opening: float = 20.0
-    grip_force: float = 15.0
+    min_opening: float = 2.0  # Minimum opening to prevent collision
+    grip_force: float = 1.0
     target_object_width: float = 12.0
 
 
@@ -57,6 +58,7 @@ class ParallelGripper:
         jaw_length: float = 20.0,
         jaw_thickness: float = 4.0,
         max_opening: float = 20.0,
+        min_opening: float = 2.0,
         grip_force: float = 15.0,
         target_object_width: float = 12.0
     ):
@@ -75,6 +77,7 @@ class ParallelGripper:
             jaw_length: Length of each jaw
             jaw_thickness: Thickness of jaws
             max_opening: Maximum opening between jaws
+            min_opening: Minimum opening between jaws
             grip_force: Constant closing force (Newtons)
         """
         self.space = space
@@ -87,6 +90,7 @@ class ParallelGripper:
         self.jaw_length = jaw_length
         self.jaw_thickness = jaw_thickness
         self.max_opening = max_opening
+        self.min_opening = min_opening
         self.target_object_width = target_object_width
 
         # Color
@@ -158,13 +162,19 @@ class ParallelGripper:
         self.right_jaw_shape = right_jaw_shape
 
         # Create prismatic joints (GrooveJoint)
-        groove_start = Vec2d(-max_opening/2, base_height/2)
-        groove_end = Vec2d(max_opening/2, base_height/2)
+        # Define grooves in base frame
+        # Left groove: from -max_opening/2 to -min_opening/2
+        left_groove_start = Vec2d(-max_opening/2, base_height/2)
+        left_groove_end = Vec2d(-min_opening/2, base_height/2)
+        
+        # Right groove: from min_opening/2 to max_opening/2
+        right_groove_start = Vec2d(min_opening/2, base_height/2)
+        right_groove_end = Vec2d(max_opening/2, base_height/2)
 
         left_anchor = Vec2d(-jaw_thickness/2, 0)
         self.left_joint = pymunk.GrooveJoint(
             self.base_body, self.left_jaw,
-            groove_start, Vec2d(0, base_height/2),
+            left_groove_start, left_groove_end,
             left_anchor
         )
         self.left_joint.collide_bodies = False
@@ -173,7 +183,7 @@ class ParallelGripper:
         right_anchor = Vec2d(jaw_thickness/2, 0)
         self.right_joint = pymunk.GrooveJoint(
             self.base_body, self.right_jaw,
-            Vec2d(0, base_height/2), groove_end,
+            right_groove_start, right_groove_end,
             right_anchor
         )
         self.right_joint.collide_bodies = False
@@ -181,12 +191,12 @@ class ParallelGripper:
 
         # Rotation constraint for jaws
         self.left_rotation = pymunk.GearJoint(self.base_body, self.left_jaw, 0, 1)
-        self.left_rotation.max_force = 1e10
+        self.left_rotation.max_force = 1e5
         self.left_rotation.collide_bodies = False
         space.add(self.left_rotation)
 
         self.right_rotation = pymunk.GearJoint(self.base_body, self.right_jaw, 0, 1)
-        self.right_rotation.max_force = 1e10
+        self.right_rotation.max_force = 1e5
         self.right_rotation.collide_bodies = False
         space.add(self.right_rotation)
 
@@ -215,17 +225,47 @@ class ParallelGripper:
         self.contact_impulses = []
 
     def apply_grip_force(self):
-        """Apply constant closing force to both jaws."""
+        """
+        Apply constant closing force to both jaws.
+        
+        Implements internal force pair (action-reaction):
+        - Force F applied to jaw (towards center)
+        - Reaction force -F applied to base body (away from center)
+        """
         # Closing direction: inward (toward center)
-        left_close_dir = Vec2d(1, 0).rotated(self.base_body.angle)
-        right_close_dir = Vec2d(-1, 0).rotated(self.base_body.angle)
-
+        # In base frame, left jaw moves +x, right jaw moves -x
+        # But rotated by base angle
+        
+        # Force magnitude
+        force_mag = self.grip_force
+        
+        # Left Jaw: Needs force in +x direction (local)
+        left_force_local = Vec2d(force_mag, 0)
+        left_force_world = left_force_local.rotated(self.base_body.angle)
+        
+        # Apply to left jaw
         self.left_jaw.apply_force_at_world_point(
-            left_close_dir * self.grip_force,
+            left_force_world,
             self.left_jaw.position
         )
+        # Apply reaction to base body (at jaw position)
+        self.base_body.apply_force_at_world_point(
+            -left_force_world,
+            self.left_jaw.position
+        )
+
+        # Right Jaw: Needs force in -x direction (local)
+        right_force_local = Vec2d(-force_mag, 0)
+        right_force_world = right_force_local.rotated(self.base_body.angle)
+        
+        # Apply to right jaw
         self.right_jaw.apply_force_at_world_point(
-            right_close_dir * self.grip_force,
+            right_force_world,
+            self.right_jaw.position
+        )
+        # Apply reaction to base body (at jaw position)
+        self.base_body.apply_force_at_world_point(
+            -right_force_world,
             self.right_jaw.position
         )
 
@@ -398,6 +438,7 @@ class EndEffectorManager:
             'jaw_length': config.jaw_length,
             'jaw_thickness': config.jaw_thickness,
             'max_opening': config.max_opening,
+            'min_opening': config.min_opening,
             'grip_force': config.grip_force,
             'target_object_width': config.target_object_width
         }

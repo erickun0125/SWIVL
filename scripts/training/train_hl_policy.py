@@ -210,7 +210,8 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         print(f"Dataset path {dataset_path} does not exist. Creating dummy dataset.")
         # ... dummy dataset logic ... (kept as fallback)
         N = 100
-        T = 50
+        action_horizon = config.get('hl_training', {}).get('action_horizon', 10)
+        T = action_horizon
         state_dim = 24
         action_dim = 6
         
@@ -473,7 +474,7 @@ def train(
     policy = create_policy(policy_type, config, torch_device)
 
     # Load dataset first to compute normalization stats
-    train_dataset, val_dataset, normalizer = load_dataset(dataset_path, config)
+    (train_dataset, val_dataset), normalizer = load_dataset(dataset_path, config)
 
     if train_dataset is None:
         # ... error handling ...

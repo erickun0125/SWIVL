@@ -120,7 +120,7 @@ class PDController:
         # desired_velocity is [vx_s, vy_s, omega], convert to MR [omega, vx_s, vy_s]
         desired_vel_spatial_mr = np.array([desired_velocity[2], desired_velocity[0], desired_velocity[1]])
         # Use proper adjoint map to get body twist [omega, vx_b, vy_b]
-        desired_twist_body = spatial_to_body_twist(desired_pose, desired_vel_spatial_mr)
+        desired_twist_body = spatial_to_body_twist(current_pose, desired_vel_spatial_mr)
         
         # MR convention to PD internal convention (linear first for calculation convenience)
         # PD uses: [vx_b, vy_b, omega]

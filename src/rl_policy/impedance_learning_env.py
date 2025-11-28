@@ -652,7 +652,8 @@ class ImpedanceLearningEnv(gym.Env):
             hl_obs = {
                 'ee_poses': obs['ee_poses'],
                 'link_poses': obs['link_poses'],
-                'external_wrenches': obs['external_wrenches']
+                'external_wrenches': obs['external_wrenches'],
+                'ee_body_twists': obs.get('ee_body_twists', np.zeros((2, 3)))
             }
             
             # Expecting action_chunk: (10, 2, 3)
