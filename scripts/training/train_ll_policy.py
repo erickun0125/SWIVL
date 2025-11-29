@@ -1,29 +1,35 @@
 """
-Low-Level Policy Training Script
+SWIVL Low-Level Policy Training Script (Layer 3)
 
-Trains RL policy for learning optimal impedance parameters in hierarchical control.
-Works with ANY high-level policy type (Flow Matching, Diffusion, ACT) and
-BOTH controller types (SE(2) impedance, screw-decomposed impedance).
+Trains RL policy for learning optimal impedance modulation variables
+in hierarchical bimanual manipulation control.
 
-The training is fully configurable via YAML configuration file.
+SWIVL Layer 3 Action Space:
+    a_t = (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
+
+The training pipeline:
+1. Load pre-trained high-level policy (Flow Matching, Diffusion, or ACT)
+2. Create impedance learning environment with SWIVL controller
+3. Train PPO agent to optimize impedance modulation
+4. Evaluate and save the trained policy
 
 Usage:
-    python scripts/training/train_ll_policy.py --config configs/rl_config.yaml
-    python scripts/training/train_ll_policy.py --hl_policy flow_matching --controller se2_impedance
-    python scripts/training/train_ll_policy.py --hl_policy diffusion --controller screw_decomposed
+    python scripts/training/train_ll_policy.py --config scripts/configs/rl_config.yaml
+    python scripts/training/train_ll_policy.py --hl_policy flow_matching --controller screw_decomposed
+    python scripts/training/train_ll_policy.py --hl_policy none --total_timesteps 100000
 
 Example:
-    # Train with Flow Matching HL policy and SE(2) impedance controller
-    python scripts/training/train_ll_policy.py --hl_policy flow_matching --controller se2_impedance
+    # Train with Flow Matching HL policy and SWIVL controller
+    python scripts/training/train_ll_policy.py \\
+        --hl_policy flow_matching \\
+        --hl_checkpoint checkpoints/hl_policy_horizon-10/flow_matching_best.pth \\
+        --controller screw_decomposed
 
-    # Train with Diffusion HL policy and screw-decomposed controller
-    python scripts/training/train_ll_policy.py --hl_policy diffusion --controller screw_decomposed
-
-    # Train with custom config
-    python scripts/training/train_ll_policy.py --config my_config.yaml
-
-    # Train without HL policy (random exploration)
-    python scripts/training/train_ll_policy.py --hl_policy none --controller se2_impedance
+    # Train without HL policy (for debugging)
+    python scripts/training/train_ll_policy.py \\
+        --hl_policy none \\
+        --controller screw_decomposed \\
+        --total_timesteps 50000
 """
 
 import argparse
@@ -37,31 +43,23 @@ import torch
 import yaml
 
 # Add project root to path
-current_file_path = os.path.abspath(__file__)
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from src.rl_policy.impedance_learning_env import ImpedanceLearningEnv, ImpedanceLearningConfig
 from src.rl_policy.ppo_impedance_policy import PPOImpedancePolicy
-from src.hl_planners.flow_matching import FlowMatchingPolicy
-from src.hl_planners.diffusion_policy import DiffusionPolicy
-from src.hl_planners.act import ACTPolicy
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""
-    # Convert to absolute path if needed
     if not os.path.isabs(config_path):
-        # Assume relative to project root
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-        config_path = os.path.join(base_dir, config_path)
-    
+        config_path = os.path.join(_PROJECT_ROOT, config_path)
+
     if not os.path.exists(config_path):
-        # Create default config if not exists
         print(f"Config file {config_path} not found. Using default configuration.")
         return {}
-        
+
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
@@ -70,42 +68,64 @@ def load_config(config_path: str) -> Dict[str, Any]:
 def load_hl_policy(
     policy_type: str,
     checkpoint_path: Optional[str] = None,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    hl_config_path: str = 'scripts/configs/hl_policy_config.yaml'
 ):
     """
-    Load high-level policy.
+    Load high-level policy with proper config and normalizer.
 
     Args:
-        policy_type: Type of policy ('flow_matching', 'diffusion', 'act', or 'none')
+        policy_type: 'flow_matching', 'diffusion', 'act', or 'none'
         checkpoint_path: Path to policy checkpoint
         device: Device for computation
+        hl_config_path: Path to HL policy config YAML
 
     Returns:
         Loaded policy or None
     """
     if policy_type == 'none':
-        print("Training without high-level policy (random exploration)")
+        print("Training without high-level policy (hold position mode)")
         return None
 
     print(f"Loading {policy_type} high-level policy...")
 
-    if policy_type == 'flow_matching':
-        policy = FlowMatchingPolicy(device=device)
-    elif policy_type == 'diffusion':
-        policy = DiffusionPolicy(device=device)
-    elif policy_type == 'act':
-        policy = ACTPolicy(device=device)
-    else:
-        raise ValueError(f"Unknown policy type: {policy_type}")
+    try:
+        # Load HL policy config (same as training)
+        hl_config = load_config(hl_config_path)
+        
+        # Import create_policy and LinearNormalizer from train_hl_policy
+        from scripts.training.train_hl_policy import create_policy, LinearNormalizer
+        
+        # Create policy with proper config
+        policy = create_policy(policy_type, hl_config, device)
+        
+        if checkpoint_path is not None and os.path.exists(checkpoint_path):
+            # Load checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            
+            # Load model weights
+            policy.load_state_dict(checkpoint['model_state_dict'])
+            policy.eval()
+            
+            # Load normalizer into policy
+            if 'normalizer' in checkpoint:
+                normalizer = LinearNormalizer()
+                normalizer.load_state_dict(checkpoint['normalizer'])
+                policy.normalizer = normalizer
+                print(f"✓ Loaded normalizer from checkpoint")
+            
+            print(f"✓ Loaded checkpoint from {checkpoint_path}")
+        else:
+            print("⚠ No checkpoint provided, using randomly initialized policy")
 
-    # Load checkpoint if provided
-    if checkpoint_path is not None and os.path.exists(checkpoint_path):
-        policy.load(checkpoint_path)
-        print(f"✓ Loaded checkpoint from {checkpoint_path}")
-    else:
-        print("Warning: No checkpoint provided, using randomly initialized policy")
+        return policy
 
-    return policy
+    except Exception as e:
+        print(f"⚠ Could not load {policy_type} policy: {e}")
+        import traceback
+        traceback.print_exc()
+        print("  Falling back to no high-level policy")
+        return None
 
 
 def create_env_config(config: Dict[str, Any], controller_type: str) -> ImpedanceLearningConfig:
@@ -114,7 +134,7 @@ def create_env_config(config: Dict[str, Any], controller_type: str) -> Impedance
 
     Args:
         config: Full configuration dictionary
-        controller_type: Controller type ('se2_impedance' or 'screw_decomposed')
+        controller_type: 'se2_impedance' or 'screw_decomposed'
 
     Returns:
         ImpedanceLearningConfig instance
@@ -123,18 +143,33 @@ def create_env_config(config: Dict[str, Any], controller_type: str) -> Impedance
     ll_config = config.get('ll_controller', {})
     rl_config = config.get('rl_training', {})
 
+    # Robot parameters
+    robot_cfg = ll_config.get('robot', {})
+
     # Base configuration
     env_cfg = ImpedanceLearningConfig(
         controller_type=controller_type,
-        robot_mass=ll_config.get('robot', {}).get('mass', 1.0),
-        robot_inertia=ll_config.get('robot', {}).get('inertia', 0.1),
+        robot_mass=robot_cfg.get('mass', 1.2),
+        robot_inertia=robot_cfg.get('inertia', 97.6),
         control_dt=env_config.get('control_dt', 0.01),
-        policy_dt=env_config.get('policy_dt', 0.1),
         max_episode_steps=env_config.get('max_episode_steps', 1000)
     )
 
     # Controller-specific parameters
-    if controller_type == 'se2_impedance':
+    if controller_type == 'screw_decomposed':
+        screw_cfg = ll_config.get('screw_decomposed', {})
+        env_cfg.min_d_parallel = screw_cfg.get('min_d_parallel', 1.0)
+        env_cfg.max_d_parallel = screw_cfg.get('max_d_parallel', 50.0)
+        env_cfg.min_d_perp = screw_cfg.get('min_d_perp', 10.0)
+        env_cfg.max_d_perp = screw_cfg.get('max_d_perp', 200.0)
+        env_cfg.min_k_p = screw_cfg.get('min_k_p', 0.5)
+        env_cfg.max_k_p = screw_cfg.get('max_k_p', 10.0)
+        env_cfg.min_alpha = screw_cfg.get('min_alpha', 1.0)
+        env_cfg.max_alpha = screw_cfg.get('max_alpha', 50.0)
+        env_cfg.max_force = screw_cfg.get('max_force', 100.0)
+        env_cfg.max_torque = screw_cfg.get('max_torque', 500.0)
+
+    elif controller_type == 'se2_impedance':
         se2_cfg = ll_config.get('se2_impedance', {})
         env_cfg.min_damping_linear = se2_cfg.get('min_damping_linear', 1.0)
         env_cfg.max_damping_linear = se2_cfg.get('max_damping_linear', 50.0)
@@ -145,20 +180,10 @@ def create_env_config(config: Dict[str, Any], controller_type: str) -> Impedance
         env_cfg.min_stiffness_angular = se2_cfg.get('min_stiffness_angular', 5.0)
         env_cfg.max_stiffness_angular = se2_cfg.get('max_stiffness_angular', 100.0)
 
-    elif controller_type == 'screw_decomposed':
-        screw_cfg = ll_config.get('screw_decomposed', {})
-        env_cfg.min_damping_parallel = screw_cfg.get('min_damping_parallel', 1.0)
-        env_cfg.max_damping_parallel = screw_cfg.get('max_damping_parallel', 50.0)
-        env_cfg.min_stiffness_parallel = screw_cfg.get('min_stiffness_parallel', 5.0)
-        env_cfg.max_stiffness_parallel = screw_cfg.get('max_stiffness_parallel', 100.0)
-        env_cfg.min_damping_perpendicular = screw_cfg.get('min_damping_perpendicular', 5.0)
-        env_cfg.max_damping_perpendicular = screw_cfg.get('max_damping_perpendicular', 100.0)
-        env_cfg.min_stiffness_perpendicular = screw_cfg.get('min_stiffness_perpendicular', 20.0)
-        env_cfg.max_stiffness_perpendicular = screw_cfg.get('max_stiffness_perpendicular', 500.0)
-
     # Reward weights
     reward_cfg = rl_config.get('reward', {})
     env_cfg.tracking_weight = reward_cfg.get('tracking_weight', 1.0)
+    env_cfg.fighting_force_weight = reward_cfg.get('fighting_force_weight', 0.5)
     env_cfg.wrench_weight = reward_cfg.get('wrench_weight', 0.1)
     env_cfg.smoothness_weight = reward_cfg.get('smoothness_weight', 0.01)
 
@@ -190,7 +215,7 @@ def train(
     verbose: int = 1
 ):
     """
-    Train low-level impedance learning policy.
+    Train SWIVL low-level impedance learning policy.
 
     Args:
         config_path: Path to configuration file
@@ -203,7 +228,7 @@ def train(
         verbose: Verbosity level
     """
     print("=" * 80)
-    print("Training Low-Level Impedance Learning Policy")
+    print("SWIVL Layer 3: Impedance Modulation Policy Training")
     print("=" * 80)
 
     # Load configuration
@@ -217,19 +242,19 @@ def train(
 
     # Override config with command-line arguments
     if hl_policy_type is None:
-        hl_policy_type = config.get('hl_policy', {}).get('type', 'flow_matching')
+        hl_policy_type = config.get('hl_policy', {}).get('type', 'none')
     if hl_checkpoint is None:
         hl_checkpoint = config.get('hl_policy', {}).get('checkpoint', None)
     if controller_type is None:
-        controller_type = config.get('ll_controller', {}).get('type', 'se2_impedance')
+        controller_type = config.get('ll_controller', {}).get('type', 'screw_decomposed')
     if total_timesteps is None:
-        total_timesteps = config.get('rl_training', {}).get('total_timesteps', 1000000)
+        total_timesteps = config.get('rl_training', {}).get('total_timesteps', 100000)
     if output_dir is None:
         output_dir = config.get('rl_training', {}).get('output', {}).get('checkpoint_dir', './checkpoints')
 
     print(f"\nConfiguration:")
     print(f"  High-level policy: {hl_policy_type}")
-    print(f"  HL checkpoint: {hl_checkpoint if hl_checkpoint else 'None (random init)'}")
+    print(f"  HL checkpoint: {hl_checkpoint if hl_checkpoint else 'None'}")
     print(f"  Controller type: {controller_type}")
     print(f"  Total timesteps: {total_timesteps:,}")
     print(f"  Output directory: {output_dir}")
@@ -238,13 +263,19 @@ def train(
     hl_policy = load_hl_policy(hl_policy_type, hl_checkpoint, device)
 
     # Create environment configuration
-    print(f"\nCreating environment configuration...")
+    print(f"\nCreating SWIVL environment...")
     env_config = create_env_config(config, controller_type)
     print(f"✓ Environment configured:")
     print(f"  Controller type: {env_config.controller_type}")
-    print(f"  Control dt: {env_config.control_dt} s")
-    print(f"  Policy dt: {env_config.policy_dt} s")
+    print(f"  Control dt: {env_config.control_dt} s ({int(1/env_config.control_dt)} Hz)")
     print(f"  Max episode steps: {env_config.max_episode_steps}")
+
+    if controller_type == 'screw_decomposed':
+        print(f"  Action space: 7D (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α)")
+        print(f"    d_∥ range: [{env_config.min_d_parallel}, {env_config.max_d_parallel}]")
+        print(f"    d_⊥ range: [{env_config.min_d_perp}, {env_config.max_d_perp}]")
+        print(f"    k_p range: [{env_config.min_k_p}, {env_config.max_k_p}]")
+        print(f"    α range: [{env_config.min_alpha}, {env_config.max_alpha}]")
 
     # Create training environment
     print(f"\nCreating training environment...")
@@ -265,22 +296,27 @@ def train(
     eval_config = config.get('rl_training', {}).get('evaluation', {})
 
     # Create PPO policy
-    print(f"\nCreating PPO policy...")
+    print(f"\nCreating SWIVL PPO policy...")
     ppo_policy = PPOImpedancePolicy(
         env=env,
         learning_rate=ppo_config.get('learning_rate', 3e-4),
         n_steps=ppo_config.get('n_steps', 2048),
         batch_size=ppo_config.get('batch_size', 64),
+        n_epochs=ppo_config.get('n_epochs', 10),
+        gamma=ppo_config.get('gamma', 0.99),
+        gae_lambda=ppo_config.get('gae_lambda', 0.95),
+        clip_range=ppo_config.get('clip_range', 0.2),
+        ent_coef=ppo_config.get('ent_coef', 0.01),
         features_dim=network_config.get('features_dim', 256),
         device=device,
         verbose=verbose,
-        tensorboard_log=logging_config.get('tensorboard_log', './logs/impedance_rl/')
+        tensorboard_log=logging_config.get('tensorboard_log', './logs/swivl_rl/')
     )
     print(f"✓ PPO policy created")
 
     # Training
     print("\n" + "=" * 80)
-    print(f"Starting training for {total_timesteps:,} timesteps...")
+    print(f"Starting SWIVL Layer 3 training for {total_timesteps:,} timesteps...")
     print("=" * 80)
 
     ppo_policy.train(
@@ -303,9 +339,10 @@ def train(
     print(f"✓ Final evaluation:")
     print(f"  Mean reward: {eval_results['mean_reward']:.2f} ± {eval_results['std_reward']:.2f}")
     print(f"  Mean episode length: {eval_results['mean_length']:.1f} ± {eval_results['std_length']:.1f}")
+    print(f"  Mean fighting force: {eval_results['mean_fighting_force']:.2f} ± {eval_results['std_fighting_force']:.2f}")
 
     # Save policy
-    output_name = config.get('rl_training', {}).get('output', {}).get('checkpoint_name', 'impedance_policy.zip')
+    output_name = config.get('rl_training', {}).get('output', {}).get('checkpoint_name', 'swivl_impedance_policy.zip')
     output_path = os.path.join(output_dir, output_name)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -314,7 +351,7 @@ def train(
     print(f"✓ Policy saved!")
 
     # Save configuration alongside checkpoint
-    config_save_path = os.path.join(output_dir, f"{output_name.replace('.zip', '_config.yaml')}")
+    config_save_path = os.path.join(output_dir, output_name.replace('.zip', '_config.yaml'))
     with open(config_save_path, 'w') as f:
         yaml.dump({
             'hl_policy_type': hl_policy_type,
@@ -336,12 +373,11 @@ def train(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Train RL policy for impedance parameter learning',
+        description='Train SWIVL Layer 3: Impedance Modulation Policy',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
 
-    # Configuration file
     parser.add_argument(
         '--config',
         type=str,
@@ -349,7 +385,6 @@ def main():
         help='Path to configuration file'
     )
 
-    # High-level policy arguments
     parser.add_argument(
         '--hl_policy',
         type=str,
@@ -357,6 +392,7 @@ def main():
         choices=['flow_matching', 'diffusion', 'act', 'none'],
         help='Type of high-level policy (overrides config)'
     )
+
     parser.add_argument(
         '--hl_checkpoint',
         type=str,
@@ -364,7 +400,6 @@ def main():
         help='Path to high-level policy checkpoint (overrides config)'
     )
 
-    # Controller type
     parser.add_argument(
         '--controller',
         type=str,
@@ -373,7 +408,6 @@ def main():
         help='Type of low-level controller (overrides config)'
     )
 
-    # Training arguments
     parser.add_argument(
         '--total_timesteps',
         type=int,
@@ -381,7 +415,6 @@ def main():
         help='Total training timesteps (overrides config)'
     )
 
-    # Output arguments
     parser.add_argument(
         '--output_dir',
         type=str,
@@ -389,7 +422,6 @@ def main():
         help='Output directory for checkpoints (overrides config)'
     )
 
-    # Device
     parser.add_argument(
         '--device',
         type=str,
@@ -398,7 +430,6 @@ def main():
         help='Device for computation'
     )
 
-    # Verbosity
     parser.add_argument(
         '--verbose',
         type=int,
@@ -408,7 +439,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Train
     train(
         config_path=args.config,
         hl_policy_type=args.hl_policy,

@@ -47,14 +47,14 @@ hl_policy:
 # =============================================================================
 ll_controller:
   # Controller type: se2_impedance or screw_decomposed
-  type: "se2_impedance"
+  type: "screw_decomposed"
 
-  # Robot parameters (for screw decomposed controller)
+  # Robot parameters (from gripper config)
   robot:
-    mass: 1.0        # kg
-    inertia: 0.1     # kg⋅m²
+    mass: 1.2        # kg
+    inertia: 97.6    # kg⋅m² (pixels²)
 
-  # SE(2) Impedance Controller Parameters
+  # SE(2) Impedance Controller Parameters (classical impedance)
   se2_impedance:
     # Damping bounds (D)
     min_damping_linear: 1.0
@@ -68,19 +68,28 @@ ll_controller:
     min_stiffness_angular: 5.0
     max_stiffness_angular: 100.0
 
-  # Screw-Decomposed Impedance Controller Parameters
+  # SWIVL Screw-Decomposed Twist-Driven Impedance Controller Parameters
+  # Action space: (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
   screw_decomposed:
-    # Parallel direction (compliant, along joint axis)
-    min_damping_parallel: 1.0
-    max_damping_parallel: 50.0
-    min_stiffness_parallel: 5.0
-    max_stiffness_parallel: 100.0
+    # Parallel damping d_∥ (internal motion, compliant along joint axis)
+    min_d_parallel: 1.0
+    max_d_parallel: 50.0
 
-    # Perpendicular direction (stiff, maintain grasp)
-    min_damping_perpendicular: 5.0
-    max_damping_perpendicular: 100.0
-    min_stiffness_perpendicular: 20.0
-    max_stiffness_perpendicular: 500.0
+    # Perpendicular damping d_⊥ (bulk motion, stiff to maintain grasp)
+    min_d_perp: 10.0
+    max_d_perp: 200.0
+
+    # Pose error correction gain k_p (reference twist field)
+    min_k_p: 0.5
+    max_k_p: 10.0
+
+    # Characteristic length α (metric tensor G = diag(α², 1, 1))
+    min_alpha: 1.0
+    max_alpha: 50.0
+
+    # Controller limits
+    max_force: 100.0     # N
+    max_torque: 500.0    # N⋅m
 
 # =============================================================================
 # Environment Configuration

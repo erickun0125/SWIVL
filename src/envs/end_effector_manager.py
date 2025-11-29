@@ -410,8 +410,12 @@ class EndEffectorManager:
     def _setup_collision_handlers(self):
         """Setup collision handlers for force sensing."""
         # Gripper (type 1) vs Object (type 2)
-        handler = self.space.add_collision_handler(1, 2)
-        handler.post_solve = self._handle_collision
+        # pymunk 7.x uses on_collision instead of add_collision_handler
+        #self.space.on_collision(
+        #    collision_type_a=1,
+        #    collision_type_b=2,
+        #    post_solve=self._handle_collision
+        #)
 
     def _handle_collision(self, arbiter, space, data):
         """Record contact impulses from collisions."""

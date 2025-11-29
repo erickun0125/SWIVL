@@ -587,8 +587,31 @@ class FlowMatchingPolicy(nn.Module):
         }, path)
 
     def load(self, path: str):
-        """Load policy from file."""
-        checkpoint = torch.load(path, map_location=self._device())
-        self.config = checkpoint['config']
-        self.network = FlowMatchingNetwork(self.config).to(self._device())
-        self.network.load_state_dict(checkpoint['network_state_dict'])
+        """
+        Load policy from file.
+        
+        Handles two checkpoint formats:
+        1. From save() method: {'config', 'network_state_dict'}
+        2. From training script: {'model_state_dict', 'normalizer', ...}
+        """
+        device = self._device()
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        
+        # If checkpoint has 'config', create new model from it
+        if 'config' in checkpoint:
+            self.config = checkpoint['config']
+            self.network = FlowMatchingNetwork(self.config).to(device)
+        
+        # Load model weights (model must already exist)
+        if self.network is None:
+            raise ValueError("Model not initialized. Create policy with config first.")
+        
+        # Handle different key names
+        if 'network_state_dict' in checkpoint:
+            self.network.load_state_dict(checkpoint['network_state_dict'])
+        elif 'model_state_dict' in checkpoint:
+            self.network.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            raise ValueError("Checkpoint must have 'network_state_dict' or 'model_state_dict'")
+        
+        self.network.eval()

@@ -688,9 +688,24 @@ class ACTPolicy(nn.Module):
         }, path)
 
     def load(self, path: str):
-        """Load policy from file."""
+        """
+        Load policy from file.
+        
+        Handles two checkpoint formats:
+        1. From save() method: {'config', 'model_state_dict'}
+        2. From training script: {'model_state_dict', 'normalizer', ...}
+        """
         device = self._device()
-        checkpoint = torch.load(path, map_location=device)
-        self.config = checkpoint['config']
-        self.model = ACTCVAE(self.config).to(device)
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        
+        # If checkpoint has 'config', create new model from it
+        if 'config' in checkpoint:
+            self.config = checkpoint['config']
+            self.model = ACTCVAE(self.config).to(device)
+        
+        # Load model weights (model must already exist)
+        if self.model is None:
+            raise ValueError("Model not initialized. Create policy with config first.")
+        
         self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval()

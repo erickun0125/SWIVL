@@ -1,8 +1,11 @@
 """
-Gym Environment for Impedance Parameter Learning
+SWIVL Impedance Learning Environment
 
-This environment wraps the bimanual manipulation task and provides
-an interface for learning optimal impedance parameters using RL.
+Gym Environment for learning optimal impedance parameters using the
+SE2ScrewDecomposedImpedanceController (SWIVL Layer 3).
+
+This environment learns the impedance modulation policy:
+    a_t = (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
 
 Following Modern Robotics (Lynch & Park) convention:
 - Twist: V = [ω, vx, vy]^T (angular velocity first!)
@@ -16,13 +19,17 @@ State space (per arm):
 - Desired twist (3): [omega_d, vx_d, vy_d] (MR convention!)
 Total: 15 * 2 = 30 dimensions (bimanual)
 
-Action space (per arm):
-- For SE(2) impedance: Damping (3) [D_angular, D_linear, D_linear] +
-                       Stiffness (3) [K_angular, K_linear, K_linear]
-- For screw decomposed: [D_parallel, K_parallel, D_perpendicular, K_perpendicular]
-Total: 12 dimensions (bimanual SE(2)) or 8 dimensions (bimanual screw)
+Action space (SWIVL):
+- d_l_∥: Left arm parallel damping (internal motion)
+- d_r_∥: Right arm parallel damping
+- d_l_⊥: Left arm perpendicular damping (bulk motion)
+- d_r_⊥: Right arm perpendicular damping
+- k_p_l: Left arm pose error correction gain
+- k_p_r: Right arm pose error correction gain
+- α: Shared characteristic length (metric tensor)
+Total: 7 dimensions
 
-Note: Actions are scaled and clipped to safe ranges.
+Reference: SWIVL Paper, Section 3.3 - Impedance Variable Modulation
 """
 
 import gymnasium as gym
@@ -32,56 +39,81 @@ from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
 from src.envs.biart import BiArtEnv
-from src.trajectory_generator import MinimumJerkTrajectory, TrajectoryPoint
-from src.ll_controllers.se2_impedance_controller import SE2ImpedanceController
+from src.trajectory_generator import MinimumJerkTrajectory, CubicSplineTrajectory
+from src.ll_controllers.se2_impedance_controller import (
+    SE2ImpedanceController,
+    MultiGripperSE2ImpedanceController
+)
 from src.ll_controllers.se2_screw_decomposed_impedance import (
     SE2ScrewDecomposedImpedanceController,
-    ScrewImpedanceParams
+    MultiGripperSE2ScrewDecomposedImpedanceController,
+    ScrewDecomposedImpedanceParams
 )
 from src.se2_dynamics import SE2Dynamics, SE2RobotParams
 
 
 @dataclass
 class ImpedanceLearningConfig:
-    """Configuration for impedance learning environment."""
+    """Configuration for SWIVL impedance learning environment."""
+    
     # Controller type: 'se2_impedance' or 'screw_decomposed'
-    controller_type: str = 'se2_impedance'
+    controller_type: str = 'screw_decomposed'
 
-    # Robot parameters (for screw decomposed controller)
-    robot_mass: float = 1.0
-    robot_inertia: float = 0.1
+    # Robot parameters
+    robot_mass: float = 1.2       # kg
+    robot_inertia: float = 97.6   # kg⋅m² (pixels²)
 
-    # Damping bounds (D)
+    # =========================================================================
+    # SE(2) Impedance Controller bounds (classical impedance)
+    # =========================================================================
     min_damping_linear: float = 1.0
     max_damping_linear: float = 50.0
     min_damping_angular: float = 0.5
     max_damping_angular: float = 20.0
-
-    # Stiffness bounds (K)
     min_stiffness_linear: float = 10.0
     max_stiffness_linear: float = 200.0
     min_stiffness_angular: float = 5.0
     max_stiffness_angular: float = 100.0
 
-    # Screw decomposed bounds (parallel and perpendicular)
-    min_damping_parallel: float = 1.0
-    max_damping_parallel: float = 50.0
-    min_stiffness_parallel: float = 5.0
-    max_stiffness_parallel: float = 100.0
+    # =========================================================================
+    # SWIVL Screw-Decomposed Impedance Controller bounds
+    # Action: (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
+    # =========================================================================
+    
+    # Parallel damping d_∥ (internal motion, compliant)
+    min_d_parallel: float = 1.0
+    max_d_parallel: float = 50.0
 
-    min_damping_perpendicular: float = 5.0
-    max_damping_perpendicular: float = 100.0
-    min_stiffness_perpendicular: float = 20.0
-    max_stiffness_perpendicular: float = 500.0
+    # Perpendicular damping d_⊥ (bulk motion, stiff)
+    min_d_perp: float = 10.0
+    max_d_perp: float = 200.0
 
+    # Pose error correction gain k_p
+    min_k_p: float = 0.5
+    max_k_p: float = 10.0
+
+    # Characteristic length α (metric tensor)
+    min_alpha: float = 1.0
+    max_alpha: float = 50.0
+
+    # Controller limits
+    max_force: float = 100.0
+    max_torque: float = 500.0
+
+    # =========================================================================
     # Reward weights
-    tracking_weight: float = 1.0
-    wrench_weight: float = 0.1
-    smoothness_weight: float = 0.01
+    # =========================================================================
+    tracking_weight: float = 1.0        # Tracking error penalty
+    fighting_force_weight: float = 0.5  # Fighting force penalty (F_⊥)
+    wrench_weight: float = 0.1          # Total wrench penalty
+    smoothness_weight: float = 0.01     # Impedance smoothness penalty
 
-    # Control frequency
-    control_dt: float = 0.01  # 100 Hz
-    policy_dt: float = 0.01  # 100 Hz (Same as control_dt)
+    # =========================================================================
+    # Timing
+    # =========================================================================
+    control_dt: float = 0.01    # 100 Hz (low-level control)
+    policy_dt: float = 0.01     # 100 Hz (RL policy, same as control for now)
+    hl_chunk_duration: float = 1.0  # High-level policy chunk duration
 
     # Episode settings
     max_episode_steps: int = 1000
@@ -89,11 +121,13 @@ class ImpedanceLearningConfig:
 
 class ImpedanceLearningEnv(gym.Env):
     """
-    Gym environment for learning impedance parameters.
+    SWIVL Impedance Learning Environment.
 
-    The environment assumes a pre-trained high-level policy that generates
-    desired poses. The RL agent learns to adjust impedance parameters
-    to achieve good tracking while minimizing external forces.
+    Learns optimal impedance parameters for bimanual manipulation
+    using the screw-decomposed twist-driven impedance controller.
+
+    The RL agent outputs impedance modulation variables that are used
+    by the Layer 4 controller to achieve compliant manipulation.
     """
 
     metadata = {'render_modes': ['human', 'rgb_array']}
@@ -101,7 +135,7 @@ class ImpedanceLearningEnv(gym.Env):
     def __init__(
         self,
         config: Optional[ImpedanceLearningConfig] = None,
-        hl_policy = None,
+        hl_policy=None,
         render_mode: Optional[str] = None
     ):
         """
@@ -109,7 +143,7 @@ class ImpedanceLearningEnv(gym.Env):
 
         Args:
             config: Environment configuration
-            hl_policy: Pre-trained high-level policy (FlowMatchingPolicy, DiffusionPolicy, or ACTPolicy)
+            hl_policy: Pre-trained high-level policy (generates desired poses)
             render_mode: Rendering mode
         """
         super().__init__()
@@ -118,68 +152,40 @@ class ImpedanceLearningEnv(gym.Env):
         self.hl_policy = hl_policy
         self.render_mode = render_mode
 
-        # HL Update settings
-        # HL Policy outputs 1.0s chunk, update every 1.0s
-        self.hl_period = 1.0
+        # HL policy timing
+        self.hl_period = self.config.hl_chunk_duration
         self.elapsed_time_in_chunk = 0.0
 
         # Create base environment
-        # CRITICAL: BiArtEnv must run at same frequency as Low-Level Controller (100Hz)
-        # Physics runs at 100Hz. If control_hz=100, then step() advances 0.01s (1 physics step)
-        # This allows LL controller to compute wrenches every 0.01s.
         base_control_hz = int(1.0 / self.config.control_dt)
         self.base_env = BiArtEnv(
             render_mode=render_mode,
             control_hz=base_control_hz,
-            physics_hz=100  # Ensure physics matches control for 1:1 stepping
+            physics_hz=100
         )
 
-        # Create impedance controllers for both arms based on controller type
-        if self.config.controller_type == 'se2_impedance':
-            # Initialize SE2 Impedance Controller
-            robot_params = SE2RobotParams(
-                mass=self.config.robot_mass,
-                inertia=self.config.robot_inertia
-            )
-            # Create with default gains (will be updated by action)
-            # MR convention: angular first
-            self.controllers = []
-            for _ in range(2):
-                controller = SE2ImpedanceController.create_diagonal_impedance(
-                    I_d=self.config.robot_inertia, m_d=self.config.robot_mass,
-                    d_theta=5.0, d_x=10.0, d_y=10.0,
-                    k_theta=20.0, k_x=50.0, k_y=50.0,
-                    robot_params=robot_params
-                )
-                self.controllers.append(controller)
-                
-            self.action_dim_per_arm = 6  # damping (3) + stiffness (3)
-        elif self.config.controller_type == 'screw_decomposed':
-            # For screw decomposed, we need joint axis screws
-            # These will be initialized in reset()
-            robot_params = SE2RobotParams(
-                mass=self.config.robot_mass,
-                inertia=self.config.robot_inertia
-            )
-            self.controllers = [None, None]  # Will be initialized in reset()
-            self.robot_params = robot_params
-            self.action_dim_per_arm = 4  # D_parallel, K_parallel, D_perpendicular, K_perpendicular
+        # Robot parameters
+        self.robot_params = SE2RobotParams(
+            mass=self.config.robot_mass,
+            inertia=self.config.robot_inertia
+        )
+
+        # Controller setup based on type
+        if self.config.controller_type == 'screw_decomposed':
+            self._setup_screw_decomposed_controller()
+        elif self.config.controller_type == 'se2_impedance':
+            self._setup_se2_impedance_controller()
         else:
             raise ValueError(f"Unknown controller type: {self.config.controller_type}")
 
         # Trajectory trackers
         self.trajectories = [None, None]
-        self.trajectory_time = 0.0
 
-        # Control timestep management
-        self.steps_per_policy_update = int(self.config.policy_dt / self.config.control_dt)
-        self.control_step_counter = 0
-
-        # Episode counter
+        # Episode tracking
         self.episode_steps = 0
 
-        # Previous impedance parameters (for smoothness penalty)
-        self.prev_impedance_params = None
+        # Previous action for smoothness penalty
+        self.prev_action = None
 
         # Normalization constants
         self.NORM_POS_SCALE = 512.0
@@ -188,73 +194,93 @@ class ImpedanceLearningEnv(gym.Env):
         self.NORM_TWIST_LINEAR = 500.0
         self.NORM_TWIST_ANGULAR = 10.0
 
-        # Define observation space
-        # Per arm: external_wrench (3) + current_pose (3) + current_twist (3) +
-        #          desired_pose (3) + desired_twist (3) = 15
-        # Bimanual: 15 * 2 = 30
-        # Observations are normalized to roughly [-1, 1]
+        # Define observation space (30D bimanual)
         obs_dim = 30
         self.observation_space = spaces.Box(
-            low=-5.0,  # Allow some range beyond [-1, 1]
+            low=-5.0,
             high=5.0,
             shape=(obs_dim,),
             dtype=np.float32
         )
 
-        # Define action space
-        # SE2 impedance: Per arm: damping (3) + stiffness (3) = 6
-        # Screw decomposed: Per arm: D_parallel, K_parallel, D_perp, K_perp = 4
-        # Bimanual: action_dim_per_arm * 2
-        # Actions are normalized to [-1, 1]
-        action_dim = self.action_dim_per_arm * 2
+        # Define action space based on controller type
+        self._setup_action_space()
+
+    def _setup_screw_decomposed_controller(self):
+        """Setup SWIVL screw-decomposed controller."""
+        # Initial screw axes (will be updated from environment in reset)
+        initial_screw_axes = np.array([
+            [1.0, 0.0, 0.0],  # Revolute default
+            [1.0, 0.0, 0.0],
+        ])
+
+        self.controller = MultiGripperSE2ScrewDecomposedImpedanceController(
+            num_grippers=2,
+            screw_axes=initial_screw_axes,
+            robot_params=self.robot_params,
+            max_force=self.config.max_force,
+            max_torque=self.config.max_torque
+        )
+
+        # Set default impedance variables
+        self.controller.set_impedance_variables(
+            d_l_parallel=10.0,
+            d_r_parallel=10.0,
+            d_l_perp=100.0,
+            d_r_perp=100.0,
+            k_p_l=3.0,
+            k_p_r=3.0,
+            alpha=10.0
+        )
+
+        # Action dimension: 7 (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α)
+        self.action_dim = 7
+
+    def _setup_se2_impedance_controller(self):
+        """Setup classical SE(2) impedance controller."""
+        self.controller = MultiGripperSE2ImpedanceController(
+            num_grippers=2,
+            robot_params=self.robot_params,
+            M_d=np.diag([self.config.robot_inertia, self.config.robot_mass, self.config.robot_mass]),
+            D_d=np.diag([50.0, 10.0, 10.0]),
+            K_d=np.diag([200.0, 50.0, 50.0]),
+            model_matching=True,
+            max_force=self.config.max_force,
+            max_torque=self.config.max_torque
+        )
+
+        # Action dimension: 12 (damping 6 + stiffness 6)
+        self.action_dim = 12
+
+    def _setup_action_space(self):
+        """Setup action space based on controller type."""
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(action_dim,),
+            shape=(self.action_dim,),
             dtype=np.float32
         )
 
     def _normalize_obs(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Normalize observation vector to roughly [-1, 1].
-        
-        Obs structure (30 dims):
-        [ext_wrenches(6), cur_poses(6), cur_twists(6), des_poses(6), des_twists(6)]
-        Per block of 6: [arm0(3), arm1(3)]
-        Per arm(3): MR convention (Angular first!)
-        Wrench: [tau, fx, fy]
-        Pose: [x, y, theta]  <- Note: Pose is usually [x, y, theta], not MR twist convention
-        Twist: [omega, vx, vy]
-        """
+        """Normalize observation vector to roughly [-1, 1]."""
         normalized = obs.copy()
+
+        # Structure: [wrenches(6), poses(6), twists(6), des_poses(6), des_twists(6)]
         
-        # Helper indices
-        # 0-5: Wrenches [tau, fx, fy] * 2
-        # 6-11: Current Poses [x, y, theta] * 2
-        # 12-17: Current Twists [omega, vx, vy] * 2
-        # 18-23: Desired Poses [x, y, theta] * 2
-        # 24-29: Desired Twists [omega, vx, vy] * 2
-        
-        # 1. Wrenches [tau, fx, fy]
-        # Scale torque
-        normalized[[0, 3]] /= self.NORM_WRENCH_SCALE * 0.5 # Torque usually smaller
-        # Scale forces
-        normalized[[1, 2, 4, 5]] /= self.NORM_WRENCH_SCALE
-        
-        # 2. Poses [x, y, theta] (Current 6-11, Desired 18-23)
+        # Wrenches [tau, fx, fy] * 2
+        normalized[[0, 3]] /= self.NORM_WRENCH_SCALE * 0.5  # Torque
+        normalized[[1, 2, 4, 5]] /= self.NORM_WRENCH_SCALE  # Forces
+
+        # Poses [x, y, theta] * 2 (indices 6-11 and 18-23)
         for start_idx in [6, 18]:
-            # Position x, y
             normalized[[start_idx, start_idx+1, start_idx+3, start_idx+4]] /= self.NORM_POS_SCALE
-            # Angle theta
             normalized[[start_idx+2, start_idx+5]] /= self.NORM_ANGLE_SCALE
 
-        # 3. Twists [omega, vx, vy] (Current 12-17, Desired 24-29)
+        # Twists [omega, vx, vy] * 2 (indices 12-17 and 24-29)
         for start_idx in [12, 24]:
-            # Angular velocity
             normalized[[start_idx, start_idx+3]] /= self.NORM_TWIST_ANGULAR
-            # Linear velocity
             normalized[[start_idx+1, start_idx+2, start_idx+4, start_idx+5]] /= self.NORM_TWIST_LINEAR
-            
+
         return normalized
 
     def reset(
@@ -268,63 +294,29 @@ class ImpedanceLearningEnv(gym.Env):
         # Reset base environment
         obs, info = self.base_env.reset(seed=seed, options=options)
 
-        # Reset high-level policy if provided
+        # Reset high-level policy
         if self.hl_policy is not None:
             self.hl_policy.reset()
 
-        # Initialize screw-decomposed controllers if needed
+        # Update screw axes from environment
         if self.config.controller_type == 'screw_decomposed':
-            # Get joint axis screws from object
-            B_left, B_right = self.base_env.object_manager.get_joint_axis_screws()
+            screw_axes = self.base_env.get_joint_axis_screws()
+            if screw_axes is not None:
+                B_left, B_right = screw_axes
+                self.controller.set_screw_axes(np.array([B_left, B_right]))
 
-            # Create controllers with screw axes
-            initial_params = ScrewImpedanceParams(
-                M_parallel=self.config.robot_mass,
-                D_parallel=10.0,
-                K_parallel=20.0,
-                M_perpendicular=self.config.robot_mass,
-                D_perpendicular=20.0,
-                K_perpendicular=100.0
-            )
+        # Reset controller
+        self.controller.reset()
 
-            self.controllers[0] = SE2ScrewDecomposedImpedanceController(
-                screw_axis=B_left,
-                params=initial_params,
-                robot_dynamics=SE2Dynamics(self.robot_params),
-                model_matching=True,
-                use_feedforward=True
-            )
-
-            self.controllers[1] = SE2ScrewDecomposedImpedanceController(
-                screw_axis=B_right,
-                params=initial_params,
-                robot_dynamics=SE2Dynamics(self.robot_params),
-                model_matching=True,
-                use_feedforward=True
-            )
-
-        # Reset controllers
-        for controller in self.controllers:
-            if controller is not None:
-                controller.reset()
-
-        # Reset counters
+        # Reset timing
         self.episode_steps = 0
-        self.control_step_counter = 0
-        self.trajectory_time = 0.0
-        self.prev_impedance_params = None
-        
-        # Reset HL Chunk timer
-        # Force update on first step
-        self.elapsed_time_in_chunk = self.hl_period
+        self.elapsed_time_in_chunk = self.hl_period  # Force update on first step
+        self.prev_action = None
 
         # Initialize trajectories
-        # We call _update_trajectories logic inside reset or step will handle it
-        # But to get initial observation we need targets.
-        # So we manually trigger update here.
         self._update_trajectories(obs)
 
-        # Get initial RL observation
+        # Get initial observation
         rl_obs = self._get_rl_observation(obs)
         norm_obs = self._normalize_obs(rl_obs)
 
@@ -340,16 +332,11 @@ class ImpedanceLearningEnv(gym.Env):
         Returns:
             observation, reward, terminated, truncated, info
         """
-        # Decode impedance parameters from action
-        impedance_params = self._decode_action(action)
+        # Decode and apply impedance parameters
+        self._apply_impedance_action(action)
 
-        # Update controller gains
-        self._update_controller_gains(impedance_params)
-
-        # Check if we need to update HL trajectory
-        # Logic: if elapsed_time_in_chunk >= 1.0s, get new chunk
+        # Update trajectories if needed
         if self.elapsed_time_in_chunk >= self.hl_period:
-            # Get current observation for HL policy
             obs = self.base_env.get_obs()
             self._update_trajectories(obs)
             self.elapsed_time_in_chunk = 0.0
@@ -357,429 +344,213 @@ class ImpedanceLearningEnv(gym.Env):
         # Get current observation
         obs = self.base_env.get_obs()
 
-        # Get desired poses, twists, and accelerations from trajectories
-        # Evaluate at current chunk time
-        desired_poses, desired_twists, desired_accels = self._get_trajectory_targets(self.elapsed_time_in_chunk)
+        # Get trajectory targets
+        desired_poses, desired_twists = self._get_trajectory_targets(self.elapsed_time_in_chunk)
 
-        # Compute control wrenches using impedance controllers
-        wrenches = []
-        for i in range(2):  # For each arm
-            if self.config.controller_type == 'se2_impedance':
-                # Use proper current body twist from observation
-                if 'ee_body_twists' in obs:
-                    current_body_twist = obs['ee_body_twists'][i]
-                else:
-                    # Fallback: Convert point velocity to body twist using simple rotation
-                    # NOT the adjoint map! Point velocity only needs rotation.
-                    point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
-                    pose = obs['ee_poses'][i]
-                    theta = pose[2]
-                    cos_theta, sin_theta = np.cos(theta), np.sin(theta)
-                    
-                    vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
-                    vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
-                    current_body_twist = np.array([point_vel[2], vx_body, vy_body])
+        # Compute control wrenches
+        current_poses = obs['ee_poses']
+        current_twists = self._get_body_twists(obs)
+        external_wrenches = obs['external_wrenches']
 
-                wrench, _ = self.controllers[i].compute_control(
-                    current_pose=obs['ee_poses'][i],
-                    desired_pose=desired_poses[i],
-                    body_twist_current=current_body_twist,
-                    body_twist_desired=desired_twists[i],
-                    body_accel_desired=desired_accels[i],
-                    F_ext=obs['external_wrenches'][i]
-                )
-            elif self.config.controller_type == 'screw_decomposed':
-                # Use proper current body twist from observation
-                if 'ee_body_twists' in obs:
-                    current_body_twist = obs['ee_body_twists'][i]
-                else:
-                    # Fallback: Convert point velocity to body twist using simple rotation
-                    # NOT the adjoint map! Point velocity only needs rotation.
-                    point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
-                    pose = obs['ee_poses'][i]
-                    theta = pose[2]
-                    cos_theta, sin_theta = np.cos(theta), np.sin(theta)
-                    
-                    vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
-                    vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
-                    current_body_twist = np.array([point_vel[2], vx_body, vy_body])
+        if self.config.controller_type == 'screw_decomposed':
+            wrenches, control_info = self.controller.compute_wrenches(
+                current_poses,
+                desired_poses,
+                current_twists,
+                desired_twists,
+                external_wrenches
+            )
+        else:
+            wrenches = self.controller.compute_wrenches(
+                current_poses,
+                desired_poses,
+                current_twists,
+                desired_twists,
+                external_wrenches=external_wrenches
+            )
+            control_info = {}
 
-                # compute_control returns (wrench, info)
-                wrench, _ = self.controllers[i].compute_control(
-                    current_pose=obs['ee_poses'][i],
-                    desired_pose=desired_poses[i],
-                    body_twist_current=current_body_twist,  # ✅ Current body twist (MR convention!)
-                    body_twist_desired=desired_twists[i],   # Desired body twist
-                    body_accel_desired=desired_accels[i],   # Desired body acceleration (feedforward)
-                    F_ext=obs['external_wrenches'][i]       # External wrench for impedance modulation
-                )
-            wrenches.append(wrench)
-
-        wrenches = np.array(wrenches)
-
-        # Step base environment with wrenches
-        # This advances physics by 0.01s (100Hz)
+        # Step base environment
         obs, _, terminated, truncated, info = self.base_env.step(wrenches)
 
         # Compute reward
         reward = self._compute_reward(
-            obs,
-            desired_poses,
-            desired_twists,
-            impedance_params
+            obs, desired_poses, desired_twists, action, control_info
         )
 
-        # Update trajectory time
-        # self.trajectory_time is now local to the chunk
+        # Update timing
         self.elapsed_time_in_chunk += self.config.control_dt
-
-        # Update episode counter
-        # Since policy step == control step, we increment by 1
         self.episode_steps += 1
-        self.control_step_counter += 1
 
         # Check episode timeout
         if self.episode_steps >= self.config.max_episode_steps:
             truncated = True
 
-        # Get RL observation
+        # Get observation
         rl_obs = self._get_rl_observation(obs)
         norm_obs = self._normalize_obs(rl_obs)
 
-        # Store impedance params for next step
-        self.prev_impedance_params = impedance_params
+        # Store action for smoothness penalty
+        self.prev_action = action.copy()
+
+        # Add control info to info dict
+        info['control_info'] = control_info
 
         return norm_obs, reward, terminated, truncated, info
 
-    def _decode_action(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """
-        Decode normalized action to impedance parameters.
-
-        Args:
-            action: Normalized action in [-1, 1]
-
-        Returns:
-            Dictionary with damping and stiffness for both arms
-        """
-        if self.config.controller_type == 'se2_impedance':
-            return self._decode_action_se2(action)
-        elif self.config.controller_type == 'screw_decomposed':
-            return self._decode_action_screw(action)
+    def _apply_impedance_action(self, action: np.ndarray):
+        """Apply action to update controller impedance parameters."""
+        if self.config.controller_type == 'screw_decomposed':
+            self._apply_screw_decomposed_action(action)
         else:
-            raise ValueError(f"Unknown controller type: {self.config.controller_type}")
+            self._apply_se2_impedance_action(action)
 
-    def _decode_action_se2(self, action: np.ndarray) -> Dict[str, np.ndarray]:
+    def _apply_screw_decomposed_action(self, action: np.ndarray):
         """
-        Decode action for SE2 impedance controller.
+        Apply SWIVL impedance action.
 
-        Following Modern Robotics convention:
-        - Damping: [D_angular, D_linear, D_linear]
-        - Stiffness: [K_angular, K_linear, K_linear]
-
-        Action indices:
-        - 0: D_angular
-        - 1,2: D_linear (x, y)
-        - 3: K_angular
-        - 4,5: K_linear (x, y)
+        Action: (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
         """
-        # Split action for two arms
-        action_arm0 = action[:6]
-        action_arm1 = action[6:]
+        # Scale actions from [-1, 1] to parameter ranges
+        d_l_parallel = self._scale_action(action[0], self.config.min_d_parallel, self.config.max_d_parallel)
+        d_r_parallel = self._scale_action(action[1], self.config.min_d_parallel, self.config.max_d_parallel)
+        d_l_perp = self._scale_action(action[2], self.config.min_d_perp, self.config.max_d_perp)
+        d_r_perp = self._scale_action(action[3], self.config.min_d_perp, self.config.max_d_perp)
+        k_p_l = self._scale_action(action[4], self.config.min_k_p, self.config.max_k_p)
+        k_p_r = self._scale_action(action[5], self.config.min_k_p, self.config.max_k_p)
+        alpha = self._scale_action(action[6], self.config.min_alpha, self.config.max_alpha)
 
-        params = {
-            'damping': [],
-            'stiffness': []
-        }
+        self.controller.set_impedance_variables(
+            d_l_parallel=d_l_parallel,
+            d_r_parallel=d_r_parallel,
+            d_l_perp=d_l_perp,
+            d_r_perp=d_r_perp,
+            k_p_l=k_p_l,
+            k_p_r=k_p_r,
+            alpha=alpha
+        )
 
-        for arm_action in [action_arm0, action_arm1]:
-            # Damping: [D_angular, D_linear, D_linear] (MR convention!)
+    def _apply_se2_impedance_action(self, action: np.ndarray):
+        """Apply classical SE(2) impedance action."""
+        # Split for two arms: 6 per arm (3 damping + 3 stiffness)
+        for i in range(2):
+            arm_action = action[i*6:(i+1)*6]
+
+            # Damping [D_angular, D_x, D_y]
             damping = np.array([
-                self._scale_action(
-                    arm_action[0],
-                    self.config.min_damping_angular,
-                    self.config.max_damping_angular
-                ),
-                self._scale_action(
-                    arm_action[1],
-                    self.config.min_damping_linear,
-                    self.config.max_damping_linear
-                ),
-                self._scale_action(
-                    arm_action[2],
-                    self.config.min_damping_linear,
-                    self.config.max_damping_linear
-                )
+                self._scale_action(arm_action[0], self.config.min_damping_angular, self.config.max_damping_angular),
+                self._scale_action(arm_action[1], self.config.min_damping_linear, self.config.max_damping_linear),
+                self._scale_action(arm_action[2], self.config.min_damping_linear, self.config.max_damping_linear)
             ])
 
-            # Stiffness: [K_angular, K_linear, K_linear] (MR convention!)
+            # Stiffness [K_angular, K_x, K_y]
             stiffness = np.array([
-                self._scale_action(
-                    arm_action[3],
-                    self.config.min_stiffness_angular,
-                    self.config.max_stiffness_angular
-                ),
-                self._scale_action(
-                    arm_action[4],
-                    self.config.min_stiffness_linear,
-                    self.config.max_stiffness_linear
-                ),
-                self._scale_action(
-                    arm_action[5],
-                    self.config.min_stiffness_linear,
-                    self.config.max_stiffness_linear
-                )
+                self._scale_action(arm_action[3], self.config.min_stiffness_angular, self.config.max_stiffness_angular),
+                self._scale_action(arm_action[4], self.config.min_stiffness_linear, self.config.max_stiffness_linear),
+                self._scale_action(arm_action[5], self.config.min_stiffness_linear, self.config.max_stiffness_linear)
             ])
 
-            params['damping'].append(damping)
-            params['stiffness'].append(stiffness)
-
-        params['damping'] = np.array(params['damping'])
-        params['stiffness'] = np.array(params['stiffness'])
-
-        return params
-
-    def _decode_action_screw(self, action: np.ndarray) -> Dict[str, np.ndarray]:
-        """Decode action for screw-decomposed controller."""
-        # Split action for two arms
-        action_arm0 = action[:4]
-        action_arm1 = action[4:]
-
-        params = {
-            'D_parallel': [],
-            'K_parallel': [],
-            'D_perpendicular': [],
-            'K_perpendicular': []
-        }
-
-        for arm_action in [action_arm0, action_arm1]:
-            # Parallel direction (compliant)
-            D_parallel = self._scale_action(
-                arm_action[0],
-                self.config.min_damping_parallel,
-                self.config.max_damping_parallel
+            self.controller.controllers[i].set_impedance_parameters(
+                D_d=np.diag(damping),
+                K_d=np.diag(stiffness)
             )
-            K_parallel = self._scale_action(
-                arm_action[1],
-                self.config.min_stiffness_parallel,
-                self.config.max_stiffness_parallel
-            )
-
-            # Perpendicular direction (stiff)
-            D_perpendicular = self._scale_action(
-                arm_action[2],
-                self.config.min_damping_perpendicular,
-                self.config.max_damping_perpendicular
-            )
-            K_perpendicular = self._scale_action(
-                arm_action[3],
-                self.config.min_stiffness_perpendicular,
-                self.config.max_stiffness_perpendicular
-            )
-
-            params['D_parallel'].append(D_parallel)
-            params['K_parallel'].append(K_parallel)
-            params['D_perpendicular'].append(D_perpendicular)
-            params['K_perpendicular'].append(K_perpendicular)
-
-        # Convert to arrays
-        for key in params:
-            params[key] = np.array(params[key])
-
-        return params
 
     def _scale_action(self, normalized_value: float, min_val: float, max_val: float) -> float:
         """Scale normalized action from [-1, 1] to [min_val, max_val]."""
         return min_val + (normalized_value + 1.0) * 0.5 * (max_val - min_val)
 
-    def _update_controller_gains(self, impedance_params: Dict[str, np.ndarray]):
-        """Update impedance controller gains."""
-        if self.config.controller_type == 'se2_impedance':
-            self._update_se2_gains(impedance_params)
-        elif self.config.controller_type == 'screw_decomposed':
-            self._update_screw_gains(impedance_params)
+    def _get_body_twists(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+        """Get body twists from observation."""
+        if 'ee_body_twists' in obs:
+            return obs['ee_body_twists']
+        else:
+            # Convert point velocities to body twists
+            body_twists = []
+            for i in range(2):
+                point_vel = obs['ee_velocities'][i]  # [vx, vy, omega]
+                pose = obs['ee_poses'][i]
+                theta = pose[2]
+                cos_theta, sin_theta = np.cos(theta), np.sin(theta)
 
-    def _update_se2_gains(self, impedance_params: Dict[str, np.ndarray]):
-        """
-        Update SE2 impedance controller gains.
+                # Rotate to body frame (simple rotation, NOT adjoint!)
+                vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
+                vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
+                body_twists.append(np.array([point_vel[2], vx_body, vy_body]))
 
-        Following Modern Robotics convention:
-        - damping: [D_angular, D_linear_x, D_linear_y]
-        - stiffness: [K_angular, K_linear_x, K_linear_y]
-        """
-        for i in range(2):
-            damping = impedance_params['damping'][i]
-            stiffness = impedance_params['stiffness'][i]
-
-            # Update matrices directly (MR convention: angular first!)
-            # D_d = diag(d_theta, d_x, d_y)
-            D_d = np.diag(damping)
-            
-            # K_d = diag(k_theta, k_x, k_y)
-            K_d = np.diag(stiffness)
-            
-            # M_d remains default (model matching) or could be updated if action space allowed
-            
-            self.controllers[i].set_impedance_parameters(D_d=D_d, K_d=K_d)
-
-    def _update_screw_gains(self, impedance_params: Dict[str, np.ndarray]):
-        """Update screw-decomposed controller gains."""
-        for i in range(2):
-            # Create new screw impedance params
-            new_params = ScrewImpedanceParams(
-                M_parallel=self.config.robot_mass,
-                D_parallel=impedance_params['D_parallel'][i],
-                K_parallel=impedance_params['K_parallel'][i],
-                M_perpendicular=self.config.robot_mass,
-                D_perpendicular=impedance_params['D_perpendicular'][i],
-                K_perpendicular=impedance_params['K_perpendicular'][i]
-            )
-
-            # Update controller params
-            self.controllers[i].params = new_params
+            return np.array(body_twists)
 
     def _update_trajectories(self, obs: Dict[str, np.ndarray]):
-        """Update trajectories using high-level policy (1.0s chunk)."""
-        from src.trajectory_generator import CubicSplineTrajectory
-
+        """Update trajectories using high-level policy."""
         if self.hl_policy is None:
-            # Use current poses as desired poses (hold position)
+            # Hold position
             for i in range(2):
                 current_pose = obs['ee_poses'][i]
-                # Create a holding trajectory for 1.0s
-                # Just start and end at same point
                 self.trajectories[i] = MinimumJerkTrajectory(
                     start_pose=current_pose,
                     end_pose=current_pose,
                     duration=self.hl_period
                 )
         else:
-            # Get desired pose chunk from high-level policy
-            # HL Policy should return (10, 2, 3) for 10 steps
+            # Render image for vision-based HL policy
+            image = self.base_env._render_frame(visualize=False)
+            
+            # Get point velocities from observation
+            ee_velocities = obs.get('ee_velocities', np.zeros((2, 3)))
+            
+            # Construct observation for HL policy
             hl_obs = {
+                'image': image,  # (H, W, 3)
                 'ee_poses': obs['ee_poses'],
+                'ee_velocities': ee_velocities,  # Point velocities [vx, vy, omega]
                 'link_poses': obs['link_poses'],
                 'external_wrenches': obs['external_wrenches'],
-                'ee_body_twists': obs.get('ee_body_twists', np.zeros((2, 3)))
             }
-            
-            # Expecting action_chunk: (10, 2, 3)
-            # 10 steps, 2 arms, 3 dims [x, y, theta]
+
             action_chunk = self.hl_policy.get_action_chunk(hl_obs)
-            
-            # Create trajectories for both arms
             num_steps = action_chunk.shape[0]
-            
-            # Time points for the chunk: 0.1, 0.2, ... 1.0
-            # We also include current pose at t=0.0 for smooth interpolation
-            chunk_dt = 0.1 # As per requirement
+            chunk_dt = 0.1
             times = np.linspace(0.0, num_steps * chunk_dt, num_steps + 1)
-            
+
             for i in range(2):
                 current_pose = obs['ee_poses'][i]
-                
-                # Waypoints: [current_pose, p1, p2, ..., p10]
                 waypoints = np.vstack([current_pose[np.newaxis, :], action_chunk[:, i, :]])
-                
-                # Create Cubic Spline Trajectory
+
                 self.trajectories[i] = CubicSplineTrajectory(
                     waypoints=waypoints,
                     times=times,
                     boundary_conditions='natural'
                 )
-                # Ensure duration is set (though CubicSpline handles it via times)
                 self.trajectories[i].set_duration(self.hl_period)
 
-    def _get_trajectory_targets(self, t: float = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Get desired poses, twists, and accelerations from trajectories at time t.
-
-        Args:
-            t: Time within the chunk [0, 1.0]. If None, uses self.elapsed_time_in_chunk
-
-        Returns:
-            Tuple of (desired_poses, desired_twists, desired_accelerations) where:
-                - desired_poses: (2, 3) array in spatial frame (T_si^des)
-                - desired_twists: (2, 3) array in body frame (i^V_i^des)
-                - desired_accelerations: (2, 3) array in body frame (i^dV_i^des)
-        """
-        if t is None:
-            t = self.elapsed_time_in_chunk
-
+    def _get_trajectory_targets(self, t: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Get desired poses and twists from trajectories."""
         desired_poses = []
         desired_twists = []
-        desired_accelerations = []
 
         for i in range(2):
             if self.trajectories[i] is None:
-                # Fallback to zero
                 desired_poses.append(np.zeros(3))
                 desired_twists.append(np.zeros(3))
-                desired_accelerations.append(np.zeros(3))
             else:
-                # Evaluate trajectory at time t
                 eval_t = np.clip(t, 0.0, self.hl_period)
                 traj_point = self.trajectories[i].evaluate(eval_t)
-                
-                # Pose in spatial frame
-                desired_poses.append(traj_point.pose)
-                # Twist in BODY frame (trajectory generator now provides correct body twist)
-                desired_twists.append(traj_point.velocity_body)
-                
-                # Acceleration in BODY frame using simple rotation
-                # For point acceleration: a_body = R^T @ a_world (same as velocity)
-                theta = traj_point.pose[2]
-                cos_theta, sin_theta = np.cos(theta), np.sin(theta)
-                ax_world, ay_world, alpha = traj_point.acceleration
-                
-                ax_body = cos_theta * ax_world + sin_theta * ay_world
-                ay_body = -sin_theta * ax_world + cos_theta * ay_world
-                # Angular acceleration is frame-independent
-                accel_body = np.array([alpha, ax_body, ay_body])
-                desired_accelerations.append(accel_body)
 
-        return np.array(desired_poses), np.array(desired_twists), np.array(desired_accelerations)
+                desired_poses.append(traj_point.pose)
+                desired_twists.append(traj_point.velocity_body)
+
+        return np.array(desired_poses), np.array(desired_twists)
 
     def _get_rl_observation(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
-        """
-        Construct RL observation from environment observation.
+        """Construct RL observation from environment observation."""
+        desired_poses, desired_twists = self._get_trajectory_targets(self.elapsed_time_in_chunk)
+        current_twists = self._get_body_twists(obs)
 
-        Observation includes:
-        - External wrenches (2, 3) - MR convention: [tau, fx, fy]
-        - Current poses (2, 3)
-        - Current body twists (2, 3) - MR convention: [omega, vx_b, vy_b]
-        - Desired poses (2, 3)
-        - Desired twists (2, 3) - MR convention: [omega, vx_b, vy_b]
-        """
-        desired_poses, desired_twists, _ = self._get_trajectory_targets()
-
-        # Get current body twists (use new field if available, fallback with conversion)
-        if 'ee_body_twists' in obs:
-            current_twists = obs['ee_body_twists']
-        elif 'ee_velocities' in obs:
-            # Fallback: Convert point velocities to body twists using simple rotation
-            # NOT the adjoint map! Point velocity only needs rotation.
-            current_twists = []
-            for i in range(2):
-                point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
-                pose = obs['ee_poses'][i]
-                theta = pose[2]
-                cos_theta, sin_theta = np.cos(theta), np.sin(theta)
-                
-                vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
-                vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
-                body_twist = np.array([point_vel[2], vx_body, vy_body])
-                current_twists.append(body_twist)
-            current_twists = np.array(current_twists)
-        else:
-            current_twists = np.zeros((2, 3))
-
-        # Concatenate all observations
         rl_obs = np.concatenate([
-            obs['external_wrenches'].flatten(),  # 6 - [tau, fx, fy] for both arms
-            obs['ee_poses'].flatten(),  # 6
-            current_twists.flatten(),  # 6 - [omega, vx_b, vy_b] for both arms
-            desired_poses.flatten(),  # 6
-            desired_twists.flatten()  # 6 - [omega, vx_b, vy_b] for both arms
+            obs['external_wrenches'].flatten(),  # 6
+            obs['ee_poses'].flatten(),            # 6
+            current_twists.flatten(),             # 6
+            desired_poses.flatten(),              # 6
+            desired_twists.flatten()              # 6
         ])
 
         return rl_obs.astype(np.float32)
@@ -789,63 +560,44 @@ class ImpedanceLearningEnv(gym.Env):
         obs: Dict[str, np.ndarray],
         desired_poses: np.ndarray,
         desired_twists: np.ndarray,
-        impedance_params: Dict[str, np.ndarray]
+        action: np.ndarray,
+        control_info: Dict
     ) -> float:
         """
-        Compute reward.
+        Compute reward for SWIVL impedance learning.
 
         Reward components:
-        1. Tracking error (negative)
-        2. External wrench magnitude (negative)
-        3. Smoothness penalty (negative change in impedance params)
+        1. Tracking error (negative) - pose + velocity error
+        2. Fighting force (negative) - F_⊥ from screw decomposition
+        3. Total wrench magnitude (negative) - energy efficiency
+        4. Smoothness (negative) - impedance parameter changes
         """
         reward = 0.0
 
         # 1. Tracking error
         tracking_error = 0.0
+        current_twists = self._get_body_twists(obs)
         for i in range(2):
             pose_error = np.linalg.norm(obs['ee_poses'][i] - desired_poses[i])
-            # Compare velocities (converting point velocity to body twist for comparison)
-            if 'ee_body_twists' in obs:
-                vel_error = np.linalg.norm(obs['ee_body_twists'][i] - desired_twists[i])
-            else:
-                # Fallback: use point velocity magnitude as proxy
-                vel_error = np.linalg.norm(obs.get('ee_velocities', np.zeros((2, 3)))[i][:2])
-            twist_error = vel_error
+            twist_error = np.linalg.norm(current_twists[i] - desired_twists[i])
             tracking_error += pose_error + 0.1 * twist_error
-
         reward -= self.config.tracking_weight * tracking_error
 
-        # 2. External wrench minimization
+        # 2. Fighting force (screw decomposition specific)
+        if self.config.controller_type == 'screw_decomposed' and control_info:
+            fighting_force = control_info.get('total_fighting_force', 0.0)
+            reward -= self.config.fighting_force_weight * fighting_force
+
+        # 3. Wrench magnitude
         wrench_magnitude = 0.0
         for i in range(2):
             wrench_magnitude += np.linalg.norm(obs['external_wrenches'][i])
-
         reward -= self.config.wrench_weight * wrench_magnitude
 
-        # 3. Smoothness penalty
-        if self.prev_impedance_params is not None:
-            if self.config.controller_type == 'se2_impedance':
-                damping_change = np.linalg.norm(
-                    impedance_params['damping'] - self.prev_impedance_params['damping']
-                )
-                stiffness_change = np.linalg.norm(
-                    impedance_params['stiffness'] - self.prev_impedance_params['stiffness']
-                )
-            elif self.config.controller_type == 'screw_decomposed':
-                damping_change = np.linalg.norm(
-                    np.array([impedance_params['D_parallel'], impedance_params['D_perpendicular']]) -
-                    np.array([self.prev_impedance_params['D_parallel'], self.prev_impedance_params['D_perpendicular']])
-                )
-                stiffness_change = np.linalg.norm(
-                    np.array([impedance_params['K_parallel'], impedance_params['K_perpendicular']]) -
-                    np.array([self.prev_impedance_params['K_parallel'], self.prev_impedance_params['K_perpendicular']])
-                )
-            else:
-                damping_change = 0.0
-                stiffness_change = 0.0
-            smoothness_penalty = damping_change + stiffness_change
-            reward -= self.config.smoothness_weight * smoothness_penalty
+        # 4. Smoothness penalty
+        if self.prev_action is not None:
+            action_change = np.linalg.norm(action - self.prev_action)
+            reward -= self.config.smoothness_weight * action_change
 
         return reward
 
@@ -856,3 +608,39 @@ class ImpedanceLearningEnv(gym.Env):
     def close(self):
         """Close environment."""
         self.base_env.close()
+
+
+# ============================================================================
+# Test code
+# ============================================================================
+
+if __name__ == "__main__":
+    print("=" * 70)
+    print("SWIVL Impedance Learning Environment Test")
+    print("=" * 70)
+
+    # Test screw decomposed controller
+    config = ImpedanceLearningConfig(
+        controller_type='screw_decomposed',
+        max_episode_steps=100
+    )
+
+    env = ImpedanceLearningEnv(config=config)
+
+    print(f"\nEnvironment created:")
+    print(f"  Observation space: {env.observation_space}")
+    print(f"  Action space: {env.action_space}")
+
+    # Test reset
+    obs, info = env.reset()
+    print(f"\nInitial observation shape: {obs.shape}")
+    print(f"Observation range: [{obs.min():.3f}, {obs.max():.3f}]")
+
+    # Test step
+    for i in range(10):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        print(f"Step {i+1}: reward={reward:.4f}, obs_range=[{obs.min():.2f}, {obs.max():.2f}]")
+
+    env.close()
+    print("\n✓ Environment test passed!")

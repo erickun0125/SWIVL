@@ -573,12 +573,34 @@ class DiffusionPolicy(nn.Module):
         }, path)
 
     def load(self, path: str):
-        """Load policy from file."""
+        """
+        Load policy from file.
+        
+        Handles two checkpoint formats:
+        1. From save() method: {'config', 'noise_pred_net_state_dict'}
+        2. From training script: {'model_state_dict', 'normalizer', ...}
+        """
         device = self._device()
-        checkpoint = torch.load(path, map_location=device)
-        self.config = checkpoint['config']
-        self.noise_pred_net = DiffusionNoisePredictor(self.config).to(device)
-        self.noise_pred_net.load_state_dict(checkpoint['noise_pred_net_state_dict'])
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        
+        # If checkpoint has 'config', create new model from it
+        if 'config' in checkpoint:
+            self.config = checkpoint['config']
+            self.noise_pred_net = DiffusionNoisePredictor(self.config).to(device)
+        
+        # Load model weights (model must already exist)
+        if self.noise_pred_net is None:
+            raise ValueError("Model not initialized. Create policy with config first.")
+        
+        # Handle different key names
+        if 'noise_pred_net_state_dict' in checkpoint:
+            self.noise_pred_net.load_state_dict(checkpoint['noise_pred_net_state_dict'])
+        elif 'model_state_dict' in checkpoint:
+            self.noise_pred_net.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            raise ValueError("Checkpoint must have 'noise_pred_net_state_dict' or 'model_state_dict'")
+        
+        self.noise_pred_net.eval()
 
         # Reinitialize noise schedule as buffers
         betas = self._get_noise_schedule()

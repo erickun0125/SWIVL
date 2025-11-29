@@ -1,44 +1,41 @@
 """
-Training Script for Impedance Parameter Learning
+SWIVL Impedance Parameter Learning Training Script
 
-This script trains a PPO agent to learn optimal impedance parameters
-for bimanual manipulation tasks.
+This script trains a PPO agent to learn optimal impedance modulation
+variables for bimanual manipulation tasks using SWIVL's screw-decomposed
+twist-driven impedance controller.
+
+SWIVL Layer 3 learns:
+    a_t = (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
 
 The training pipeline:
-1. Load or create a pre-trained high-level policy (Flow Matching, Diffusion, or ACT)
-2. Create impedance learning environment
+1. Load or create a pre-trained high-level policy
+2. Create impedance learning environment with SWIVL controller
 3. Train PPO agent to optimize impedance parameters
 4. Evaluate and save the trained policy
 
 Usage:
-    python -m src.rl_policy.train_impedance_policy \
-        --hl_policy flow_matching \
-        --hl_policy_path checkpoints/flow_matching.pth \
-        --total_timesteps 1000000 \
-        --output_path checkpoints/impedance_policy.zip
+    python -m src.rl_policy.train_impedance_policy \\
+        --hl_policy flow_matching \\
+        --hl_policy_path checkpoints/hl_policy_horizon-10/flow_matching_best.pth \\
+        --total_timesteps 500000 \\
+        --output_path checkpoints/swivl_impedance_policy.zip
 
 Example:
     # Train with Flow Matching policy
-    python -m src.rl_policy.train_impedance_policy \
-        --hl_policy flow_matching \
+    python -m src.rl_policy.train_impedance_policy \\
+        --hl_policy flow_matching \\
         --total_timesteps 500000
 
     # Train with Diffusion Policy
-    python -m src.rl_policy.train_impedance_policy \
-        --hl_policy diffusion \
-        --hl_policy_path checkpoints/diffusion.pth \
-        --total_timesteps 1000000
+    python -m src.rl_policy.train_impedance_policy \\
+        --hl_policy diffusion \\
+        --hl_policy_path checkpoints/hl_policy_horizon-10/diffusion_best.pth
 
-    # Train with ACT
-    python -m src.rl_policy.train_impedance_policy \
-        --hl_policy act \
-        --hl_policy_path checkpoints/act.pth \
-        --total_timesteps 1000000
-
-    # Train without high-level policy (random exploration)
-    python -m src.rl_policy.train_impedance_policy \
-        --hl_policy none \
-        --total_timesteps 200000
+    # Train without high-level policy (for debugging)
+    python -m src.rl_policy.train_impedance_policy \\
+        --hl_policy none \\
+        --total_timesteps 50000
 """
 
 import argparse
@@ -51,9 +48,6 @@ import torch
 
 from src.rl_policy.impedance_learning_env import ImpedanceLearningEnv, ImpedanceLearningConfig
 from src.rl_policy.ppo_impedance_policy import PPOImpedancePolicy
-from src.hl_planners.flow_matching import FlowMatchingPolicy
-from src.hl_planners.diffusion_policy import DiffusionPolicy
-from src.hl_planners.act import ACTPolicy
 
 
 def load_hl_policy(policy_type: str, policy_path: Optional[str] = None, device: str = 'cpu'):
@@ -69,39 +63,35 @@ def load_hl_policy(policy_type: str, policy_path: Optional[str] = None, device: 
         Loaded policy or None
     """
     if policy_type == 'none':
-        print("Training without high-level policy (random exploration)")
+        print("Training without high-level policy (hold position mode)")
         return None
 
     print(f"Loading {policy_type} policy...")
 
-    if policy_type == 'flow_matching':
-        policy = FlowMatchingPolicy(device=device)
+    try:
+        if policy_type == 'flow_matching':
+            from src.hl_planners.flow_matching import FlowMatchingPolicy
+            policy = FlowMatchingPolicy(device=device)
+        elif policy_type == 'diffusion':
+            from src.hl_planners.diffusion_policy import DiffusionPolicy
+            policy = DiffusionPolicy(device=device)
+        elif policy_type == 'act':
+            from src.hl_planners.act import ACTPolicy
+            policy = ACTPolicy(device=device)
+        else:
+            raise ValueError(f"Unknown policy type: {policy_type}")
+
         if policy_path is not None and os.path.exists(policy_path):
             policy.load(policy_path)
-            print(f"Loaded policy from {policy_path}")
+            print(f"✓ Loaded policy from {policy_path}")
         else:
-            print("Warning: No checkpoint provided, using randomly initialized policy")
+            print("⚠ No checkpoint provided, using randomly initialized policy")
 
-    elif policy_type == 'diffusion':
-        policy = DiffusionPolicy(device=device)
-        if policy_path is not None and os.path.exists(policy_path):
-            policy.load(policy_path)
-            print(f"Loaded policy from {policy_path}")
-        else:
-            print("Warning: No checkpoint provided, using randomly initialized policy")
+        return policy
 
-    elif policy_type == 'act':
-        policy = ACTPolicy(device=device)
-        if policy_path is not None and os.path.exists(policy_path):
-            policy.load(policy_path)
-            print(f"Loaded policy from {policy_path}")
-        else:
-            print("Warning: No checkpoint provided, using randomly initialized policy")
-
-    else:
-        raise ValueError(f"Unknown policy type: {policy_type}")
-
-    return policy
+    except ImportError as e:
+        print(f"⚠ Could not import {policy_type} policy: {e}")
+        return None
 
 
 def create_env(
@@ -110,7 +100,7 @@ def create_env(
     config: Optional[ImpedanceLearningConfig] = None
 ) -> ImpedanceLearningEnv:
     """
-    Create impedance learning environment.
+    Create SWIVL impedance learning environment.
 
     Args:
         hl_policy: High-level policy
@@ -121,7 +111,14 @@ def create_env(
         Environment
     """
     if config is None:
-        config = ImpedanceLearningConfig()
+        config = ImpedanceLearningConfig(
+            controller_type='screw_decomposed',
+            max_episode_steps=1000,
+            tracking_weight=1.0,
+            fighting_force_weight=0.5,
+            wrench_weight=0.1,
+            smoothness_weight=0.01
+        )
 
     env = ImpedanceLearningEnv(
         config=config,
@@ -133,11 +130,11 @@ def create_env(
 
 
 def train(
-    hl_policy_type: str = 'flow_matching',
+    hl_policy_type: str = 'none',
     hl_policy_path: Optional[str] = None,
-    total_timesteps: int = 1000000,
-    output_path: str = 'checkpoints/impedance_policy.zip',
-    tensorboard_log: str = './logs/impedance_rl/',
+    total_timesteps: int = 500000,
+    output_path: str = 'checkpoints/swivl_impedance_policy.zip',
+    tensorboard_log: str = './logs/swivl_rl/',
     learning_rate: float = 3e-4,
     n_steps: int = 2048,
     batch_size: int = 64,
@@ -147,7 +144,7 @@ def train(
     verbose: int = 1
 ):
     """
-    Train impedance parameter learning policy.
+    Train SWIVL impedance parameter learning policy.
 
     Args:
         hl_policy_type: Type of high-level policy
@@ -164,7 +161,7 @@ def train(
         verbose: Verbosity level
     """
     print("=" * 80)
-    print("Training Impedance Parameter Learning Policy")
+    print("SWIVL Layer 3: Impedance Modulation Policy Training")
     print("=" * 80)
 
     # Determine device
@@ -175,39 +172,62 @@ def train(
     # Load high-level policy
     hl_policy = load_hl_policy(hl_policy_type, hl_policy_path, device)
 
-    # Create environment
-    print("\nCreating environment...")
+    # Create environment with SWIVL controller
+    print("\nCreating SWIVL environment...")
     env_config = ImpedanceLearningConfig(
+        controller_type='screw_decomposed',
+        robot_mass=1.2,
+        robot_inertia=97.6,
         max_episode_steps=1000,
+        # SWIVL action bounds
+        min_d_parallel=1.0,
+        max_d_parallel=50.0,
+        min_d_perp=10.0,
+        max_d_perp=200.0,
+        min_k_p=0.5,
+        max_k_p=10.0,
+        min_alpha=1.0,
+        max_alpha=50.0,
+        # Reward weights
         tracking_weight=1.0,
+        fighting_force_weight=0.5,
         wrench_weight=0.1,
         smoothness_weight=0.01
     )
+
     env = create_env(hl_policy, render_mode=None, config=env_config)
-    print("Environment created")
+    print(f"✓ Environment created")
+    print(f"  Controller: SWIVL Screw-Decomposed")
+    print(f"  Action space: 7D (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α)")
+    print(f"  Observation space: {env.observation_space.shape}")
 
     # Create evaluation environment
     print("Creating evaluation environment...")
     eval_env = create_env(hl_policy, render_mode=None, config=env_config)
-    print("Evaluation environment created")
+    print(f"✓ Evaluation environment created")
 
     # Create PPO policy
-    print("\nCreating PPO policy...")
+    print("\nCreating SWIVL PPO policy...")
     ppo_policy = PPOImpedancePolicy(
         env=env,
         learning_rate=learning_rate,
         n_steps=n_steps,
         batch_size=batch_size,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.01,
         features_dim=256,
         device=device,
         verbose=verbose,
         tensorboard_log=tensorboard_log
     )
-    print("PPO policy created")
+    print(f"✓ PPO policy created")
 
     # Train
     print("\n" + "=" * 80)
-    print(f"Starting training for {total_timesteps} timesteps...")
+    print(f"Starting training for {total_timesteps:,} timesteps...")
     print("=" * 80)
 
     ppo_policy.train(
@@ -224,14 +244,16 @@ def train(
     # Evaluate final policy
     print("\nEvaluating final policy...")
     eval_results = ppo_policy.evaluate(n_episodes=10, deterministic=True)
-    print(f"Mean reward: {eval_results['mean_reward']:.2f} ± {eval_results['std_reward']:.2f}")
-    print(f"Mean episode length: {eval_results['mean_length']:.1f} ± {eval_results['std_length']:.1f}")
+    print(f"✓ Final evaluation:")
+    print(f"  Mean reward: {eval_results['mean_reward']:.2f} ± {eval_results['std_reward']:.2f}")
+    print(f"  Mean episode length: {eval_results['mean_length']:.1f} ± {eval_results['std_length']:.1f}")
+    print(f"  Mean fighting force: {eval_results['mean_fighting_force']:.2f} ± {eval_results['std_fighting_force']:.2f}")
 
     # Save policy
     print(f"\nSaving policy to {output_path}...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     ppo_policy.save(output_path)
-    print("Policy saved!")
+    print(f"✓ Policy saved!")
 
     # Close environments
     env.close()
@@ -244,7 +266,7 @@ def train(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Train PPO agent for impedance parameter learning',
+        description='Train SWIVL Layer 3: Impedance Modulation Policy',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -253,7 +275,7 @@ def main():
     parser.add_argument(
         '--hl_policy',
         type=str,
-        default='flow_matching',
+        default='none',
         choices=['flow_matching', 'diffusion', 'act', 'none'],
         help='Type of high-level policy'
     )
@@ -268,7 +290,7 @@ def main():
     parser.add_argument(
         '--total_timesteps',
         type=int,
-        default=1000000,
+        default=500000,
         help='Total number of training timesteps'
     )
     parser.add_argument(
@@ -294,13 +316,13 @@ def main():
     parser.add_argument(
         '--output_path',
         type=str,
-        default='checkpoints/impedance_policy.zip',
+        default='checkpoints/swivl_impedance_policy.zip',
         help='Output path for trained policy'
     )
     parser.add_argument(
         '--tensorboard_log',
         type=str,
-        default='./logs/impedance_rl/',
+        default='./logs/swivl_rl/',
         help='Path for tensorboard logs'
     )
 
