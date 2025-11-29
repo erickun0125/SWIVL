@@ -41,11 +41,16 @@ Display Information:
 import argparse
 import numpy as np
 import pygame
-import sys
 
 from src.envs.biart import BiArtEnv
 from src.envs.object_manager import JointType
 from src.ll_controllers.pd_controller import MultiGripperPDController, PDGains
+
+# Handle import for both direct execution and module import
+try:
+    from scripts.demos.bimanual_utils import compute_constrained_velocity
+except ModuleNotFoundError:
+    from bimanual_utils import compute_constrained_velocity
 
 
 class KeyboardVelocityController:
@@ -210,166 +215,6 @@ class TeleoperationDemo:
             'link_poses': link_poses
         }
 
-    def compute_constrained_velocity(
-        self,
-        controlled_ee_idx: int,
-        controlled_velocity: np.ndarray,
-        joint_velocity: float
-    ) -> np.ndarray:
-        """
-        Compute the other EE's velocity based on kinematic constraints.
-        
-        When one EE is controlled and joint velocity is specified,
-        the other EE must follow the kinematic constraint of the articulated object.
-        
-        Args:
-            controlled_ee_idx: 0 (left) or 1 (right)
-            controlled_velocity: [vx, vy, omega] of controlled EE in world frame
-            joint_velocity: Joint velocity (rad/s for revolute, pixels/s for prismatic)
-        
-        Returns:
-            other_velocity: [vx, vy, omega] of other EE in world frame
-        """
-        joint_type = self.env.object_manager.joint_type
-        link_poses = self.env.object_manager.get_link_poses()
-        grasping_poses = self.env.object_manager.get_grasping_poses()
-        cfg = self.env.object_config
-        
-        link1_pose = link_poses[0]
-        link2_pose = link_poses[1]
-        left_ee_pose = grasping_poses["left"]
-        right_ee_pose = grasping_poses["right"]
-        
-        # Joint position (link1's right end = link2's left end)
-        joint_pos = link1_pose[:2] + (cfg.link_length / 2) * np.array([
-            np.cos(link1_pose[2]),
-            np.sin(link1_pose[2])
-        ])
-        
-        if joint_type == JointType.FIXED:
-            # Fixed joint: both EEs move together with same velocity
-            return controlled_velocity.copy()
-        
-        elif joint_type == JointType.REVOLUTE:
-            # Revolute joint: rotation around joint center
-            if controlled_ee_idx == 0:  # Left EE (on link1) is controlled
-                # Left EE velocity determines link1 motion
-                # Right EE (on link2) = link1 motion + joint rotation effect
-                
-                # Link1 angular velocity = left EE angular velocity
-                omega_link1 = controlled_velocity[2]
-                
-                # Left EE offset from link1 center
-                left_offset = left_ee_pose[:2] - link1_pose[:2]
-                
-                # Link1 center velocity from left EE velocity
-                # V_link1 = V_left_ee - omega × offset
-                v_link1 = controlled_velocity[:2] - omega_link1 * np.array([-left_offset[1], left_offset[0]])
-                
-                # Joint velocity from link1 center
-                joint_offset = joint_pos - link1_pose[:2]
-                v_joint = v_link1 + omega_link1 * np.array([-joint_offset[1], joint_offset[0]])
-                
-                # Link2 angular velocity = link1 angular + joint velocity
-                omega_link2 = omega_link1 + joint_velocity
-                
-                # Link2 center from joint
-                link2_offset = link2_pose[:2] - joint_pos
-                v_link2 = v_joint + omega_link2 * np.array([-link2_offset[1], link2_offset[0]])
-                
-                # Right EE from link2 center
-                right_offset = right_ee_pose[:2] - link2_pose[:2]
-                v_right = v_link2 + omega_link2 * np.array([-right_offset[1], right_offset[0]])
-                
-                return np.array([v_right[0], v_right[1], omega_link2])
-                
-            else:  # Right EE (on link2) is controlled
-                # Right EE velocity determines link2 motion (including joint effect)
-                # Left EE (on link1) = link2 motion - joint rotation effect
-                
-                omega_link2 = controlled_velocity[2]
-                
-                # Right EE offset from link2 center
-                right_offset = right_ee_pose[:2] - link2_pose[:2]
-                
-                # Link2 center velocity from right EE velocity
-                v_link2 = controlled_velocity[:2] - omega_link2 * np.array([-right_offset[1], right_offset[0]])
-                
-                # Link2 center from joint
-                link2_offset = link2_pose[:2] - joint_pos
-                
-                # Joint velocity (world frame)
-                v_joint = v_link2 - omega_link2 * np.array([-link2_offset[1], link2_offset[0]])
-                
-                # Link1 angular velocity = link2 angular - joint velocity
-                omega_link1 = omega_link2 - joint_velocity
-                
-                # Joint from link1 center
-                joint_offset = joint_pos - link1_pose[:2]
-                v_link1 = v_joint - omega_link1 * np.array([-joint_offset[1], joint_offset[0]])
-                
-                # Left EE from link1 center
-                left_offset = left_ee_pose[:2] - link1_pose[:2]
-                v_left = v_link1 + omega_link1 * np.array([-left_offset[1], left_offset[0]])
-                
-                return np.array([v_left[0], v_left[1], omega_link1])
-        
-        elif joint_type == JointType.PRISMATIC:
-            # Prismatic joint: sliding along link1's x-axis (no relative rotation)
-            # Both links have same orientation
-            slide_dir = np.array([np.cos(link1_pose[2]), np.sin(link1_pose[2])])
-            perp_dir = np.array([-np.sin(link1_pose[2]), np.cos(link1_pose[2])])
-            
-            # Get joint state for computing center distance
-            # Link2 center is at (q + L/2, 0) in link1 frame, where q is joint state
-            joint_state = self.env.object_manager.get_joint_state()
-            center_distance = joint_state + cfg.link_length / 2
-            
-            if controlled_ee_idx == 0:  # Left EE controlled
-                # Link1 motion = left EE motion
-                omega_link1 = controlled_velocity[2]
-                
-                left_offset = left_ee_pose[:2] - link1_pose[:2]
-                v_link1 = controlled_velocity[:2] - omega_link1 * np.array([-left_offset[1], left_offset[0]])
-                
-                # Link2 has same rotation (prismatic constraint)
-                omega_link2 = omega_link1
-                
-                # Link2 velocity = Link1 velocity + joint sliding + rotation coupling
-                # V_link2 = V_link1 + q_dot * slide_dir + omega * center_distance * perp_dir
-                v_link2 = (v_link1 
-                           + joint_velocity * slide_dir 
-                           + omega_link1 * center_distance * perp_dir)
-                
-                # Right EE from link2
-                right_offset = right_ee_pose[:2] - link2_pose[:2]
-                v_right = v_link2 + omega_link2 * np.array([-right_offset[1], right_offset[0]])
-                
-                return np.array([v_right[0], v_right[1], omega_link2])
-                
-            else:  # Right EE controlled
-                omega_link2 = controlled_velocity[2]
-                
-                right_offset = right_ee_pose[:2] - link2_pose[:2]
-                v_link2 = controlled_velocity[:2] - omega_link2 * np.array([-right_offset[1], right_offset[0]])
-                
-                # Link1 has same rotation
-                omega_link1 = omega_link2
-                
-                # Link1 velocity = Link2 velocity - joint sliding - rotation coupling
-                # V_link1 = V_link2 - q_dot * slide_dir - omega * center_distance * perp_dir
-                v_link1 = (v_link2 
-                           - joint_velocity * slide_dir 
-                           - omega_link1 * center_distance * perp_dir)
-                
-                # Left EE from link1
-                left_offset = left_ee_pose[:2] - link1_pose[:2]
-                v_left = v_link1 + omega_link1 * np.array([-left_offset[1], left_offset[0]])
-                
-                return np.array([v_left[0], v_left[1], omega_link1])
-        
-        # Fallback
-        return controlled_velocity.copy()
 
     def draw_desired_frames(self, screen):
         """
@@ -653,7 +498,8 @@ class TeleoperationDemo:
             controlled_velocity = velocity_cmd
             
             # Other EE velocity from kinematic constraint
-            other_velocity = self.compute_constrained_velocity(
+            other_velocity = compute_constrained_velocity(
+                self.env,
                 self.controlled_ee_idx,
                 controlled_velocity,
                 joint_velocity_cmd

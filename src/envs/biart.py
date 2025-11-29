@@ -36,6 +36,7 @@ from .pymunk_override import DrawOptions
 from .end_effector_manager import EndEffectorManager, GripperConfig
 from .object_manager import ObjectManager, ObjectConfig, JointType
 from .reward_manager import RewardManager, RewardWeights
+from .goal_manager import GoalManager, GoalConfig
 
 
 RENDER_MODES = ["rgb_array"]
@@ -77,6 +78,8 @@ class BiArtEnv(gym.Env):
         visualization_height: int = 680,
         control_hz: int = 10,
         physics_hz: int = 100,
+        random_goals: bool = False,
+        goal_config: Optional[GoalConfig] = None,
     ):
         """
         Initialize environment.
@@ -87,6 +90,8 @@ class BiArtEnv(gym.Env):
             joint_type: "revolute", "prismatic", "fixed", or "none"
             control_hz: Control frequency
             physics_hz: Physics simulation frequency
+            random_goals: If True, generate random goals each episode
+            goal_config: Optional custom goal configuration
         """
         super().__init__()
 
@@ -109,15 +114,17 @@ class BiArtEnv(gym.Env):
         # Configuration
         self.gripper_config = GripperConfig()
         self.object_config = ObjectConfig()
+        self.random_goals = random_goals
+        self.goal_config = goal_config
 
         # Managers (initialized in _setup)
         self.space: Optional[pymunk.Space] = None
         self.ee_manager: Optional[EndEffectorManager] = None
         self.object_manager: Optional[ObjectManager] = None
         self.reward_manager: Optional[RewardManager] = None
+        self.goal_manager: Optional[GoalManager] = None
 
         # State
-        self.goal_pose: Optional[np.ndarray] = None
         self._last_action: Optional[np.ndarray] = None
 
         # Rendering
@@ -214,8 +221,19 @@ class BiArtEnv(gym.Env):
                 joint_type=self.joint_type,
                 config=self.object_config
             )
+            # Create goal manager with object configuration
+            joint_type_enum = self.object_manager.joint_type
         else:
             self.object_manager = None
+            joint_type_enum = JointType.FIXED  # Default for no object
+
+        # Create goal manager
+        self.goal_manager = GoalManager(
+            joint_type=joint_type_enum,
+            link_length=self.object_config.link_length,
+            random_goals=self.random_goals,
+            goal_config=self.goal_config
+        )
 
         self.reward_manager = RewardManager(
             weights=RewardWeights(),
@@ -289,13 +307,6 @@ class BiArtEnv(gym.Env):
         """Reset environment."""
         super().reset(seed=seed)
 
-        # Randomize goal pose
-        self.goal_pose = np.array([
-            self.np_random.integers(200, 312),
-            self.np_random.integers(200, 312),
-            self.np_random.uniform(-np.pi/2, np.pi/2)
-        ], dtype=np.float32)
-
         if self.object_manager:
             # Initialize object
             initial_pose = np.array([
@@ -319,6 +330,10 @@ class BiArtEnv(gym.Env):
                 self.ee_manager.apply_grip_forces()
                 self.space.step(self.dt)
             self.ee_manager.update_external_wrenches(self.dt * 50)
+
+            # Reset goal manager with current grasping frames
+            grasping_frames = self.object_manager.object.grasping_frames
+            self.goal_manager.reset(grasping_frames=grasping_frames)
         else:
             # No object: random gripper positions
             ee_poses = np.array([
@@ -365,11 +380,12 @@ class BiArtEnv(gym.Env):
     def _compute_reward(self, current_poses, wrenches, external_wrenches) -> Dict:
         """Compute reward using RewardManager."""
         if self.object_manager:
-            link2_goal = self._compute_link2_goal(self.goal_pose)
-            desired_poses = np.array([self.goal_pose, link2_goal])
+            desired_poses = self.goal_manager.get_goal_link_poses()
             velocities = self.object_manager.get_link_velocities()
         else:
-            desired_poses = np.array([self.goal_pose, self.goal_pose])
+            # No object: use first link goal for both
+            goal_link1 = self.goal_manager.goal_link1_pose
+            desired_poses = np.array([goal_link1, goal_link1])
             velocities = self.ee_manager.get_velocities()
 
         return self.reward_manager.compute_reward(
@@ -380,51 +396,6 @@ class BiArtEnv(gym.Env):
             applied_wrenches=wrenches,
             external_wrenches=external_wrenches
         )
-
-    def _compute_link2_goal(self, link1_goal: np.ndarray, joint_state: float = 0.0) -> np.ndarray:
-        """
-        Compute link2 goal pose from link1 goal.
-        
-        Matches the kinematic structure defined in object_manager.py:
-        - Revolute: joint at link1's right end, link2 rotates around it
-        - Prismatic: joint_state = position of link2's left end in link1 frame
-        - Fixed: link2 rigidly attached at link1's right end
-        """
-        cfg = self.object_config
-        joint_type = self.object_manager.joint_type
-        L = cfg.link_length
-
-        if joint_type == JointType.REVOLUTE:
-            # Link2 orientation = link1 orientation + joint angle
-            link2_theta = link1_goal[2] + joint_state
-            
-            # Joint position at link1's right end
-            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
-            joint_x = link1_goal[0] + (L / 2) * cos1
-            joint_y = link1_goal[1] + (L / 2) * sin1
-            
-            # Link2 center is L/2 from joint along link2's axis
-            cos2, sin2 = np.cos(link2_theta), np.sin(link2_theta)
-            link2_x = joint_x + (L / 2) * cos2
-            link2_y = joint_y + (L / 2) * sin2
-            return np.array([link2_x, link2_y, link2_theta])
-
-        elif joint_type == JointType.PRISMATIC:
-            # Prismatic: links stay parallel
-            # joint_state = x-position of link2's left end in link1's frame
-            # Link2 center in link1 frame = (joint_state + L/2, 0)
-            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
-            offset = joint_state + L / 2  # distance from link1 center to link2 center
-            link2_x = link1_goal[0] + offset * cos1
-            link2_y = link1_goal[1] + offset * sin1
-            return np.array([link2_x, link2_y, link1_goal[2]])
-
-        else:  # FIXED
-            # Link2 rigidly attached: centers are L apart
-            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
-            link2_x = link1_goal[0] + L * cos1
-            link2_y = link1_goal[1] + L * sin1
-            return np.array([link2_x, link2_y, link1_goal[2]])
 
     def _check_safety(self) -> Tuple[bool, str]:
         """Check safety constraints."""
@@ -463,11 +434,9 @@ class BiArtEnv(gym.Env):
         screen = pygame.Surface((512, 512))
         screen.fill((255, 255, 255))
 
-        # Draw goal
-        if self.goal_pose is not None:
-            gx, gy, _ = self.goal_pose
-            goal_rect = pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60)
-            pygame.draw.rect(screen, pygame.Color("LightGreen"), goal_rect, 2)
+        # Draw goal visualization
+        if self.goal_manager is not None:
+            self.goal_manager.draw_goal(screen)
 
         # Draw physics objects
         draw_options = DrawOptions(screen)
@@ -484,10 +453,9 @@ class BiArtEnv(gym.Env):
         screen = pygame.Surface((512, 512))
         screen.fill((255, 255, 255))
 
-        # Draw goal
-        gx, gy, _ = self.goal_pose
-        goal_rect = pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60)
-        pygame.draw.rect(screen, pygame.Color("LightGreen"), goal_rect, 2)
+        # Draw goal visualization
+        if self.goal_manager is not None:
+            self.goal_manager.draw_goal(screen)
 
         # Draw physics objects
         draw_options = DrawOptions(screen)
@@ -513,10 +481,9 @@ class BiArtEnv(gym.Env):
             screen = pygame.Surface((512, 512))
             screen.fill((255, 255, 255))
             
-            # Draw goal
-            gx, gy, _ = self.goal_pose
-            pygame.draw.rect(screen, pygame.Color("LightGreen"), 
-                           pygame.Rect(int(gx) - 30, int(gy) - 30, 60, 60), 2)
+            # Draw goal visualization
+            if self.goal_manager is not None:
+                self.goal_manager.draw_goal(screen)
             
             # Draw physics
             draw_options = DrawOptions(screen)

@@ -107,9 +107,9 @@ def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device
     
     # Extract horizons from config or use defaults
     # These must match the dataset generation parameters
-    obs_horizon = config.get('hl_training', {}).get('obs_horizon', 1)
-    pred_horizon = config.get('hl_training', {}).get('pred_horizon', 10) # Default 10
-    use_external_wrench = config.get('hl_training', {}).get('use_external_wrench', True)
+    obs_horizon = config.get('model', {}).get('obs_horizon', 1)
+    pred_horizon = config.get('model', {}).get('pred_horizon', 10) # Default 10
+    use_external_wrench = config.get('model', {}).get('use_external_wrench', True)
 
     if policy_type == 'flow_matching':
         from src.hl_planners.flow_matching import FlowMatchingConfig
@@ -150,9 +150,9 @@ def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device
 
 def create_optimizer(policy, config: Dict[str, Any]):
     """Create optimizer for training."""
-    optimizer_type = config.get('hl_training', {}).get('optimizer', 'adam').lower()
-    lr = config.get('hl_training', {}).get('learning_rate', 1e-4)
-    weight_decay = config.get('hl_training', {}).get('weight_decay', 1e-5)
+    optimizer_type = config.get('training', {}).get('optimizer', 'adam').lower()
+    lr = config.get('training', {}).get('learning_rate', 1e-4)
+    weight_decay = config.get('training', {}).get('weight_decay', 1e-5)
 
     if optimizer_type == 'adam':
         optimizer = optim.Adam(policy.parameters(), lr=lr, weight_decay=weight_decay)
@@ -168,7 +168,7 @@ def create_optimizer(policy, config: Dict[str, Any]):
 
 def create_scheduler(optimizer, config: Dict[str, Any], num_epochs: int):
     """Create learning rate scheduler."""
-    scheduler_config = config.get('hl_training', {}).get('lr_scheduler', {})
+    scheduler_config = config.get('training', {}).get('lr_scheduler', {})
     scheduler_type = scheduler_config.get('type', 'none').lower()
 
     if scheduler_type == 'cosine':
@@ -207,12 +207,12 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         print(f"Dataset path {dataset_path} does not exist. Creating dummy dataset.")
         # ... dummy dataset logic ... (kept as fallback)
         N = 100
-        pred_horizon = config.get('hl_training', {}).get('pred_horizon', 10)
-        T = pred_horizon
-        proprio_dim = 18 if config.get('hl_training', {}).get('use_external_wrench', True) else 12
-        action_dim = 6
-        
         # Dummy images: (N, T, 3, 96, 96)
+        pred_horizon = config.get('model', {}).get('pred_horizon', 10)
+        T = pred_horizon
+        action_dim = 6
+        proprio_dim = 18 if config.get('model', {}).get('use_external_wrench', True) else 12
+        
         images = np.random.randint(0, 255, (N, T, 3, 96, 96)).astype(np.uint8)
         proprio = np.random.randn(N, T, proprio_dim).astype(np.float32)
         action = np.random.randn(N, T, action_dim).astype(np.float32)
@@ -224,7 +224,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
                 self.action = torch.from_numpy(action)
             def __len__(self): return len(self.proprio)
             def __getitem__(self, idx): 
-                return (self.images[idx], self.proprio[idx]), self.action[idx]
+                return (self.images[idx].to(torch.float32) / 255.0, self.proprio[idx]), self.action[idx]
             
         dataset = DummyDataset(images, proprio, action)
         train_size = int(0.8 * len(dataset))
@@ -237,13 +237,12 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         def __init__(self, hdf5_path, obs_horizon=1, pred_horizon=10, use_external_wrench=True):
             """
             Args:
-                hdf5_path: Path to .h5 file
+                hdf5_path: Path to .h5 file OR directory containing .h5 files
                 obs_horizon: Number of past steps to stack
                 pred_horizon: Number of future steps to predict
                 use_external_wrench: Whether to include external wrenches in observation
             """
             super().__init__()
-            self.file_path = hdf5_path
             self.obs_horizon = obs_horizon
             self.pred_horizon = pred_horizon
             self.use_external_wrench = use_external_wrench
@@ -256,70 +255,94 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             all_proprio = []
             all_actions = []
             
-            with h5py.File(self.file_path, 'r') as f:
-                num_demos = f.attrs.get('num_demos', 0)
-                print(f"Found {num_demos} demos in file.")
-                
-                for i in range(num_demos):
-                    demo_key = f'demo_{i}'
-                    if demo_key not in f: continue
+            # Check if path is directory or file
+            if os.path.isdir(hdf5_path):
+                # Load all .h5 files from directory
+                h5_files = sorted([f for f in os.listdir(hdf5_path) if f.endswith('.h5')])
+                print(f"Found {len(h5_files)} HDF5 files in directory {hdf5_path}")
+                file_paths = [os.path.join(hdf5_path, f) for f in h5_files]
+            else:
+                # Single file
+                file_paths = [hdf5_path]
+                print(f"Loading single file: {hdf5_path}")
+            
+            # Load each file
+            for file_path in file_paths:
+                with h5py.File(file_path, 'r') as f:
+                    num_demos = f.attrs.get('num_demos', 0)
+                    print(f"  Loading {file_path}: {num_demos} demos")
                     
-                    g = f[demo_key]
-                    # Load obs
-                    obs_group = g['obs']
-                    ee_poses = obs_group['ee_poses'][:]  # (T, 2, 3)
-                    link_poses = obs_group['link_poses'][:] # (T, 2, 3)
-                    wrenches = obs_group['external_wrenches'][:] # (T, 2, 3)
-                    
-                    # Get sequence length from loaded data
-                    T = ee_poses.shape[0]
-                    
-                    body_twists = obs_group.get('ee_body_twists')
-                    if body_twists is not None:
-                        body_twists = body_twists[:]
+                    # Handle single episode file (direct data)
+                    if num_demos == 0 and 'obs' in f and 'action' in f:
+                        print("  Detected single episode file format.")
+                        num_demos = 1
+                        is_single_episode = True
                     else:
-                        body_twists = np.zeros_like(ee_poses)
+                        is_single_episode = False
                     
-                    # Load images: (T, H, W, 3) -> (T, 3, H, W)
-                    images = obs_group['images'][:] 
-                    images = np.transpose(images, (0, 3, 1, 2))
-                    
-                    # Construct proprioception
-                    # EE Poses (6) + EE Velocities (6) + [Optional] Wrenches (6)
-                    # NOTE: ee_velocities are point velocities [vx, vy, omega], NOT twists
-                    proprio_list = [
-                        ee_poses.reshape(T, -1),
-                        np.zeros((T, 6))  # Default fallback
-                    ]
-                    
-                    # Load velocities from file (support both old and new naming)
-                    if 'ee_velocities' in obs_group:
-                        ee_velocities = obs_group['ee_velocities'][:]
-                        proprio_list[1] = ee_velocities.reshape(T, -1)
-                    elif 'ee_twists' in obs_group:
-                        # Legacy support for old data files
-                        ee_velocities = obs_group['ee_twists'][:]
-                        proprio_list[1] = ee_velocities.reshape(T, -1)
+                    for i in range(num_demos):
+                        if is_single_episode:
+                            g = f
+                        else:
+                            demo_key = f'demo_{i}'
+                            if demo_key not in f: continue
+                            g = f[demo_key]
+                        # Load obs
+                        obs_group = g['obs']
+                        ee_poses = obs_group['ee_poses'][:]  # (T, 2, 3)
+                        link_poses = obs_group['link_poses'][:] # (T, 2, 3)
+                        wrenches = obs_group['external_wrenches'][:] # (T, 2, 3)
                         
-                    if self.use_external_wrench:
-                        proprio_list.append(wrenches.reshape(T, -1))
+                        # Get sequence length from loaded data
+                        T = ee_poses.shape[0]
                         
-                    proprio = np.concatenate(proprio_list, axis=1)
-                    
-                    # Load action: (T, 2, 3) -> (T, 6)
-                    action_group = g['action']
-                    desired_poses = action_group['desired_poses'][:]  # (T, 2, 3)
-                    action = desired_poses.reshape(T, -1)
-                    
-                    self.episodes.append({
-                        'image': images, # Keep as numpy (uint8)
-                        'proprio': proprio, # Keep as numpy
-                        'action': action
-                    })
-                    all_proprio.append(proprio)
-                    all_actions.append(action)
+                        body_twists = obs_group.get('ee_body_twists')
+                        if body_twists is not None:
+                            body_twists = body_twists[:]
+                        else:
+                            body_twists = np.zeros_like(ee_poses)
+                        
+                        # Load images: (T, H, W, 3) -> (T, 3, H, W)
+                        images = obs_group['images'][:] 
+                        images = np.transpose(images, (0, 3, 1, 2))
+                        
+                        # Construct proprioception
+                        # EE Poses (6) + EE Velocities (6) + [Optional] Wrenches (6)
+                        # NOTE: ee_velocities are point velocities [vx, vy, omega], NOT twists
+                        proprio_list = [
+                            ee_poses.reshape(T, -1),
+                            np.zeros((T, 6))  # Default fallback
+                        ]
+                        
+                        # Load velocities from file (support both old and new naming)
+                        if 'ee_velocities' in obs_group:
+                            ee_velocities = obs_group['ee_velocities'][:]
+                            proprio_list[1] = ee_velocities.reshape(T, -1)
+                        elif 'ee_twists' in obs_group:
+                            # Legacy support for old data files
+                            ee_velocities = obs_group['ee_twists'][:]
+                            proprio_list[1] = ee_velocities.reshape(T, -1)
+                            
+                        if self.use_external_wrench:
+                            proprio_list.append(wrenches.reshape(T, -1))
+                            
+                        proprio = np.concatenate(proprio_list, axis=1)
+                        
+                        # Load action: (T, 2, 3) -> (T, 6)
+                        action_group = g['action']
+                        desired_poses = action_group['desired_poses'][:]  # (T, 2, 3)
+                        action = desired_poses.reshape(T, -1)
+                        
+                        self.episodes.append({
+                            'image': images, # Keep as numpy (uint8)
+                            'proprio': proprio, # Keep as numpy
+                            'action': action
+                        })
+                        all_proprio.append(proprio)
+                        all_actions.append(action)
             
             # Compute stats
+            print(f"\nTotal episodes loaded: {len(self.episodes)}")
             all_proprio_concat = np.concatenate(all_proprio, axis=0)
             all_actions_concat = np.concatenate(all_actions, axis=0)
             self.normalizer.fit(all_proprio_concat, 'proprio')
@@ -362,6 +385,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             end = t + 1
             
             image_seq = episode['image'][start:end] # (obs_horizon, 3, H, W)
+            image_seq = image_seq.to(torch.float32) / 255.0
             proprio_seq = episode['proprio'][start:end] # (obs_horizon, proprio_dim)
             
             # Get action window
@@ -377,9 +401,9 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
     # For generic compatibility, default to horizons that match the policies
     
     # Safe defaults
-    obs_h = config.get('hl_training', {}).get('obs_horizon', 1)
-    pred_h = config.get('hl_training', {}).get('pred_horizon', 10)
-    use_wrench = config.get('hl_training', {}).get('use_external_wrench', True)
+    obs_h = config.get('model', {}).get('obs_horizon', 1)
+    pred_h = config.get('model', {}).get('pred_horizon', 10)
+    use_wrench = config.get('model', {}).get('use_external_wrench', True)
     
     print(f"Dataset Configuration:")
     print(f"  Observation Horizon: {obs_h}")
@@ -395,7 +419,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
     )
     
     # Split
-    val_ratio = config.get('hl_training', {}).get('val_ratio', 0.2)
+    val_ratio = 1.0 - config.get('dataset', {}).get('train_split', 0.8)
     val_size = int(val_ratio * len(full_dataset))
     train_size = len(full_dataset) - val_size
     
@@ -504,21 +528,21 @@ def train(
 
     # Override config with command-line arguments
     if dataset_path is None:
-        dataset_path = config.get('hl_training', {}).get('dataset', {}).get('path', './data/demonstrations')
+        dataset_path = config.get('dataset', {}).get('path', './data/demonstrations')
     if num_epochs is None:
-        num_epochs = config.get('hl_training', {}).get('num_epochs', 100)
+        num_epochs = config.get('training', {}).get('num_epochs', 10000)
     if batch_size is None:
-        batch_size = config.get('hl_training', {}).get('batch_size', 64)
+        batch_size = config.get('training', {}).get('batch_size', 64)
     if checkpoint_dir is None:
-        checkpoint_dir = config.get('hl_training', {}).get('output', {}).get('checkpoint_dir', './checkpoints')
+        checkpoint_dir = config.get('output', {}).get('checkpoint_dir', './checkpoints')
         
     # Apply overrides
     if obs_horizon is not None:
-        config.setdefault('hl_training', {})['obs_horizon'] = obs_horizon
+        config.setdefault('model', {})['obs_horizon'] = obs_horizon
     if pred_horizon is not None:
-        config.setdefault('hl_training', {})['pred_horizon'] = pred_horizon
+        config.setdefault('model', {})['pred_horizon'] = pred_horizon
     if use_external_wrench is not None:
-        config.setdefault('hl_training', {})['use_external_wrench'] = use_external_wrench
+        config.setdefault('model', {})['use_external_wrench'] = use_external_wrench
 
     # Create policy
     policy = create_policy(policy_type, config, torch_device)
@@ -560,7 +584,7 @@ def train(
     scheduler = create_scheduler(optimizer, config, num_epochs)
 
     # Create tensorboard writer
-    log_dir = config.get('hl_training', {}).get('logging', {}).get('tensorboard_log', './logs/hl_policy/')
+    log_dir = config.get('logging', {}).get('tensorboard_log', './logs/hl_policy/')
     writer = SummaryWriter(log_dir=os.path.join(log_dir, policy_type))
 
     # Create checkpoint directory
@@ -577,7 +601,7 @@ def train(
         # Train
         train_loss = train_epoch(
             policy, train_loader, optimizer, torch_device, epoch, writer,
-            log_interval=config.get('hl_training', {}).get('logging', {}).get('log_interval', 100)
+            log_interval=config.get('logging', {}).get('log_interval', 100)
         )
         print(f"  Train Loss: {train_loss:.6f}")
 
@@ -595,7 +619,7 @@ def train(
             scheduler.step()
 
         # Save checkpoint
-        save_freq = config.get('hl_training', {}).get('logging', {}).get('save_freq', 10)
+        save_freq = config.get('logging', {}).get('save_freq', 1000)
         if (epoch + 1) % save_freq == 0:
             checkpoint_path = os.path.join(
                 checkpoint_dir,
@@ -661,7 +685,7 @@ def main():
     parser.add_argument(
         '--config',
         type=str,
-        default='scripts/configs/rl_config.yaml',
+        default='scripts/configs/hl_policy_config.yaml',
         help='Path to configuration file'
     )
 

@@ -1,0 +1,104 @@
+# High-Level Policy Training Configuration
+# Vision-based Imitation Learning for Bimanual Manipulation
+
+# =============================================================================
+# Dataset Configuration
+# =============================================================================
+dataset:
+  path: "./data/demonstrations"
+  train_split: 0.8          # 80% train, 20% validation
+  shuffle: true
+  augment: false            # Data augmentation (not implemented yet)
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  # Observation configuration
+  obs_horizon: 1            # Number of observation frames to stack
+  pred_horizon: 10          # Number of future actions to predict
+  action_dim: 6             # Action dimension (2 EE poses: 2 * 3)
+  use_external_wrench: false # Include external wrench in observation
+
+  # Image configuration
+  image_size: 96            # Image resolution (96x96)
+  image_channels: 3         # RGB
+
+  # Proprioception configuration
+  # Without wrench: EE poses (6) + EE velocities (6) = 12
+  # With wrench: EE poses (6) + EE velocities (6) + Wrenches (6) = 18
+  
+# =============================================================================
+# Policy-Specific Parameters
+# =============================================================================
+flow_matching:
+  hidden_dim: 256
+  num_layers: 4
+  num_ode_steps: 10         # ODE solver steps
+  action_horizon: 8         # Number of actions to execute before replanning
+
+diffusion:
+  hidden_dim: 256
+  num_layers: 4
+  num_diffusion_steps: 100  # Training diffusion steps
+  num_inference_steps: 16   # Inference DDIM steps (faster)
+  action_horizon: 8         # Number of actions to execute before replanning
+
+act:
+  hidden_dim: 256
+  num_encoder_layers: 4
+  num_decoder_layers: 6
+  latent_dim: 32            # VAE latent dimension
+  kl_weight: 10.0           # KL divergence weight
+  action_horizon: 8
+
+# =============================================================================
+# Training Hyperparameters
+# =============================================================================
+training:
+  # Optimization
+  batch_size: 64
+  learning_rate: 1.0e-4
+  num_epochs: 10000
+  optimizer: "adam"         # adam, adamw, or sgd
+  weight_decay: 1.0e-5
+  
+  # Learning rate scheduler
+  lr_scheduler:
+    type: "cosine"          # cosine, step, or none
+    warmup_epochs: 10
+    min_lr: 1.0e-6
+    step_size: 30           # For step scheduler
+    gamma: 0.1              # For step scheduler
+  
+  # Gradient clipping
+  max_grad_norm: 1.0
+  
+  # Early stopping
+  patience: 50              # Epochs without improvement before stopping
+  min_delta: 1.0e-4         # Minimum change to qualify as improvement
+
+# =============================================================================
+# Logging and Checkpointing
+# =============================================================================
+logging:
+  tensorboard_log: "./logs/hl_policy/"
+  save_freq: 1000           # Save checkpoint every N epochs
+  log_interval: 100         # Log every N batches
+  verbose: 1                # 0: silent, 1: progress bar, 2: one line per epoch
+
+output:
+  checkpoint_dir: "./checkpoints"
+  save_best_only: false     # Also save periodic checkpoints
+  metric: "val_loss"        # Metric for best model selection
+
+# =============================================================================
+# Device Configuration
+# =============================================================================
+device: "auto"              # auto, cpu, or cuda
+
+# =============================================================================
+# Reproducibility
+# =============================================================================
+seed: 42
+deterministic: true         # Use deterministic algorithms (may be slower)
