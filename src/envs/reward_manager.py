@@ -36,6 +36,25 @@ class RewardWeights:
     angular_to_linear_ratio: float = 10.0  # Weight ratio between angular and linear error in SE(2) geodesic distance
 
 
+@dataclass
+class RewardConfig:
+    """Configuration for reward computation."""
+    
+    # Reward component weights
+    weights: RewardWeights = None  # Will be initialized in __post_init__
+    
+    # Success/failure thresholds
+    success_threshold_pos: float = 5.0  # pixels
+    success_threshold_angle: float = 0.1  # radians
+    
+    # Safety thresholds
+    max_wrench_threshold: float = 200.0  # force/torque limit
+    
+    def __post_init__(self):
+        if self.weights is None:
+            self.weights = RewardWeights()
+
+
 class RewardManager:
     """
     Manager for reward computation.
@@ -43,26 +62,18 @@ class RewardManager:
     Computes reward based on multiple components for RL training.
     """
 
-    def __init__(
-        self,
-        weights: Optional[RewardWeights] = None,
-        success_threshold_pos: float = 20.0,  # pixels
-        success_threshold_angle: float = 0.2,  # radians
-        max_wrench_threshold: float = 200.0,  # force/torque limit
-    ):
+    def __init__(self, config: Optional[RewardConfig] = None):
         """
         Initialize reward manager.
 
         Args:
-            weights: Reward component weights
-            success_threshold_pos: Position error threshold for success
-            success_threshold_angle: Angle error threshold for success
-            max_wrench_threshold: Maximum allowed wrench magnitude
+            config: Reward configuration (uses defaults if None)
         """
-        self.weights = weights if weights is not None else RewardWeights()
-        self.success_threshold_pos = success_threshold_pos
-        self.success_threshold_angle = success_threshold_angle
-        self.max_wrench_threshold = max_wrench_threshold
+        self.config = config if config is not None else RewardConfig()
+        self.weights = self.config.weights
+        self.success_threshold_pos = self.config.success_threshold_pos
+        self.success_threshold_angle = self.config.success_threshold_angle
+        self.max_wrench_threshold = self.config.max_wrench_threshold
 
     def compute_reward(
         self,

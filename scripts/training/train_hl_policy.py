@@ -384,9 +384,9 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             start = t - self.obs_horizon + 1
             end = t + 1
             
-            image_seq = episode['image'][start:end] # (obs_horizon, 3, H, W)
-            image_seq = image_seq.to(torch.float32) / 255.0
-            proprio_seq = episode['proprio'][start:end] # (obs_horizon, proprio_dim)
+            image_seq = episode['image'][start:end]  # (obs_horizon, 3, H, W)
+            # NOTE: Images are already normalized to [0, 1] in __init__, no need to divide again!
+            proprio_seq = episode['proprio'][start:end]  # (obs_horizon, proprio_dim)
             
             # Get action window
             # Assuming policy expects (pred_horizon, action_dim)
@@ -601,7 +601,7 @@ def train(
         # Train
         train_loss = train_epoch(
             policy, train_loader, optimizer, torch_device, epoch, writer,
-            log_interval=config.get('logging', {}).get('log_interval', 100)
+            log_interval=config.get('logging', {}).get('log_interval', 20)
         )
         print(f"  Train Loss: {train_loss:.6f}")
 

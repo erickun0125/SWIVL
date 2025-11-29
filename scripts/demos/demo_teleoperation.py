@@ -45,18 +45,13 @@ import pygame
 from src.envs.biart import BiArtEnv
 from src.envs.object_manager import JointType
 from src.ll_controllers.pd_controller import MultiGripperPDController, PDGains
-
-# Handle import for both direct execution and module import
-try:
-    from scripts.demos.bimanual_utils import compute_constrained_velocity
-except ModuleNotFoundError:
-    from bimanual_utils import compute_constrained_velocity
+from src.bimanual_utils import compute_constrained_velocity
 
 
 class KeyboardVelocityController:
     """Keyboard velocity controller with EE and joint velocity control."""
     
-    def __init__(self, linear_speed=30.0, angular_speed=1.0, joint_speed=1.0):
+    def __init__(self, linear_speed=20.0, angular_speed=0.5, joint_speed=1.0):
         """
         Initialize keyboard velocity controller.
         
@@ -155,7 +150,7 @@ class TeleoperationDemo:
         if self.joint_enum == JointType.PRISMATIC:
             joint_speed *= 5.0
 
-        self.keyboard = KeyboardVelocityController(linear_speed=10.0, angular_speed=0.5, joint_speed=joint_speed)
+        self.keyboard = KeyboardVelocityController(linear_speed=20.0, angular_speed=0.5, joint_speed=joint_speed)
         
         # Control which EE
         self.controlled_ee_idx = 0

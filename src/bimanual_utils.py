@@ -1,7 +1,8 @@
 """
-Shared utilities for bimanual manipulation demos.
+Shared utilities for bimanual manipulation.
 
-This module contains common functionality used by both teleoperation and rule-based demos.
+This module contains common functionality for computing kinematic constraints
+in bimanual manipulation with articulated objects.
 """
 
 import numpy as np

@@ -18,6 +18,7 @@ Physical Units (Pymunk convention):
 
 import os
 import warnings
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
 
 import cv2
@@ -35,8 +36,44 @@ from gymnasium import spaces
 from .pymunk_override import DrawOptions
 from .end_effector_manager import EndEffectorManager, GripperConfig
 from .object_manager import ObjectManager, ObjectConfig, JointType
-from .reward_manager import RewardManager, RewardWeights
+from .reward_manager import RewardManager, RewardConfig, RewardWeights
 from .goal_manager import GoalManager, GoalConfig
+
+
+@dataclass
+class EnvConfig:
+    """Configuration for BiArt environment."""
+    
+    # Workspace settings
+    workspace_size: int = 512  # pixels (square workspace)
+    workspace_margin: float = 10.0  # Safety margin from walls
+    
+    # Physics settings
+    gravity: Tuple[float, float] = (0.0, 0.0)
+    damping: float = 0.95
+    
+    # Action space limits
+    max_force: float = 100.0  # Maximum linear force
+    max_torque: float = 50.0  # Maximum torque
+    
+    # Velocity limits (for observation space)
+    max_velocity: float = 500.0  # Maximum linear velocity
+    max_angular_velocity: float = 10.0  # Maximum angular velocity
+    
+    # Initial pose randomization (object spawn range)
+    init_pos_min: int = 120  # Minimum position for random spawn
+    init_pos_max: int = 392  # Maximum position for random spawn
+    init_angle_range: float = np.pi / 2  # ±range for initial angle
+    
+    @property
+    def workspace_min(self) -> float:
+        """Minimum valid coordinate (with margin)."""
+        return self.workspace_margin
+    
+    @property
+    def workspace_max(self) -> float:
+        """Maximum valid coordinate (with margin)."""
+        return self.workspace_size - self.workspace_margin
 
 
 RENDER_MODES = ["rgb_array"]
@@ -78,8 +115,6 @@ class BiArtEnv(gym.Env):
         visualization_height: int = 680,
         control_hz: int = 10,
         physics_hz: int = 100,
-        random_goals: bool = False,
-        goal_config: Optional[GoalConfig] = None,
     ):
         """
         Initialize environment.
@@ -90,8 +125,9 @@ class BiArtEnv(gym.Env):
             joint_type: "revolute", "prismatic", "fixed", or "none"
             control_hz: Control frequency
             physics_hz: Physics simulation frequency
-            random_goals: If True, generate random goals each episode
-            goal_config: Optional custom goal configuration
+            env_config: Environment configuration (physics, workspace, limits)
+            goal_config: Goal configuration (includes random_goals flag)
+            reward_config: Reward configuration
         """
         super().__init__()
 
@@ -112,10 +148,11 @@ class BiArtEnv(gym.Env):
         self.physics_steps_per_control = physics_hz // control_hz
 
         # Configuration
+        self.env_config = EnvConfig()
         self.gripper_config = GripperConfig()
         self.object_config = ObjectConfig()
-        self.random_goals = random_goals
-        self.goal_config = goal_config
+        self.goal_config = GoalConfig()
+        self.reward_config = RewardConfig()
 
         # Managers (initialized in _setup)
         self.space: Optional[pymunk.Space] = None
@@ -137,15 +174,13 @@ class BiArtEnv(gym.Env):
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces."""
-        max_force = 100.0
-        max_torque = 50.0
-        max_velocity = 500.0
-        max_angular_velocity = 10.0
+        cfg = self.env_config
+        ws = cfg.workspace_size
 
         # Action: wrench for both grippers [tau, fx, fy] × 2
         self.action_space = spaces.Box(
-            low=np.array([-max_torque, -max_force, -max_force] * 2),
-            high=np.array([max_torque, max_force, max_force] * 2),
+            low=np.array([-cfg.max_torque, -cfg.max_force, -cfg.max_force] * 2),
+            high=np.array([cfg.max_torque, cfg.max_force, cfg.max_force] * 2),
             dtype=np.float32
         )
 
@@ -153,27 +188,27 @@ class BiArtEnv(gym.Env):
             self.observation_space = spaces.Dict({
                 'ee_poses': spaces.Box(
                     low=np.array([[0, 0, -np.pi]] * 2),
-                    high=np.array([[512, 512, np.pi]] * 2),
+                    high=np.array([[ws, ws, np.pi]] * 2),
                     dtype=np.float32
                 ),
                 'ee_velocities': spaces.Box(
-                    low=np.array([[-max_velocity, -max_velocity, -max_angular_velocity]] * 2),
-                    high=np.array([[max_velocity, max_velocity, max_angular_velocity]] * 2),
+                    low=np.array([[-cfg.max_velocity, -cfg.max_velocity, -cfg.max_angular_velocity]] * 2),
+                    high=np.array([[cfg.max_velocity, cfg.max_velocity, cfg.max_angular_velocity]] * 2),
                     dtype=np.float32
                 ),
                 'ee_body_twists': spaces.Box(
-                    low=np.array([[-max_angular_velocity, -max_velocity, -max_velocity]] * 2),
-                    high=np.array([[max_angular_velocity, max_velocity, max_velocity]] * 2),
+                    low=np.array([[-cfg.max_angular_velocity, -cfg.max_velocity, -cfg.max_velocity]] * 2),
+                    high=np.array([[cfg.max_angular_velocity, cfg.max_velocity, cfg.max_velocity]] * 2),
                     dtype=np.float32
                 ),
                 'link_poses': spaces.Box(
                     low=np.array([[0, 0, -np.pi]] * 2),
-                    high=np.array([[512, 512, np.pi]] * 2),
+                    high=np.array([[ws, ws, np.pi]] * 2),
                     dtype=np.float32
                 ),
                 'external_wrenches': spaces.Box(
-                    low=np.array([[-max_torque, -max_force, -max_force]] * 2),
-                    high=np.array([[max_torque, max_force, max_force]] * 2),
+                    low=np.array([[-cfg.max_torque, -cfg.max_force, -cfg.max_force]] * 2),
+                    high=np.array([[cfg.max_torque, cfg.max_force, cfg.max_force]] * 2),
                     dtype=np.float32
                 )
             })
@@ -191,17 +226,21 @@ class BiArtEnv(gym.Env):
         if self.space is not None:
             return
 
+        cfg = self.env_config
+        ws = cfg.workspace_size
+        wall_margin = 5  # Wall thickness offset
+
         # Create physics space
         self.space = pymunk.Space()
-        self.space.gravity = (0, 0)
-        self.space.damping = 0.95
+        self.space.gravity = cfg.gravity
+        self.space.damping = cfg.damping
 
         # Add boundary walls
         walls = [
-            pymunk.Segment(self.space.static_body, (5, 506), (5, 5), 2),
-            pymunk.Segment(self.space.static_body, (5, 5), (506, 5), 2),
-            pymunk.Segment(self.space.static_body, (506, 5), (506, 506), 2),
-            pymunk.Segment(self.space.static_body, (5, 506), (506, 506), 2),
+            pymunk.Segment(self.space.static_body, (wall_margin, ws - wall_margin), (wall_margin, wall_margin), 2),
+            pymunk.Segment(self.space.static_body, (wall_margin, wall_margin), (ws - wall_margin, wall_margin), 2),
+            pymunk.Segment(self.space.static_body, (ws - wall_margin, wall_margin), (ws - wall_margin, ws - wall_margin), 2),
+            pymunk.Segment(self.space.static_body, (wall_margin, ws - wall_margin), (ws - wall_margin, ws - wall_margin), 2),
         ]
         for wall in walls:
             wall.color = pygame.Color("LightGray")
@@ -231,16 +270,11 @@ class BiArtEnv(gym.Env):
         self.goal_manager = GoalManager(
             joint_type=joint_type_enum,
             link_length=self.object_config.link_length,
-            random_goals=self.random_goals,
-            goal_config=self.goal_config
+            workspace_size=self.env_config.workspace_size,
+            config=self.goal_config
         )
 
-        self.reward_manager = RewardManager(
-            weights=RewardWeights(),
-            success_threshold_pos=20.0,
-            success_threshold_angle=0.2,
-            max_wrench_threshold=200.0
-        )
+        self.reward_manager = RewardManager(config=self.reward_config)
 
     def step(self, action: np.ndarray):
         """
@@ -306,13 +340,14 @@ class BiArtEnv(gym.Env):
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Reset environment."""
         super().reset(seed=seed)
+        cfg = self.env_config
 
         if self.object_manager:
-            # Initialize object
+            # Initialize object with random pose from env_config
             initial_pose = np.array([
-                self.np_random.integers(220, 292),
-                self.np_random.integers(220, 292),
-                self.np_random.uniform(-np.pi/4, np.pi/4)
+                self.np_random.integers(cfg.init_pos_min, cfg.init_pos_max),
+                self.np_random.integers(cfg.init_pos_min, cfg.init_pos_max),
+                self.np_random.uniform(-cfg.init_angle_range, cfg.init_angle_range)
             ])
             self.object_manager.reset(initial_pose)
 
@@ -399,7 +434,8 @@ class BiArtEnv(gym.Env):
 
     def _check_safety(self) -> Tuple[bool, str]:
         """Check safety constraints."""
-        ws_min, ws_max = 10.0, 502.0
+        ws_min = self.env_config.workspace_min
+        ws_max = self.env_config.workspace_max
 
         # Check gripper positions
         for i, pose in enumerate(self.ee_manager.get_poses()):
@@ -431,7 +467,8 @@ class BiArtEnv(gym.Env):
 
     def _draw(self) -> pygame.Surface:
         """Draw environment to pygame surface (for external rendering)."""
-        screen = pygame.Surface((512, 512))
+        ws = self.env_config.workspace_size
+        screen = pygame.Surface((ws, ws))
         screen.fill((255, 255, 255))
 
         # Draw goal visualization
@@ -448,9 +485,10 @@ class BiArtEnv(gym.Env):
         """Render environment to image."""
         width = self.visualization_width if visualize else self.observation_width
         height = self.visualization_height if visualize else self.observation_height
+        ws = self.env_config.workspace_size
 
         # Create surface
-        screen = pygame.Surface((512, 512))
+        screen = pygame.Surface((ws, ws))
         screen.fill((255, 255, 255))
 
         # Draw goal visualization
@@ -467,6 +505,8 @@ class BiArtEnv(gym.Env):
 
     def render(self) -> Optional[np.ndarray]:
         """Render environment."""
+        ws = self.env_config.workspace_size
+        
         if self.render_mode == "rgb_array":
             return self._render_frame(visualize=True)
             
@@ -474,11 +514,11 @@ class BiArtEnv(gym.Env):
             if self.window is None:
                 pygame.init()
                 pygame.display.init()
-                self.window = pygame.display.set_mode((512, 512))
+                self.window = pygame.display.set_mode((ws, ws))
             if self.clock is None:
                 self.clock = pygame.time.Clock()
 
-            screen = pygame.Surface((512, 512))
+            screen = pygame.Surface((ws, ws))
             screen.fill((255, 255, 255))
             
             # Draw goal visualization

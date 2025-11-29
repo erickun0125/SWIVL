@@ -21,12 +21,15 @@ from src.envs.object_manager import JointType
 class GoalConfig:
     """Configuration for goal state of articulated object."""
     
+    # Whether to generate random goals each episode
+    random_goals: bool = False
+    
     # Goal pose for Link 1 (base link): [x, y, theta]
     # Default is centered and slightly rotated for visibility
     link1_pose: np.ndarray = field(default_factory=lambda: np.array([300.0, 300.0, np.pi/6]))
     
     # Goal joint state (radians for revolute, pixels for prismatic)
-    joint_state: float = -0.3
+    joint_state: float = -2.0
     
     # Workspace bounds for random goal generation
     workspace_min: Tuple[float, float] = (180.0, 180.0)
@@ -49,8 +52,8 @@ class GoalManager:
         self,
         joint_type: JointType,
         link_length: float,
-        random_goals: bool = False,
-        goal_config: Optional[GoalConfig] = None,
+        workspace_size: int = 512,
+        config: Optional[GoalConfig] = None,
         seed: Optional[int] = None
     ):
         """
@@ -59,28 +62,28 @@ class GoalManager:
         Args:
             joint_type: Type of joint (REVOLUTE, PRISMATIC, FIXED)
             link_length: Length of each link (pixels)
-            random_goals: If True, generate random goals on each reset
-            goal_config: Optional custom goal configuration
+            workspace_size: Size of workspace (pixels, square)
+            config: Goal configuration (uses defaults if None)
             seed: Random seed for reproducibility
         """
         self.joint_type = joint_type
         self.link_length = link_length
-        self.random_goals = random_goals
-        self.config = goal_config or GoalConfig()
+        self.workspace_size = workspace_size
+        self.config = config if config is not None else GoalConfig()
         
         # Random number generator
         self.np_random = np.random.default_rng(seed)
         
-        # Adjust joint bounds based on joint type
-        if joint_type == JointType.PRISMATIC:
-            self.config.joint_min = -15.0  # pixels
-            self.config.joint_max = 15.0
-            if goal_config is None:
+        # Adjust joint bounds based on joint type (only if using default config)
+        if config is None:
+            if joint_type == JointType.PRISMATIC:
+                self.config.joint_min = -15.0  # pixels
+                self.config.joint_max = 15.0
                 self.config.joint_state = 5.0  # Default for prismatic (conservative)
-        elif joint_type == JointType.FIXED:
-            self.config.joint_state = 0.0
-            self.config.joint_min = 0.0
-            self.config.joint_max = 0.0
+            elif joint_type == JointType.FIXED:
+                self.config.joint_state = 0.0
+                self.config.joint_min = 0.0
+                self.config.joint_max = 0.0
         
         # Computed goal poses (set on reset)
         self.goal_link1_pose: np.ndarray = self.config.link1_pose.copy()
@@ -104,7 +107,7 @@ class GoalManager:
         """
         Reset goal configuration.
         
-        If random_goals is True, generates new random goal.
+        If config.random_goals is True, generates new random goal.
         Otherwise uses default configuration.
         
         Args:
@@ -116,7 +119,7 @@ class GoalManager:
         if grasping_frames is not None:
             self._grasping_frames = grasping_frames
         
-        if self.random_goals:
+        if self.config.random_goals:
             self._generate_random_goal()
         else:
             self.goal_link1_pose = self.config.link1_pose.copy()
@@ -232,6 +235,7 @@ class GoalManager:
             return
         
         L = self.link_length
+        ws = self.workspace_size
         
         # Semi-transparent green for goal
         goal_color = (0, 200, 100)
@@ -239,13 +243,13 @@ class GoalManager:
         
         if draw_links:
             # Create transparent surface
-            overlay = pygame.Surface((512, 512), pygame.SRCALPHA)
+            overlay = pygame.Surface((ws, ws), pygame.SRCALPHA)
             
             for link_pose in self.goal_link_poses:
                 x, y, theta = link_pose
                 
                 # Link rectangle corners
-                half_w, half_h = L / 2, 15
+                half_w, half_h = L / 2, 7
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 
                 corners = [
@@ -265,7 +269,7 @@ class GoalManager:
             # Draw EE goal markers (crosses)
             for i, pose in enumerate(self.goal_ee_poses):
                 x, y, theta = pose
-                if not (0 <= x <= 512 and 0 <= y <= 512):
+                if not (0 <= x <= ws and 0 <= y <= ws):
                     continue
                 
                 # Cross marker
