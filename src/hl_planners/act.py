@@ -440,6 +440,39 @@ class ACTPolicy(nn.Module):
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.shape[0]
         return recon_loss + self.config.kl_weight * kl_loss
 
+    def inference(
+        self,
+        images: torch.Tensor,
+        proprio: torch.Tensor
+    ) -> np.ndarray:
+        """
+        Run inference to generate action chunk.
+        
+        Args:
+            images: (batch, obs_horizon, 3, H, W)
+            proprio: (batch, obs_horizon, proprio_dim)
+            
+        Returns:
+            Action sequence (pred_horizon, action_dim) - normalized
+        """
+        self.model.eval()
+        batch_size = images.shape[0]
+        
+        with torch.no_grad():
+            # Sample latent from prior (zero mean, unit variance)
+            latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
+            
+            # Encode observations
+            encoder_output = self.model.encoder(images, proprio)
+            
+            # Decode to actions
+            action_chunk = self.model.decode(latent, encoder_output)
+            
+            # Clamp output to normalized range [-1, 1]
+            action_chunk = action_chunk.clamp(-1.0, 1.0)
+        
+        return action_chunk.squeeze(0).cpu().numpy()
+
     def reset(self):
         """Reset policy state."""
         self.image_history = []
@@ -499,6 +532,9 @@ class ACTPolicy(nn.Module):
 
                 # Decode to actions
                 action_chunk = self.model.decode(latent, encoder_output)
+                
+                # Clamp to normalized range [-1, 1]
+                action_chunk = action_chunk.clamp(-1.0, 1.0)
 
             # Buffer actions
             action_chunk = action_chunk.squeeze(0).cpu().numpy()
@@ -556,6 +592,9 @@ class ACTPolicy(nn.Module):
             latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
             encoder_output = self.model.encoder(img_cond, prop_cond)
             action_chunk = self.model.decode(latent, encoder_output)
+            
+            # Clamp to normalized range [-1, 1]
+            action_chunk = action_chunk.clamp(-1.0, 1.0)
 
         action_chunk = action_chunk.squeeze(0).cpu().numpy()
         

@@ -146,6 +146,10 @@ class FlowMatchingNetwork(nn.Module):
         # Output network
         # Output is velocity field for flattened trajectory
         self.output_net = nn.Linear(config.hidden_dim, self.effective_action_dim)
+        
+        # Learnable output scale - helps match velocity magnitude
+        # Target velocity = (data - noise) has range roughly [-2, 2]
+        self.output_scale = nn.Parameter(torch.tensor(2.0))
 
     def forward(
         self,
@@ -194,8 +198,8 @@ class FlowMatchingNetwork(nn.Module):
         # Process through main network
         features = self.main_net(combined)
 
-        # Output velocity
-        velocity = self.output_net(features)
+        # Output velocity with learnable scale
+        velocity = self.output_net(features) * self.output_scale
 
         return velocity
 
@@ -241,6 +245,75 @@ class FlowMatchingPolicy(nn.Module):
 
     def forward(self, img_cond: torch.Tensor, prop_cond: torch.Tensor, t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
         return self.network(x_t, t, img_cond, prop_cond)
+
+    def inference(
+        self,
+        images: torch.Tensor,
+        proprio: torch.Tensor
+    ) -> np.ndarray:
+        """
+        Run inference to generate action chunk.
+        
+        Args:
+            images: (batch, obs_horizon, 3, H, W)
+            proprio: (batch, obs_horizon, proprio_dim)
+            
+        Returns:
+            Action sequence (pred_horizon, action_dim) - normalized
+        """
+        self.eval()
+        
+        # Use most recent observation
+        img_cond = images[:, -1]  # (batch, 3, H, W)
+        prop_cond = proprio[:, -1]  # (batch, proprio_dim)
+        
+        with torch.no_grad():
+            action_flat = self._sample_flow_tensor(img_cond, prop_cond)
+        
+        # Reshape to (pred_horizon, action_dim) for consistency with other policies
+        action_norm = action_flat.squeeze(0).cpu().numpy()
+        action_norm = action_norm.reshape(self.config.pred_horizon, self.config.action_dim)
+        
+        return action_norm
+
+    def _sample_flow_tensor(
+        self,
+        img_cond: torch.Tensor,
+        prop_cond: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Sample from flow model using ODE integration (returns tensor).
+        
+        Args:
+            img_cond: (batch, 3, H, W)
+            prop_cond: (batch, proprio_dim)
+            
+        Returns:
+            Sampled action (batch, pred_horizon * action_dim)
+        """
+        device = self._device()
+        batch_size = img_cond.shape[0]
+        effective_dim = self.config.action_dim * self.config.pred_horizon
+        
+        # Start from noise
+        x = torch.randn(batch_size, effective_dim, device=device)
+        
+        # Integrate flow ODE using Euler method
+        dt = 1.0 / self.config.num_diffusion_steps
+        
+        for step in range(self.config.num_diffusion_steps):
+            t = torch.full((batch_size, 1), step * dt, dtype=torch.float32, device=device)
+            
+            # Predict velocity
+            velocity = self.network(x, t, img_cond, prop_cond)
+            
+            # Euler step
+            x = x + velocity * dt
+        
+        # Clamp final output to normalized range [-1, 1]
+        x = x.clamp(-1.0, 1.0)
+        
+        return x
 
     def compute_loss(self, images: torch.Tensor, proprio: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """
@@ -441,35 +514,22 @@ class FlowMatchingPolicy(nn.Module):
         Sample from flow model using ODE integration.
 
         Args:
-            img_cond: Image condition
-            prop_cond: Proprio condition
-            goal: Optional goal
+            img_cond: Image condition (batch, 3, H, W) or (3, H, W)
+            prop_cond: Proprio condition (batch, proprio_dim) or (proprio_dim,)
+            goal: Optional goal (not used)
 
         Returns:
-            Sampled action chunk (flattened)
+            Sampled action chunk (flattened numpy array)
         """
-        # Start from noise (or goal if provided)
-        device = self._device()
-        effective_dim = self.config.action_dim * self.config.pred_horizon
+        # Ensure proper dimensions
+        if img_cond.dim() == 3:
+            img_cond = img_cond.unsqueeze(0)
+        if prop_cond.dim() == 1:
+            prop_cond = prop_cond.unsqueeze(0)
+            
+        # Use tensor version
+        x = self._sample_flow_tensor(img_cond, prop_cond)
         
-        if goal is not None:
-            # Not fully implemented for chunk goal yet, fallback to noise
-            x = torch.randn(1, effective_dim, device=device)
-        else:
-            x = torch.randn(1, effective_dim, device=device)
-
-        # Integrate flow ODE using Euler method
-        dt = 1.0 / self.config.num_diffusion_steps
-
-        for step in range(self.config.num_diffusion_steps):
-            t = torch.full((1, 1), step * dt, dtype=torch.float32, device=device)
-
-            # Predict velocity
-            velocity = self.network(x, t, img_cond, prop_cond)
-
-            # Euler step
-            x = x + velocity * dt
-
         return x.cpu().numpy()
 
     def train_step(

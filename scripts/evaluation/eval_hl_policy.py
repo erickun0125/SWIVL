@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.envs.biart import BiArtEnv
 from src.envs.object_manager import JointType
 from src.ll_controllers.pd_controller import MultiGripperPDController, PDGains
+from src.ll_controllers.se2_impedance_controller import MultiGripperSE2ImpedanceController
+from src.se2_dynamics import SE2RobotParams
 from scripts.training.train_hl_policy import create_policy, LinearNormalizer
 
 class HLPolicyEvaluator:
@@ -27,13 +29,15 @@ class HLPolicyEvaluator:
         no_wrench: bool = False,
         device: str = 'auto',
         render_mode: str = 'human',
-        execution_horizon: int = 10
+        execution_horizon: int = 10,
+        controller_type: str = 'pd'
     ):
         self.device = torch.device(device if device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu'))
         print(f"Using device: {self.device}")
         
         self.execution_horizon = execution_horizon
         self.no_wrench = no_wrench
+        self.controller_type = controller_type
         
         # Load config
         with open(config_path, 'r') as f:
@@ -51,15 +55,38 @@ class HLPolicyEvaluator:
             joint_type='revolute'
         )
         
-        # Create PD Controller
-        gains = PDGains(
-            kp_linear=1500.0,
-            kd_linear=1000.0,
-            kp_angular=750.0,
-            kd_angular=500.0
-        )
-        self.controller = MultiGripperPDController(num_grippers=2, gains=gains)
-        self.controller.set_timestep(self.env.dt)
+        # Create Controller
+        print(f"Creating {controller_type.upper()} controller...")
+        if controller_type == 'pd':
+            gains = PDGains(
+                kp_linear=1500.0,
+                kd_linear=1000.0,
+                kp_angular=750.0,
+                kd_angular=500.0
+            )
+            self.controller = MultiGripperPDController(num_grippers=2, gains=gains)
+            self.controller.set_timestep(self.env.dt)
+            
+        elif controller_type == 'impedance':
+            # Robot Parameters (Calculated from GripperConfig)
+            # Mass = 1.2 kg, Inertia = 97.6 kg*pixel^2
+            robot_params = SE2RobotParams(
+                mass=1.2,
+                inertia=97.6
+            )
+            
+            self.controller = MultiGripperSE2ImpedanceController(
+                num_grippers=2,
+                robot_params=robot_params,
+                M_d=np.diag([97.6, 1.2, 1.2]),     # Match robot inertia
+                D_d=np.diag([50.0, 10.0, 10.0]),   # Damping (tuned)
+                K_d=np.diag([200.0, 50.0, 50.0]),  # Stiffness (tuned)
+                model_matching=True,
+                max_force=100.0,
+                max_torque=500.0
+            )
+        else:
+            raise ValueError(f"Unknown controller type: {controller_type}")
         
         # Load Policy
         self.policy = create_policy(policy_type, self.config, self.device)
@@ -261,24 +288,19 @@ class HLPolicyEvaluator:
         """
         Run policy inference to get a new action chunk.
         
+        All policies implement a unified `inference(images, proprio)` method
+        that returns normalized actions as numpy array.
+        
         Returns:
             action_chunk: (pred_horizon, 2, 3) array of desired poses
         """
         # Process observation
         imgs_tensor, proprio_tensor = self.process_observation(obs, img)
         
-        # Inference
-        with torch.no_grad():
-            if hasattr(self.policy, '_denoise'):  # Diffusion
-                action_norm = self.policy._denoise(imgs_tensor, proprio_tensor)
-            elif hasattr(self.policy, '_sample_flow'):  # Flow Matching
-                action_norm = self.policy._sample_flow(imgs_tensor, proprio_tensor)
-            elif hasattr(self.policy, 'inference'):  # ACT
-                action_norm = self.policy.inference(imgs_tensor, proprio_tensor)
-            else:
-                raise NotImplementedError(f"Policy {type(self.policy)} inference method not found")
+        # Unified inference interface - all policies have inference() method
+        action_norm = self.policy.inference(imgs_tensor, proprio_tensor)
         
-        # Convert to numpy
+        # Convert to numpy if needed
         if isinstance(action_norm, torch.Tensor):
             action_norm = action_norm.cpu().numpy()
         
@@ -292,16 +314,32 @@ class HLPolicyEvaluator:
         # Reshape to (pred_horizon, 2, 3)
         action_chunk = action.reshape(-1, 2, 3)
         
-        # Clip positions to valid range
+        # Clip positions to valid range (within screen bounds with margin)
         action_chunk[:, :, :2] = np.clip(action_chunk[:, :, :2], 20.0, 492.0)
         
         return action_chunk
+
+    def point_velocity_to_body_twist(self, pose, point_velocity):
+        """
+        Convert world frame point velocity [vx, vy, omega] to body twist [omega, vx_b, vy_b].
+        """
+        vx_world, vy_world, omega = point_velocity
+        theta = pose[2]
+        
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        vx_body = cos_theta * vx_world + sin_theta * vy_world
+        vy_body = -sin_theta * vx_world + cos_theta * vy_world
+        
+        return np.array([omega, vx_body, vy_body])
 
     def run(self):
         """Run evaluation loop with action chunking."""
         print("\n" + "="*60)
         print("Starting Action Chunk Evaluation")
         print("="*60)
+        print(f"Controller: {self.controller_type.upper()}")
         print(f"Prediction Horizon: {self.pred_horizon}")
         print(f"Execution Horizon: {self.execution_horizon}")
         print("\nControls:")
@@ -380,13 +418,43 @@ class HLPolicyEvaluator:
             else:
                 desired_vel = np.zeros((2, 3))
             
-            # 4. Compute PD control
-            wrenches = self.controller.compute_wrenches(
-                obs['ee_poses'],
-                target_pose,
-                desired_vel,
-                current_velocities=obs['ee_velocities']
-            )
+            # 4. Compute Control
+            if self.controller_type == 'pd':
+                wrenches = self.controller.compute_wrenches(
+                    obs['ee_poses'],
+                    target_pose,
+                    desired_vel,
+                    current_velocities=obs['ee_velocities']
+                )
+            elif self.controller_type == 'impedance':
+                # Prepare inputs for impedance controller
+                current_poses = obs['ee_poses']
+                
+                # Convert velocities to body twists
+                current_twists = []
+                desired_twists = []
+                
+                for i in range(2):
+                    # Current twist
+                    current_twists.append(
+                        self.point_velocity_to_body_twist(current_poses[i], obs['ee_velocities'][i])
+                    )
+                    # Desired twist
+                    desired_twists.append(
+                        self.point_velocity_to_body_twist(current_poses[i], desired_vel[i])
+                    )
+                
+                current_twists = np.array(current_twists)
+                desired_twists = np.array(desired_twists)
+                
+                wrenches = self.controller.compute_wrenches(
+                    current_poses,
+                    target_pose,
+                    current_twists,
+                    desired_twists,
+                    desired_accels=None, 
+                    external_wrenches=obs['external_wrenches']
+                )
             
             # 5. Step environment
             env_action = np.concatenate([wrenches[0], wrenches[1]])
@@ -447,8 +515,10 @@ if __name__ == "__main__":
                         help='Disable external wrench in observation')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device (auto, cpu, cuda)')
-    parser.add_argument('--execution_horizon', type=int, default=10,
+    parser.add_argument('--execution_horizon', type=int, default=25,
                         help='Number of steps to execute before re-planning (default: 10, full chunk)')
+    parser.add_argument('--controller', type=str, default='pd', choices=['pd', 'impedance'],
+                        help='Low-level controller type (pd, impedance)')
     
     args = parser.parse_args()
     
@@ -458,6 +528,7 @@ if __name__ == "__main__":
         config_path=args.config,
         no_wrench=args.no_wrench,
         device=args.device,
-        execution_horizon=args.execution_horizon
+        execution_horizon=args.execution_horizon,
+        controller_type=args.controller
     )
     evaluator.run()

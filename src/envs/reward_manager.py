@@ -44,8 +44,8 @@ class RewardConfig:
     weights: RewardWeights = None  # Will be initialized in __post_init__
     
     # Success/failure thresholds
-    success_threshold_pos: float = 5.0  # pixels
-    success_threshold_angle: float = 0.1  # radians
+    success_threshold_pos: float = 7.0  # pixels
+    success_threshold_angle: float = 0.2  # radians
     
     # Safety thresholds
     max_wrench_threshold: float = 200.0  # force/torque limit

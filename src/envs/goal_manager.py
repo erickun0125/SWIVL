@@ -22,7 +22,7 @@ class GoalConfig:
     """Configuration for goal state of articulated object."""
     
     # Whether to generate random goals each episode
-    random_goals: bool = False
+    random_goals: bool = True
     
     # Goal pose for Link 1 (base link): [x, y, theta]
     # Default is centered and slightly rotated for visibility
@@ -32,12 +32,12 @@ class GoalConfig:
     joint_state: float = -2.0
     
     # Workspace bounds for random goal generation
-    workspace_min: Tuple[float, float] = (180.0, 180.0)
-    workspace_max: Tuple[float, float] = (332.0, 332.0)
+    workspace_min: Tuple[float, float] = (100.0, 100.0)
+    workspace_max: Tuple[float, float] = (412.0, 412.0)
     
     # Joint state bounds for random generation
-    joint_min: float = -np.pi/3
-    joint_max: float = np.pi/3
+    joint_min: float = -np.pi*(3/4)
+    joint_max: float = np.pi*(3/4)
 
 
 class GoalManager:
@@ -237,16 +237,20 @@ class GoalManager:
         L = self.link_length
         ws = self.workspace_size
         
-        # Semi-transparent green for goal
-        goal_color = (0, 200, 100)
+        # Colors: Left (Link 1) = Blue, Right (Link 2) = Red
+        left_color = (80, 120, 255)   # Blue for left arm (Link 1)
+        right_color = (255, 100, 100)  # Red for right arm (Link 2)
         goal_alpha = 80
         
         if draw_links:
             # Create transparent surface
             overlay = pygame.Surface((ws, ws), pygame.SRCALPHA)
             
-            for link_pose in self.goal_link_poses:
+            for i, link_pose in enumerate(self.goal_link_poses):
                 x, y, theta = link_pose
+                
+                # Select color based on link index
+                link_color = left_color if i == 0 else right_color
                 
                 # Link rectangle corners
                 half_w, half_h = L / 2, 7
@@ -260,29 +264,33 @@ class GoalManager:
                 ]
                 corners = [(int(cx), int(cy)) for cx, cy in corners]
                 
-                pygame.draw.polygon(overlay, (*goal_color, goal_alpha), corners)
-                pygame.draw.polygon(overlay, goal_color, corners, 2)
+                pygame.draw.polygon(overlay, (*link_color, goal_alpha), corners)
+                pygame.draw.polygon(overlay, link_color, corners, 2)
             
             screen.blit(overlay, (0, 0))
         
         if draw_ee and self.goal_ee_poses is not None:
             # Draw EE goal markers (crosses)
+            # Left EE (index 0) = Blue, Right EE (index 1) = Red
             for i, pose in enumerate(self.goal_ee_poses):
                 x, y, theta = pose
                 if not (0 <= x <= ws and 0 <= y <= ws):
                     continue
                 
+                # Select color based on EE index
+                ee_color = left_color if i == 0 else right_color
+                
                 # Cross marker
                 size = 12
-                pygame.draw.line(screen, goal_color, 
+                pygame.draw.line(screen, ee_color, 
                                (int(x - size), int(y)), (int(x + size), int(y)), 2)
-                pygame.draw.line(screen, goal_color,
+                pygame.draw.line(screen, ee_color,
                                (int(x), int(y - size)), (int(x), int(y + size)), 2)
                 
                 # Orientation indicator
                 jaw_angle = theta + np.pi / 2
                 end_x = x + 18 * np.cos(jaw_angle)
                 end_y = y + 18 * np.sin(jaw_angle)
-                pygame.draw.line(screen, goal_color,
+                pygame.draw.line(screen, ee_color,
                                (int(x), int(y)), (int(end_x), int(end_y)), 2)
 

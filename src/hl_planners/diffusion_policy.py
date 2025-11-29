@@ -164,7 +164,15 @@ class DiffusionNoisePredictor(nn.Module):
         self.main_net = nn.Sequential(*layers)
 
         # Output network
-        self.output_net = nn.Linear(config.hidden_dim, config.action_dim * config.pred_horizon)
+        self.output_net = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.Mish(),
+            nn.Linear(config.hidden_dim, config.action_dim * config.pred_horizon)
+        )
+        
+        # Learnable output scale - initialized to match expected noise scale
+        # Network outputs ~[-0.1, 0.1], need to scale to ~[-3, 3] for noise
+        self.output_scale = nn.Parameter(torch.tensor(30.0))
 
     def forward(
         self,
@@ -213,8 +221,8 @@ class DiffusionNoisePredictor(nn.Module):
         # Process through main network
         features = self.main_net(combined)
 
-        # Output noise prediction
-        noise_pred = self.output_net(features)
+        # Output noise prediction with learnable scale
+        noise_pred = self.output_net(features) * self.output_scale
         noise_pred = noise_pred.reshape(batch_size, self.config.pred_horizon, self.config.action_dim)
 
         return noise_pred
@@ -289,6 +297,28 @@ class DiffusionPolicy(nn.Module):
             return torch.clip(betas, 0.0001, 0.9999)
         else:
             raise ValueError(f"Unknown beta schedule: {self.config.beta_schedule}")
+
+    def inference(
+        self,
+        images: torch.Tensor,
+        proprio: torch.Tensor
+    ) -> np.ndarray:
+        """
+        Run inference to generate action chunk.
+        
+        Args:
+            images: (batch, obs_horizon, 3, H, W)
+            proprio: (batch, obs_horizon, proprio_dim)
+            
+        Returns:
+            Action sequence (pred_horizon, action_dim) - normalized
+        """
+        self.eval()
+        
+        with torch.no_grad():
+            action_norm = self._denoise(images, proprio)
+        
+        return action_norm
 
     def reset(self):
         """Reset policy state."""
@@ -490,8 +520,10 @@ class DiffusionPolicy(nn.Module):
             else:
                 alpha_t_prev = torch.tensor(1.0, device=self._device())
 
-            # Predict x0
+            # Predict x0 and clip to valid range
             pred_x0 = (noisy_action - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
+            # Clip pred_x0 to prevent numerical instability - actions are normalized to [-1, 1]
+            pred_x0 = pred_x0.clamp(-1.0, 1.0)
 
             # Direction pointing to x_t
             dir_xt = torch.sqrt(1 - alpha_t_prev) * predicted_noise
@@ -499,7 +531,10 @@ class DiffusionPolicy(nn.Module):
             # Compute x_{t-1}
             noisy_action = torch.sqrt(alpha_t_prev) * pred_x0 + dir_xt
 
-        return noisy_action.squeeze(0).cpu().numpy()
+        # Final output is already in normalized range due to pred_x0 clipping
+        final_action = noisy_action.clamp(-1.0, 1.0)
+        
+        return final_action.squeeze(0).cpu().numpy()
 
     def compute_loss(
         self,

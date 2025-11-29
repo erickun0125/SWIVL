@@ -16,7 +16,7 @@ dataset:
 model:
   # Observation configuration
   obs_horizon: 1            # Number of observation frames to stack
-  pred_horizon: 10          # Number of future actions to predict
+  pred_horizon: 25          # Number of future actions to predict
   action_dim: 6             # Action dimension (2 EE poses: 2 * 3)
   use_external_wrench: false # Include external wrench in observation
 
@@ -35,14 +35,14 @@ flow_matching:
   hidden_dim: 256
   num_layers: 4
   num_ode_steps: 10         # ODE solver steps
-  action_horizon: 8         # Number of actions to execute before replanning
+  action_horizon: 25         # Number of actions to execute before replanning
 
 diffusion:
   hidden_dim: 256
   num_layers: 4
   num_diffusion_steps: 100  # Training diffusion steps
   num_inference_steps: 16   # Inference DDIM steps (faster)
-  action_horizon: 8         # Number of actions to execute before replanning
+  action_horizon: 25         # Number of actions to execute before replanning
 
 act:
   hidden_dim: 256
@@ -50,7 +50,7 @@ act:
   num_decoder_layers: 6
   latent_dim: 32            # VAE latent dimension
   kl_weight: 10.0           # KL divergence weight
-  action_horizon: 8
+  action_horizon: 25
 
 # =============================================================================
 # Training Hyperparameters

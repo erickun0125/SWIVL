@@ -399,6 +399,108 @@ class SE2ImpedanceController:
         self.last_control_wrench = None
 
 
+class MultiGripperSE2ImpedanceController:
+    """
+    Manages multiple SE(2) impedance controllers for multi-gripper systems.
+    """
+
+    def __init__(self,
+                 num_grippers: int,
+                 robot_params: SE2RobotParams,
+                 M_d: Optional[np.ndarray] = None,
+                 D_d: Optional[np.ndarray] = None,
+                 K_d: Optional[np.ndarray] = None,
+                 model_matching: bool = True,
+                 max_force: float = 100.0,
+                 max_torque: float = 50.0):
+        """
+        Initialize multi-gripper impedance controller.
+
+        Args:
+            num_grippers: Number of grippers
+            robot_params: Robot physical parameters (assumed same for all)
+            M_d, D_d, K_d: Impedance matrices (shared)
+            model_matching: Use model matching
+            max_force: Max force per gripper
+            max_torque: Max torque per gripper
+        """
+        self.num_grippers = num_grippers
+        
+        # Default impedance if not provided
+        if M_d is None:
+            # Default to robot inertia
+            M_d = np.diag([robot_params.inertia, robot_params.mass, robot_params.mass])
+        
+        if D_d is None:
+            # Critical damping approx
+            D_d = np.diag([5.0, 10.0, 10.0])
+            
+        if K_d is None:
+            # Moderate stiffness
+            K_d = np.diag([20.0, 50.0, 50.0])
+
+        self.controllers = []
+        for _ in range(num_grippers):
+            # Create new dynamics instance for each controller
+            dynamics = SE2Dynamics(robot_params)
+            
+            controller = SE2ImpedanceController(
+                M_d=M_d,
+                D_d=D_d,
+                K_d=K_d,
+                robot_dynamics=dynamics,
+                model_matching=model_matching,
+                max_force=max_force,
+                max_torque=max_torque
+            )
+            self.controllers.append(controller)
+
+    def compute_wrenches(self,
+                        current_poses: np.ndarray,
+                        desired_poses: np.ndarray,
+                        current_twists: np.ndarray,
+                        desired_twists: np.ndarray,
+                        desired_accels: Optional[np.ndarray] = None,
+                        external_wrenches: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Compute wrenches for all grippers.
+
+        Args:
+            current_poses: (N, 3) [x, y, theta]
+            desired_poses: (N, 3) [x, y, theta]
+            current_twists: (N, 3) [omega, vx, vy] (MR convention)
+            desired_twists: (N, 3) [omega, vx, vy]
+            desired_accels: (N, 3) [domega, dvx, dvy]
+            external_wrenches: (N, 3) [tau, fx, fy]
+
+        Returns:
+            wrenches: (N, 3) [tau, fx, fy]
+        """
+        if current_poses.shape[0] != self.num_grippers:
+            raise ValueError(f"Expected {self.num_grippers} poses")
+
+        wrenches = []
+        for i in range(self.num_grippers):
+            accel = desired_accels[i] if desired_accels is not None else None
+            ext_wrench = external_wrenches[i] if external_wrenches is not None else None
+            
+            wrench, _ = self.controllers[i].compute_control(
+                current_poses[i],
+                desired_poses[i],
+                current_twists[i],
+                desired_twists[i],
+                accel,
+                ext_wrench
+            )
+            wrenches.append(wrench)
+
+        return np.array(wrenches)
+
+    def reset(self):
+        """Reset all controllers."""
+        for controller in self.controllers:
+            controller.reset()
+
 # Example usage and testing
 if __name__ == "__main__":
     print("="*60)

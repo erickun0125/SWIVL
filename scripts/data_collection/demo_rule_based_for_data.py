@@ -67,7 +67,7 @@ class AutoVelocityController:
         
         # Compute linear velocity (proportional with saturation and minimum speed)
         if pos_dist > 0.5:
-            vel_mag = min(max(pos_dist * gain, self.linear_speed * 0.5), self.linear_speed)
+            vel_mag = min(max(pos_dist * gain, self.linear_speed * 0.75), self.linear_speed)
             linear_vel = (pos_error / pos_dist) * vel_mag
         else:
             linear_vel = np.zeros(2)
@@ -221,11 +221,11 @@ class RuleBasedDataDemo:
         self.controller.set_timestep(self.env.dt)
 
         # Create automatic velocity controller
-        joint_speed = 0.5
+        joint_speed = 0.75
         if self.joint_enum == JointType.PRISMATIC:
             joint_speed *= 5.0
         self.auto_controller = AutoVelocityController(
-            linear_speed=20.0,
+            linear_speed=21.0,
             angular_speed=0.5,
             joint_speed=joint_speed
         )
@@ -389,19 +389,27 @@ class RuleBasedDataDemo:
             clock.tick(self.env.metadata['render_fps'])
 
             # Handle episode termination
-            episode_done = terminated or truncated or self.step_count >= max_steps_per_episode
+            is_timeout = self.step_count >= max_steps_per_episode
+            episode_done = terminated or truncated or is_timeout
             
             if episode_done:
-                print(f"\nEpisode {episodes_collected + 1} finished!")
+                is_success = info.get('is_success', False)
+                print(f"\nEpisode attempt finished!")
                 print(f"  Total steps: {self.step_count}")
-                print(f"  Success: {info.get('is_success', False)}")
+                print(f"  Success: {is_success}")
+                print(f"  Timeout: {is_timeout}")
                 
-                # Save episode data
-                filepath = self.collector.save_episode(episodes_collected + 1, self.joint_type)
-                if filepath:
-                    self.saved_files.append(filepath)
-                
-                episodes_collected += 1
+                # Only save successful episodes (skip timeout failures)
+                if is_timeout and not is_success:
+                    print(f"  ⚠️ Timeout without success - discarding episode data")
+                    self.collector.reset_buffer()
+                else:
+                    # Save episode data
+                    episodes_collected += 1
+                    filepath = self.collector.save_episode(episodes_collected, self.joint_type)
+                    if filepath:
+                        self.saved_files.append(filepath)
+                        print(f"  ✓ Episode {episodes_collected} saved")
                 
                 if episodes_collected < num_episodes:
                     self.reset_environment()
@@ -427,8 +435,8 @@ def main():
                         help='Number of episodes to collect')
     parser.add_argument('--data-dir', default='data/demos',
                         help='Directory to save data')
-    parser.add_argument('--max-steps', type=int, default=500,
-                        help='Maximum steps per episode')
+    parser.add_argument('--max-steps', type=int, default=200,
+                        help='Maximum steps per episode (timeout)')
     args = parser.parse_args()
 
     print("\n" + "="*60)
@@ -437,6 +445,8 @@ def main():
     print(f"Joint Type: {args.joint_type.upper()}")
     print(f"Episodes: {args.num_episodes}")
     print(f"Data Dir: {args.data_dir}")
+    print(f"Timeout: {args.max_steps} steps")
+    print("(Episodes that timeout without success will be discarded)")
     print("="*60)
 
     demo = RuleBasedDataDemo(
@@ -449,4 +459,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

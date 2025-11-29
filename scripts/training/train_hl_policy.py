@@ -257,10 +257,17 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             
             # Check if path is directory or file
             if os.path.isdir(hdf5_path):
-                # Load all .h5 files from directory
-                h5_files = sorted([f for f in os.listdir(hdf5_path) if f.endswith('.h5')])
-                print(f"Found {len(h5_files)} HDF5 files in directory {hdf5_path}")
-                file_paths = [os.path.join(hdf5_path, f) for f in h5_files]
+                # Recursively find all .h5 files in directory and subdirectories
+                import glob
+                h5_pattern = os.path.join(hdf5_path, '**', '*.h5')
+                file_paths = sorted(glob.glob(h5_pattern, recursive=True))
+                print(f"Found {len(file_paths)} HDF5 files in {hdf5_path} (including subdirectories)")
+                
+                # Also check direct children (non-recursive) if glob found nothing
+                if len(file_paths) == 0:
+                    h5_files = sorted([f for f in os.listdir(hdf5_path) if f.endswith('.h5')])
+                    file_paths = [os.path.join(hdf5_path, f) for f in h5_files]
+                    print(f"Fallback: Found {len(file_paths)} HDF5 files directly in {hdf5_path}")
             else:
                 # Single file
                 file_paths = [hdf5_path]
@@ -433,9 +440,23 @@ def train_epoch(
     device: torch.device,
     epoch: int,
     writer: Optional[SummaryWriter] = None,
-    log_interval: int = 100
+    log_interval: int = 20
 ):
-    """Train for one epoch."""
+    """
+    Train for one epoch.
+    
+    Args:
+        policy: Policy model to train
+        train_loader: Training data loader
+        optimizer: Optimizer
+        device: Device for computation
+        epoch: Current epoch number
+        writer: TensorBoard writer (optional)
+        log_interval: How often to log batch loss (default: 20)
+    
+    Returns:
+        Average training loss for the epoch
+    """
     policy.train()
     total_loss = 0.0
     num_batches = 0
@@ -451,6 +472,10 @@ def train_epoch(
 
         # Backward pass
         loss.backward()
+        
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
+        
         optimizer.step()
 
         # Logging

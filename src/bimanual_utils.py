@@ -102,3 +102,4 @@ def compute_constrained_velocity(
     
     return controlled_velocity.copy()
 
+
