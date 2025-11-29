@@ -54,8 +54,12 @@ class BiArtEnv(gym.Env):
     Observation Space (state mode):
         Dictionary with:
         - ee_poses: (2, 3) gripper poses [x, y, theta]
-        - ee_twists: (2, 3) spatial velocities [vx, vy, omega]
+        - ee_velocities: (2, 3) EE point velocities in world frame [vx, vy, omega]
+          NOTE: This is NOT a twist! It's the velocity of the body origin point
+          observed in the world frame. Order is [vx, vy, omega] to distinguish
+          from twist convention [omega, vx, vy].
         - ee_body_twists: (2, 3) body twists [omega, vx, vy] (MR convention)
+          This IS a proper body twist: velocity of body origin in body frame.
         - link_poses: (2, 3) object link poses
         - external_wrenches: (2, 3) body wrenches [tau, fx, fy] (MR convention)
     """
@@ -145,7 +149,7 @@ class BiArtEnv(gym.Env):
                     high=np.array([[512, 512, np.pi]] * 2),
                     dtype=np.float32
                 ),
-                'ee_twists': spaces.Box(
+                'ee_velocities': spaces.Box(
                     low=np.array([[-max_velocity, -max_velocity, -max_angular_velocity]] * 2),
                     high=np.array([[max_velocity, max_velocity, max_angular_velocity]] * 2),
                     dtype=np.float32
@@ -344,7 +348,7 @@ class BiArtEnv(gym.Env):
             
             return {
                 'ee_poses': ee_poses.astype(np.float32),
-                'ee_twists': self.ee_manager.get_velocities().astype(np.float32),
+                'ee_velocities': self.ee_manager.get_velocities().astype(np.float32),
                 'ee_body_twists': self.ee_manager.get_body_twists().astype(np.float32),
                 'link_poses': link_poses.astype(np.float32),
                 'external_wrenches': self.ee_manager.get_external_wrenches().astype(np.float32)
@@ -378,27 +382,49 @@ class BiArtEnv(gym.Env):
         )
 
     def _compute_link2_goal(self, link1_goal: np.ndarray, joint_state: float = 0.0) -> np.ndarray:
-        """Compute link2 goal pose from link1 goal."""
+        """
+        Compute link2 goal pose from link1 goal.
+        
+        Matches the kinematic structure defined in object_manager.py:
+        - Revolute: joint at link1's right end, link2 rotates around it
+        - Prismatic: joint_state = position of link2's left end in link1 frame
+        - Fixed: link2 rigidly attached at link1's right end
+        """
         cfg = self.object_config
         joint_type = self.object_manager.joint_type
+        L = cfg.link_length
 
         if joint_type == JointType.REVOLUTE:
+            # Link2 orientation = link1 orientation + joint angle
             link2_theta = link1_goal[2] + joint_state
-            joint_x = link1_goal[0] + (cfg.link_length / 2) * np.cos(link1_goal[2])
-            joint_y = link1_goal[1] + (cfg.link_length / 2) * np.sin(link1_goal[2])
-            link2_x = joint_x + (cfg.link_length / 2) * np.cos(link2_theta)
-            link2_y = joint_y + (cfg.link_length / 2) * np.sin(link2_theta)
+            
+            # Joint position at link1's right end
+            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
+            joint_x = link1_goal[0] + (L / 2) * cos1
+            joint_y = link1_goal[1] + (L / 2) * sin1
+            
+            # Link2 center is L/2 from joint along link2's axis
+            cos2, sin2 = np.cos(link2_theta), np.sin(link2_theta)
+            link2_x = joint_x + (L / 2) * cos2
+            link2_y = joint_y + (L / 2) * sin2
             return np.array([link2_x, link2_y, link2_theta])
 
         elif joint_type == JointType.PRISMATIC:
-            link2_x = link1_goal[0] + joint_state * np.cos(link1_goal[2])
-            link2_y = link1_goal[1] + joint_state * np.sin(link1_goal[2])
+            # Prismatic: links stay parallel
+            # joint_state = x-position of link2's left end in link1's frame
+            # Link2 center in link1 frame = (joint_state + L/2, 0)
+            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
+            offset = joint_state + L / 2  # distance from link1 center to link2 center
+            link2_x = link1_goal[0] + offset * cos1
+            link2_y = link1_goal[1] + offset * sin1
             return np.array([link2_x, link2_y, link1_goal[2]])
 
         else:  # FIXED
-            offset_x = cfg.link_length * np.cos(link1_goal[2])
-            offset_y = cfg.link_length * np.sin(link1_goal[2])
-            return np.array([link1_goal[0] + offset_x, link1_goal[1] + offset_y, link1_goal[2]])
+            # Link2 rigidly attached: centers are L apart
+            cos1, sin1 = np.cos(link1_goal[2]), np.sin(link1_goal[2])
+            link2_x = link1_goal[0] + L * cos1
+            link2_y = link1_goal[1] + L * sin1
+            return np.array([link2_x, link2_y, link1_goal[2]])
 
     def _check_safety(self) -> Tuple[bool, str]:
         """Check safety constraints."""
@@ -421,7 +447,7 @@ class BiArtEnv(gym.Env):
                 return False, f"Joint angle out of limits: {np.rad2deg(joint_state):.1f}°"
                 
         elif joint_type == JointType.PRISMATIC:
-            limit = self.object_config.link_length * 0.5
+            limit = self.object_config.link_length * 1.0
             if not (-limit <= joint_state <= limit):
                 return False, f"Joint position out of limits: {joint_state:.1f}"
 

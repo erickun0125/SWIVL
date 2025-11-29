@@ -42,6 +42,11 @@ import argparse
 import numpy as np
 import pygame
 import sys
+import h5py
+import cv2
+import os
+from datetime import datetime
+from typing import List, Dict, Optional
 
 from src.envs.biart import BiArtEnv
 from src.envs.object_manager import JointType
@@ -104,19 +109,117 @@ class KeyboardVelocityController:
         return self.joint_velocity
 
 
+
+class DataCollector:
+    """Collects and saves demonstration data."""
+    
+    def __init__(self, save_dir: str):
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
+        self.reset_buffer()
+        
+    def reset_buffer(self):
+        """Reset data buffer."""
+        self.images = []
+        self.ee_poses = []
+        self.ee_velocities = []
+        self.external_wrenches = []
+        self.joint_states = []
+        self.link_poses = []
+        self.actions = [] # Desired poses
+        
+    def add_step(self, obs: Dict, action: np.ndarray, image: np.ndarray):
+        """
+        Add a step to the buffer.
+        
+        Args:
+            obs: Observation dictionary
+            action: Action taken (desired poses)
+            image: Rendered image (H, W, 3)
+        """
+        self.images.append(image)
+        self.ee_poses.append(obs['ee_poses'])
+        self.ee_velocities.append(obs['ee_velocities'])
+        self.external_wrenches.append(obs['external_wrenches'])
+        self.link_poses.append(obs['link_poses'])
+        
+        # Handle joint state (scalar or array)
+        joint_state = obs.get('joint_state', 0.0)
+        self.joint_states.append(joint_state)
+        
+        self.actions.append(action)
+        
+    def save_episode(self, episode_idx: int):
+        """Save buffered data to HDF5."""
+        if len(self.images) == 0:
+            print("No data to save.")
+            return
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"demo_{timestamp}_ep{episode_idx}.h5"
+        filepath = os.path.join(self.save_dir, filename)
+        
+        # Convert lists to arrays
+        # Images: (T, H, W, 3)
+        images = np.array(self.images, dtype=np.uint8)
+        
+        # Proprioception
+        ee_poses = np.array(self.ee_poses, dtype=np.float32) # (T, 2, 3)
+        ee_velocities = np.array(self.ee_velocities, dtype=np.float32) # (T, 2, 3)
+        external_wrenches = np.array(self.external_wrenches, dtype=np.float32) # (T, 2, 3)
+        link_poses = np.array(self.link_poses, dtype=np.float32) # (T, 2, 3)
+        joint_states = np.array(self.joint_states, dtype=np.float32) # (T,)
+        
+        # Actions (Desired Poses)
+        actions = np.array(self.actions, dtype=np.float32) # (T, 2, 3)
+        
+        print(f"Saving episode {episode_idx} with {len(images)} steps to {filepath}...")
+        
+        with h5py.File(filepath, 'w') as f:
+            # Create groups
+            obs_group = f.create_group('obs')
+            action_group = f.create_group('action')
+            
+            # Save observations
+            obs_group.create_dataset('images', data=images, compression='gzip')
+            obs_group.create_dataset('ee_poses', data=ee_poses)
+            obs_group.create_dataset('ee_velocities', data=ee_velocities)
+            obs_group.create_dataset('external_wrenches', data=external_wrenches)
+            obs_group.create_dataset('link_poses', data=link_poses)
+            obs_group.create_dataset('joint_states', data=joint_states)
+            
+            # Save actions
+            action_group.create_dataset('desired_poses', data=actions)
+            
+            # Save metadata
+            f.attrs['num_steps'] = len(images)
+            
+        print("Save complete.")
+        self.reset_buffer()
+
+
 class TeleoperationDemo:
     """Unified demo for bimanual manipulation with teleoperation."""
 
-    def __init__(self, joint_type='revolute', render_mode='human'):
+    def __init__(self, joint_type='revolute', render_mode='human', save_data=False, data_dir='data/demos'):
         """
         Initialize demo.
 
         Args:
             joint_type: Type of articulated joint ('revolute', 'prismatic', 'fixed')
             render_mode: Rendering mode
+            save_data: Whether to collect and save data
+            data_dir: Directory to save data
         """
         self.joint_type = joint_type
         self.render_mode = render_mode
+        self.save_data = save_data
+        
+        if self.save_data:
+            print(f"Data collection enabled. Saving to {data_dir}")
+            self.collector = DataCollector(data_dir)
+        else:
+            self.collector = None
 
         # Create environment
         print(f"Creating BiArt environment with {joint_type} joint...")
@@ -187,7 +290,12 @@ class TeleoperationDemo:
         # Reset statistics
         self.step_count = 0
         self.total_reward = 0.0
+        self.total_reward = 0.0
         self.episode_count += 1
+        
+        # Note: buffer reset is handled by the caller (run loop) after saving data
+        # if self.collector:
+        #     self.collector.reset_buffer()
 
         print("Environment reset complete!")
 
@@ -610,137 +718,175 @@ class TeleoperationDemo:
         running = True
         clock = pygame.time.Clock()
 
-        while running:
-            # Pump events first to update keyboard state
-            pygame.event.pump()
-            
-            # Process events for discrete actions
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
+        try:
+            while running:
+                # Pump events first to update keyboard state
+                pygame.event.pump()
+                
+                # Process events for discrete actions
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
                         running = False
-                    elif event.key == pygame.K_r:
-                        self.reset_environment()
-                    elif event.key == pygame.K_h:
-                        self.show_help = not self.show_help
-                    elif event.key == pygame.K_1:
-                        self.controlled_ee_idx = 0
-                        print("Switched to EE 0 (LEFT)")
-                    elif event.key == pygame.K_2:
-                        self.controlled_ee_idx = 1
-                        print("Switched to EE 1 (RIGHT)")
-                    elif event.key == pygame.K_SPACE:
-                        self.keyboard.velocity = np.zeros(3)
-                        self.keyboard.joint_velocity = 0.0
-                        print("Velocity reset to zero")
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE:
+                            running = False
+                        elif event.key == pygame.K_r:
+                            # Save data before reset
+                            if self.collector:
+                                self.collector.save_episode(self.episode_count)
+                                self.collector.reset_buffer()
+                                
+                            self.reset_environment()
+                        elif event.key == pygame.K_h:
+                            self.show_help = not self.show_help
+                        elif event.key == pygame.K_1:
+                            self.controlled_ee_idx = 0
+                            print("Switched to EE 0 (LEFT)")
+                        elif event.key == pygame.K_2:
+                            self.controlled_ee_idx = 1
+                            print("Switched to EE 1 (RIGHT)")
+                        elif event.key == pygame.K_SPACE:
+                            self.keyboard.velocity = np.zeros(3)
+                            self.keyboard.joint_velocity = 0.0
+                            print("Velocity reset to zero")
 
-            # Get current keyboard state (continuous control)
-            keys = pygame.key.get_pressed()
-            velocity_cmd = self.keyboard.process_keys(keys)
-            joint_velocity_cmd = self.keyboard.get_joint_velocity()
+                # Get current keyboard state (continuous control)
+                keys = pygame.key.get_pressed()
+                velocity_cmd = self.keyboard.process_keys(keys)
+                joint_velocity_cmd = self.keyboard.get_joint_velocity()
 
-            # Get current observation
-            obs = self.env.get_obs()
-            state = self.get_current_state(obs)
-
-            # Compute velocities for both EEs using kinematic constraints
-            dt = 1.0 / self.env.control_hz
-            other_ee_idx = 1 - self.controlled_ee_idx
-            
-            # Controlled EE velocity from keyboard
-            controlled_velocity = velocity_cmd
-            
-            # Other EE velocity from kinematic constraint
-            other_velocity = self.compute_constrained_velocity(
-                self.controlled_ee_idx,
-                controlled_velocity,
-                joint_velocity_cmd
-            )
-            
-            # Update desired poses for both EEs
-            self.desired_poses[self.controlled_ee_idx, 0] += controlled_velocity[0] * dt
-            self.desired_poses[self.controlled_ee_idx, 1] += controlled_velocity[1] * dt
-            self.desired_poses[self.controlled_ee_idx, 2] += controlled_velocity[2] * dt
-            
-            self.desired_poses[other_ee_idx, 0] += other_velocity[0] * dt
-            self.desired_poses[other_ee_idx, 1] += other_velocity[1] * dt
-            self.desired_poses[other_ee_idx, 2] += other_velocity[2] * dt
-
-            # Clip desired poses to workspace
-            self.desired_poses[:, :2] = np.clip(self.desired_poses[:, :2], 20.0, 492.0)
-
-            # Compute desired velocities for PD controller
-            desired_velocities = np.zeros((2, 3))  # [vx, vy, omega] for each gripper
-            desired_velocities[self.controlled_ee_idx] = controlled_velocity
-            desired_velocities[other_ee_idx] = other_velocity
-
-            # Compute control wrenches using PD controller
-            wrenches = self.controller.compute_wrenches(
-                state['ee_poses'],
-                self.desired_poses,
-                desired_velocities,
-                current_velocities=state['ee_velocities']
-            )
-
-            # Step environment with wrench action
-            # Action format: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
-            action = np.concatenate([wrenches[0], wrenches[1]])
-            obs, reward, terminated, truncated, info = self.env.step(action)
-
-            # Update statistics
-            self.step_count += 1
-            self.total_reward += reward
-
-            # Render
-            if self.render_mode == 'human':
-                # Initialize pygame window if needed
-                if self.env.window is None:
-                    self.env.window = pygame.display.set_mode((512, 512))
-                    pygame.display.set_caption("SWIVL Bimanual Manipulation Demo")
-                if self.env.clock is None:
-                    self.env.clock = pygame.time.Clock()
-
-                # Draw base scene
-                screen_surface = self.env._draw()
-
-                # Draw desired pose frames on the surface
-                self.draw_desired_frames(screen_surface)
-
-                # Blit to window
-                self.env.window.blit(screen_surface, screen_surface.get_rect())
-
-                # Draw info overlay on top
+                # Get current observation
+                obs = self.env.get_obs()
                 state = self.get_current_state(obs)
-                self.draw_info_overlay(self.env.window, state)
+                
+                # Capture image for data collection (96x96)
+                if self.collector:
+                    # Use internal render frame to get image without visualization overlays if possible,
+                    # or just resize what we have. Ideally we want clean observation.
+                    # The env._render_frame(visualize=False) returns observation sized image.
+                    img_obs = self.env._render_frame(visualize=False)
+                    # Ensure it is 96x96 (env default might be different, but let's trust env settings or resize)
+                    # BiArtEnv default observation size is 96x96
+                    
+                    # Add joint state to obs for collector
+                    obs['joint_state'] = self.env.object_manager.get_joint_state()
 
-                # Update display
-                pygame.display.flip()
+                # Compute velocities for both EEs using kinematic constraints
+                dt = 1.0 / self.env.control_hz
+                other_ee_idx = 1 - self.controlled_ee_idx
+                
+                # Controlled EE velocity from keyboard
+                controlled_velocity = velocity_cmd
+                
+                # Other EE velocity from kinematic constraint
+                other_velocity = self.compute_constrained_velocity(
+                    self.controlled_ee_idx,
+                    controlled_velocity,
+                    joint_velocity_cmd
+                )
+                
+                # Update desired poses for both EEs
+                self.desired_poses[self.controlled_ee_idx, 0] += controlled_velocity[0] * dt
+                self.desired_poses[self.controlled_ee_idx, 1] += controlled_velocity[1] * dt
+                self.desired_poses[self.controlled_ee_idx, 2] += controlled_velocity[2] * dt
+                
+                self.desired_poses[other_ee_idx, 0] += other_velocity[0] * dt
+                self.desired_poses[other_ee_idx, 1] += other_velocity[1] * dt
+                self.desired_poses[other_ee_idx, 2] += other_velocity[2] * dt
 
-            # Print periodic status
-            if self.step_count % 50 == 0:
-                wrench_mag = np.linalg.norm(state['external_wrenches'][self.controlled_ee_idx][1:3])
-                print(f"[Step {self.step_count:4d}] EE{self.controlled_ee_idx} | "
-                      f"Vel:[{velocity_cmd[0]:5.1f},{velocity_cmd[1]:5.1f},{velocity_cmd[2]:4.2f}] | "
-                      f"Wrench:|F|={wrench_mag:5.1f} | "
-                      f"Reward:{reward:6.3f} | "
-                      f"Success:{info.get('is_success', False)}")
+                # Clip desired poses to workspace
+                self.desired_poses[:, :2] = np.clip(self.desired_poses[:, :2], 20.0, 492.0)
 
-            # Control frame rate
-            clock.tick(self.env.metadata['render_fps'])
+                # Compute desired velocities for PD controller
+                desired_velocities = np.zeros((2, 3))  # [vx, vy, omega] for each gripper
+                desired_velocities[self.controlled_ee_idx] = controlled_velocity
+                desired_velocities[other_ee_idx] = other_velocity
 
-            # Handle episode termination
-            if terminated or truncated:
-                print(f"\nEpisode finished!")
-                print(f"  Total steps: {self.step_count}")
-                print(f"  Total reward: {self.total_reward:.2f}")
-                print(f"  Success: {info.get('is_success', False)}")
-                self.reset_environment()
+                # Compute control wrenches using PD controller
+                wrenches = self.controller.compute_wrenches(
+                    state['ee_poses'],
+                    self.desired_poses,
+                    desired_velocities,
+                    current_velocities=state['ee_velocities']
+                )
 
-        # Cleanup
-        self.env.close()
-        pygame.quit()
+                # Step environment with wrench action
+                # Action format: [left_tau, left_fx, left_fy, right_tau, right_fx, right_fy]
+                action = np.concatenate([wrenches[0], wrenches[1]])
+                obs, reward, terminated, truncated, info = self.env.step(action)
+
+                # Update statistics
+                self.step_count += 1
+                self.total_reward += reward
+                
+                # Collect data
+                if self.collector:
+                    # Action for HL policy is the desired pose
+                    # We save the desired poses *after* update (the target for this step)
+                    self.collector.add_step(obs, self.desired_poses.copy(), img_obs)
+
+                # Render
+                if self.render_mode == 'human':
+                    # Initialize pygame window if needed
+                    if self.env.window is None:
+                        self.env.window = pygame.display.set_mode((512, 512))
+                        pygame.display.set_caption("SWIVL Bimanual Manipulation Demo")
+                    if self.env.clock is None:
+                        self.env.clock = pygame.time.Clock()
+
+                    # Draw base scene
+                    screen_surface = self.env._draw()
+
+                    # Draw desired pose frames on the surface
+                    self.draw_desired_frames(screen_surface)
+
+                    # Blit to window
+                    self.env.window.blit(screen_surface, screen_surface.get_rect())
+
+                    # Draw info overlay on top
+                    state = self.get_current_state(obs)
+                    self.draw_info_overlay(self.env.window, state)
+
+                    # Update display
+                    pygame.display.flip()
+
+                # Print periodic status
+                if self.step_count % 50 == 0:
+                    wrench_mag = np.linalg.norm(state['external_wrenches'][self.controlled_ee_idx][1:3])
+                    print(f"[Step {self.step_count:4d}] EE{self.controlled_ee_idx} | "
+                        f"Vel:[{velocity_cmd[0]:5.1f},{velocity_cmd[1]:5.1f},{velocity_cmd[2]:4.2f}] | "
+                        f"Wrench:|F|={wrench_mag:5.1f} | "
+                        f"Reward:{reward:6.3f} | "
+                        f"Success:{info.get('is_success', False)}")
+
+                # Control frame rate
+                clock.tick(self.env.metadata['render_fps'])
+
+                # Handle episode termination
+                if terminated or truncated:
+                    print(f"\nEpisode finished!")
+                    print(f"  Total steps: {self.step_count}")
+                    print(f"  Total reward: {self.total_reward:.2f}")
+                    print(f"  Success: {info.get('is_success', False)}")
+                    
+                    # Save data before reset
+                    if self.collector:
+                        self.collector.save_episode(self.episode_count)
+                        self.collector.reset_buffer()
+                        
+                    self.reset_environment()
+                    
+        except KeyboardInterrupt:
+            print("\nInterrupted by user.")
+            
+        finally:
+            # Cleanup
+            self.env.close()
+            pygame.quit()
+            
+            # Save last episode if not empty
+            if self.collector:
+                self.collector.save_episode(self.episode_count)
 
         print("\n" + "="*60)
         print("Demo Statistics")
@@ -768,6 +914,16 @@ def main():
         choices=['human', 'rgb_array'],
         help='Rendering mode (default: human)'
     )
+    parser.add_argument(
+        '--save-data',
+        action='store_true',
+        help='Enable data collection'
+    )
+    parser.add_argument(
+        '--data-dir',
+        default='data/demos',
+        help='Directory to save collected data (default: data/demos)'
+    )
 
     args = parser.parse_args()
 
@@ -781,7 +937,9 @@ def main():
     # Create and run demo
     demo = TeleoperationDemo(
         joint_type=args.joint_type,
-        render_mode=args.render_mode
+        render_mode=args.render_mode,
+        save_data=args.save_data,
+        data_dir=args.data_dir
     )
     demo.run()
 

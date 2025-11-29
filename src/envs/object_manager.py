@@ -170,7 +170,7 @@ class ArticulatedObject:
         elif self.joint_type == JointType.PRISMATIC:
             # GrooveJoint allows sliding along link1's x-axis
             groove_start = Vec2d(-cfg.link_length / 2, 0)
-            groove_end = Vec2d(cfg.link_length / 2, 0)
+            groove_end = Vec2d(cfg.link_length, 0)
             anchor = Vec2d(-cfg.link_length / 2, 0)  # Link2's left end
             
             primary_joint = pymunk.GrooveJoint(
@@ -206,18 +206,40 @@ class ArticulatedObject:
         
         Left gripper grasps link1's left side (perpendicular approach)
         Right gripper grasps link2's right side (perpendicular approach)
+        
+        The pose is the Gripper Base Body's pose.
+        We need to apply an offset so that the Jaw Center aligns with the target grasp point on the link.
+        
+        Gripper Geometry:
+        - Base height: 8.0
+        - Jaw length: 20.0
+        - Jaw center distance from base center: 4.0 + 10.0 = 14.0
+        
+        Offset direction is opposite to the Jaw direction (Gripper Y-axis).
         """
         cfg = self.config
+        
+        # Distance from Base Center to Jaw Center
+        # Should be consistent with EndEffectorManager's GripperConfig
+        jaw_center_offset = 14.0
         
         return {
             "left": GraspingFrame(
                 link_id=0,
-                local_pose=np.array([-cfg.link_length / 4, 0.0, -np.pi / 2]),
+                # Link1 local: (-L/4, 0) is grasp point.
+                # Left Gripper: theta = -pi/2. 
+                # Gripper Y-axis (Jaw dir) aligns with Link X-axis.
+                # Base must be shifted by -14.0 along Link X-axis.
+                local_pose=np.array([-cfg.link_length / 4 - jaw_center_offset, 0.0, -np.pi / 2]),
                 gripper_name="left"
             ),
             "right": GraspingFrame(
                 link_id=1,
-                local_pose=np.array([cfg.link_length / 4, 0.0, np.pi / 2]),
+                # Link2 local: (L/4, 0) is grasp point.
+                # Right Gripper: theta = pi/2.
+                # Gripper Y-axis (Jaw dir) aligns with Link -X-axis.
+                # Base must be shifted by +14.0 along Link X-axis (opposite to -X).
+                local_pose=np.array([cfg.link_length / 4 + jaw_center_offset, 0.0, np.pi / 2]),
                 gripper_name="right"
             )
         }

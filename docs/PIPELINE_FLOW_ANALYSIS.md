@@ -80,7 +80,7 @@
 │           │                                                      │
 │           │ State (observation dict):                           │
 │           │   - ee_poses: (2, 3) spatial frame                 │
-│           │   - ee_twists: (2, 3) spatial velocities [vx,vy,ω]│
+│           │   - ee_velocities: (2,3) point vels [vx,vy,ω]     │
 │           │   - ee_body_twists: (2, 3) body [ω, vx_b, vy_b] ★ │
 │           │   - link_poses: (2, 3) spatial frame               │
 │           │   - external_wrenches: (2, 3) body [τ, fx, fy] ★   │
@@ -101,7 +101,7 @@
 ```python
 observation: Dict[str, np.ndarray] = {
     'ee_poses': np.ndarray,         # (2, 3) - EE poses [x, y, θ] in spatial frame
-    'ee_twists': np.ndarray,        # (2, 3) - EE spatial velocities [vx, vy, ω]
+    'ee_velocities': np.ndarray,    # (2, 3) - EE point velocities [vx, vy, ω] (NOT twists!)
     'ee_body_twists': np.ndarray,   # (2, 3) - EE body twists [ω, vx_b, vy_b] ★MR
     'link_poses': np.ndarray,       # (2, 3) - Object link poses in spatial frame
     'external_wrenches': np.ndarray # (2, 3) - External wrenches [τ, fx, fy] ★MR
@@ -249,7 +249,7 @@ tau, fx_body, fy_body = wrench  # MR convention: torque first!
 ```python
 observation: Dict[str, np.ndarray] = {
     'ee_poses': (2, 3),            # [x, y, θ] Spatial frame
-    'ee_twists': (2, 3),           # [vx, vy, ω] Spatial frame velocities
+    'ee_velocities': (2, 3),       # [vx, vy, ω] Point velocities (NOT twists!)
     'ee_body_twists': (2, 3),      # [ω, vx_b, vy_b] Body frame ★MR
     'link_poses': (2, 3),          # [x, y, θ] Spatial frame
     'external_wrenches': (2, 3)    # [τ, fx, fy] Body frame ★MR
@@ -267,7 +267,7 @@ info: Dict
 | Quantity | Frame | Convention |
 |----------|-------|------------|
 | **Poses** (T_si) | Spatial | [x, y, θ] |
-| **Spatial Velocities** | Spatial | [vx, vy, ω] |
+| **Point Velocities** | Spatial | [vx, vy, ω] (NOT twists!) |
 | **Body Twists** | Body | [ω, vx, vy] ★MR |
 | **Wrenches** (F) | Body | [τ, fx, fy] ★MR |
 | **Screw Axes** | Body | [sω, sx, sy] ★MR |
@@ -320,7 +320,7 @@ def apply_wrench(self, wrench: np.ndarray):
 obs = self.base_env.get_obs()
 # obs = {
 #     'ee_poses': (2, 3) spatial,
-#     'ee_twists': (2, 3) spatial [vx, vy, ω],
+#     'ee_velocities': (2, 3) point velocities [vx, vy, ω] (NOT twists!),
 #     'ee_body_twists': (2, 3) body [ω, vx_b, vy_b] ★MR,
 #     'link_poses': (2, 3) spatial,
 #     'external_wrenches': (2, 3) body [τ, fx, fy] ★MR

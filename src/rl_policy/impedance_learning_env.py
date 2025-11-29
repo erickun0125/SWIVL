@@ -369,11 +369,16 @@ class ImpedanceLearningEnv(gym.Env):
                 if 'ee_body_twists' in obs:
                     current_body_twist = obs['ee_body_twists'][i]
                 else:
-                    # Fallback conversion
-                    from src.se2_math import world_to_body_velocity
-                    spatial_twist = obs['ee_twists'][i]
-                    spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
-                    current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+                    # Fallback: Convert point velocity to body twist using simple rotation
+                    # NOT the adjoint map! Point velocity only needs rotation.
+                    point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
+                    pose = obs['ee_poses'][i]
+                    theta = pose[2]
+                    cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+                    
+                    vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
+                    vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
+                    current_body_twist = np.array([point_vel[2], vx_body, vy_body])
 
                 wrench, _ = self.controllers[i].compute_control(
                     current_pose=obs['ee_poses'][i],
@@ -388,15 +393,16 @@ class ImpedanceLearningEnv(gym.Env):
                 if 'ee_body_twists' in obs:
                     current_body_twist = obs['ee_body_twists'][i]
                 else:
-                    # Fallback: Convert spatial twist to body twist
-                    import warnings
-                    from src.se2_math import world_to_body_velocity
+                    # Fallback: Convert point velocity to body twist using simple rotation
+                    # NOT the adjoint map! Point velocity only needs rotation.
+                    point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
+                    pose = obs['ee_poses'][i]
+                    theta = pose[2]
+                    cos_theta, sin_theta = np.cos(theta), np.sin(theta)
                     
-                    # ee_twists is [vx, vy, omega] in spatial frame
-                    spatial_twist = obs['ee_twists'][i]
-                    # Convert to MR convention [omega, vx, vy]
-                    spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
-                    current_body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+                    vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
+                    vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
+                    current_body_twist = np.array([point_vel[2], vx_body, vy_body])
 
                 # compute_control returns (wrench, info)
                 wrench, _ = self.controllers[i].compute_control(
@@ -696,8 +702,6 @@ class ImpedanceLearningEnv(gym.Env):
                 - desired_twists: (2, 3) array in body frame (i^V_i^des)
                 - desired_accelerations: (2, 3) array in body frame (i^dV_i^des)
         """
-        from src.se2_math import world_to_body_acceleration
-
         if t is None:
             t = self.elapsed_time_in_chunk
 
@@ -713,20 +717,24 @@ class ImpedanceLearningEnv(gym.Env):
                 desired_accelerations.append(np.zeros(3))
             else:
                 # Evaluate trajectory at time t
-                # Trajectory handles clamping internally or we clamp here
                 eval_t = np.clip(t, 0.0, self.hl_period)
                 traj_point = self.trajectories[i].evaluate(eval_t)
                 
                 # Pose in spatial frame
                 desired_poses.append(traj_point.pose)
-                # Twist in BODY frame (this is what we want!)
+                # Twist in BODY frame (trajectory generator now provides correct body twist)
                 desired_twists.append(traj_point.velocity_body)
-                # Acceleration in BODY frame (transform from spatial)
-                accel_body = world_to_body_acceleration(
-                    pose=traj_point.pose,
-                    vel_world=traj_point.velocity_spatial,
-                    accel_world=traj_point.acceleration
-                )
+                
+                # Acceleration in BODY frame using simple rotation
+                # For point acceleration: a_body = R^T @ a_world (same as velocity)
+                theta = traj_point.pose[2]
+                cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+                ax_world, ay_world, alpha = traj_point.acceleration
+                
+                ax_body = cos_theta * ax_world + sin_theta * ay_world
+                ay_body = -sin_theta * ax_world + cos_theta * ay_world
+                # Angular acceleration is frame-independent
+                accel_body = np.array([alpha, ax_body, ay_body])
                 desired_accelerations.append(accel_body)
 
         return np.array(desired_poses), np.array(desired_twists), np.array(desired_accelerations)
@@ -747,21 +755,19 @@ class ImpedanceLearningEnv(gym.Env):
         # Get current body twists (use new field if available, fallback with conversion)
         if 'ee_body_twists' in obs:
             current_twists = obs['ee_body_twists']
-        elif 'ee_twists' in obs:
-            # Fallback: Convert spatial twists to body twists
-            import warnings
-            warnings.warn(
-                "Using deprecated 'ee_twists' field in observation. Please update environment to provide 'ee_body_twists'.",
-                DeprecationWarning
-            )
-            from src.se2_math import world_to_body_velocity
+        elif 'ee_velocities' in obs:
+            # Fallback: Convert point velocities to body twists using simple rotation
+            # NOT the adjoint map! Point velocity only needs rotation.
             current_twists = []
             for i in range(2):
-                # ee_twists is [vx, vy, omega] in spatial frame
-                spatial_twist = obs['ee_twists'][i]
-                # Convert to MR convention [omega, vx, vy]
-                spatial_twist_mr = np.array([spatial_twist[2], spatial_twist[0], spatial_twist[1]])
-                body_twist = world_to_body_velocity(obs['ee_poses'][i], spatial_twist_mr)
+                point_vel = obs['ee_velocities'][i]  # [vx, vy, omega] - point velocity, NOT twist!
+                pose = obs['ee_poses'][i]
+                theta = pose[2]
+                cos_theta, sin_theta = np.cos(theta), np.sin(theta)
+                
+                vx_body = cos_theta * point_vel[0] + sin_theta * point_vel[1]
+                vy_body = -sin_theta * point_vel[0] + cos_theta * point_vel[1]
+                body_twist = np.array([point_vel[2], vx_body, vy_body])
                 current_twists.append(body_twist)
             current_twists = np.array(current_twists)
         else:
@@ -799,7 +805,13 @@ class ImpedanceLearningEnv(gym.Env):
         tracking_error = 0.0
         for i in range(2):
             pose_error = np.linalg.norm(obs['ee_poses'][i] - desired_poses[i])
-            twist_error = np.linalg.norm(obs.get('ee_twists', np.zeros((2, 3)))[i] - desired_twists[i])
+            # Compare velocities (converting point velocity to body twist for comparison)
+            if 'ee_body_twists' in obs:
+                vel_error = np.linalg.norm(obs['ee_body_twists'][i] - desired_twists[i])
+            else:
+                # Fallback: use point velocity magnitude as proxy
+                vel_error = np.linalg.norm(obs.get('ee_velocities', np.zeros((2, 3)))[i][:2])
+            twist_error = vel_error
             tracking_error += pose_error + 0.1 * twist_error
 
         reward -= self.config.tracking_weight * tracking_error

@@ -228,7 +228,7 @@ class PlaygroundDemo:
     def get_current_state(self, obs):
         """Get current state of end-effectors from observation."""
         current_ee_poses = obs['ee_poses']
-        current_velocities = obs['ee_twists']
+        current_velocities = obs['ee_velocities']  # [vx, vy, omega] point velocities
         external_wrenches = obs['external_wrenches']
         link_poses = obs['link_poses']
 

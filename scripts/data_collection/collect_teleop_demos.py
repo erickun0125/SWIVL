@@ -59,7 +59,7 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
     planner = KeyboardTeleoperationPlanner(
         config=teleop_config,
         joint_type="revolute", # Default
-        link_length=env.link_length
+        link_length=env.object_config.link_length
     )
 
     # Initialize Controller (Low-Level)
@@ -146,20 +146,24 @@ def collect_demos(output_path: str, num_demos: int, max_steps: int = 500):
             keyboard_events=key_map,
             current_ee_poses=obs['ee_poses'],
             current_link_poses=obs['link_poses'],
-            current_ee_velocities=obs['ee_twists'], # Note: using spatial twist here
-            current_link_velocities=None # Optional
+            current_ee_velocities=obs['ee_velocities'],  # point velocities [vx, vy, omega]
+            current_link_velocities=None  # Optional
         )
         
-        desired_poses = hl_action['desired_poses'] # (2, 3)
+        desired_poses = hl_action['desired_poses']  # (2, 3)
         
         # 3. Get Low-Level Action (Wrenches) from Controller
         # Desired velocity is also available from planner for feedforward D term
         desired_body_twists = hl_action['desired_body_twists']
         
+        # Convert point velocities to body twists
+        # NOTE: ee_velocities is [vx, vy, omega] in world frame (NOT a twist!)
+        # We convert to body twist [omega, vx_b, vy_b] for the controller
         current_body_twists = np.zeros((2, 3))
         for i in range(2):
-            spatial = obs['ee_twists'][i]
-            spatial_mr = np.array([spatial[2], spatial[0], spatial[1]])
+            point_vel = obs['ee_velocities'][i]  # [vx, vy, omega]
+            # Reorder to MR convention [omega, vx, vy] then transform
+            spatial_mr = np.array([point_vel[2], point_vel[0], point_vel[1]])
             current_body_twists[i] = world_to_body_velocity(obs['ee_poses'][i], spatial_mr)
 
         # Compute wrenches for each end-effector separately

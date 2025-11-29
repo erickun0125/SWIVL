@@ -21,14 +21,54 @@ from dataclasses import dataclass
 @dataclass
 class FlowMatchingConfig:
     """Configuration for flow matching policy."""
-    state_dim: int = 24  # 2 EE poses (6) + 2 link poses (6) + external wrenches (6) + body twists (6)
+    state_dim: int = 18  # 12 (poses+twists) + 6 (wrench, optional)
     action_dim: int = 6  # 2 EE desired poses (3 each)
     pred_horizon: int = 10 # Number of steps to predict (chunk size)
+    obs_horizon: int = 1  # Number of past observations to condition on
+    use_external_wrench: bool = True
     hidden_dim: int = 256
     num_layers: int = 4
     num_diffusion_steps: int = 10
     output_frequency: float = 10.0  # Hz
     context_length: int = 10  # Number of past states to condition on
+    
+    @property
+    def proprio_dim(self):
+        return 18 if self.use_external_wrench else 12
+
+
+class ImageEncoder(nn.Module):
+    """
+    Simple CNN for image encoding.
+    Input: (batch, seq, 3, 96, 96)
+    Output: (batch, seq, hidden_dim)
+    """
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 48
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 24
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 12
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 6
+            nn.Flatten(),
+            nn.Linear(128 * 6 * 6, hidden_dim),
+            nn.ReLU()
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch, seq, 3, H, W)
+        batch, seq, c, h, w = x.shape
+        x = x.view(batch * seq, c, h, w)
+        feat = self.net(x)
+        return feat.view(batch, seq, -1)
 
 
 class FlowMatchingNetwork(nn.Module):
@@ -59,12 +99,18 @@ class FlowMatchingNetwork(nn.Module):
             nn.Linear(config.hidden_dim // 4, config.hidden_dim)
         )
 
-        # State embedding
-        self.state_mlp = nn.Sequential(
-            nn.Linear(config.state_dim, config.hidden_dim),
+        # Image encoder
+        self.image_encoder = ImageEncoder(config.hidden_dim)
+        
+        # Proprio encoder
+        self.proprio_encoder = nn.Sequential(
+            nn.Linear(config.proprio_dim, config.hidden_dim),
             nn.ReLU(),
             nn.Linear(config.hidden_dim, config.hidden_dim)
         )
+        
+        # Fusion projection
+        self.fusion_proj = nn.Linear(config.hidden_dim * 2, config.hidden_dim)
 
         # Action/trajectory embedding
         # Input is flattened trajectory (batch, pred_horizon * action_dim)
@@ -90,7 +136,8 @@ class FlowMatchingNetwork(nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        context: torch.Tensor
+        img_cond: torch.Tensor,
+        prop_cond: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass.
@@ -98,7 +145,8 @@ class FlowMatchingNetwork(nn.Module):
         Args:
             x: Current trajectory sample (batch_size, pred_horizon, action_dim) or flattened
             t: Time parameter in [0, 1] (batch_size, 1)
-            context: Context state (batch_size, state_dim)
+            img_cond: Image condition (batch_size, 3, H, W) - using most recent frame
+            prop_cond: Proprio condition (batch_size, proprio_dim) - using most recent
 
         Returns:
             Predicted velocity field (batch_size, pred_horizon * action_dim)
@@ -112,8 +160,15 @@ class FlowMatchingNetwork(nn.Module):
         # Embed time
         t_emb = self.time_mlp(t)
 
-        # Embed context state
-        state_emb = self.state_mlp(context)
+        # Embed images (add seq dim 1 for encoder)
+        img_cond = img_cond.unsqueeze(1) # (batch, 1, 3, H, W)
+        img_feat = self.image_encoder(img_cond).squeeze(1) # (batch, hidden)
+        
+        # Embed proprio
+        prop_feat = self.proprio_encoder(prop_cond)
+        
+        # Fuse
+        state_emb = self.fusion_proj(torch.cat([img_feat, prop_feat], dim=-1))
 
         # Embed current action
         action_emb = self.action_mlp(x)
@@ -156,7 +211,8 @@ class FlowMatchingPolicy(nn.Module):
         self.network = FlowMatchingNetwork(self.config)
 
         # State history for context
-        self.state_history: List[np.ndarray] = []
+        self.image_history: List[np.ndarray] = []
+        self.proprio_history: List[np.ndarray] = []
         self.normalizer = None
 
         self.to(torch.device(device))
@@ -168,25 +224,24 @@ class FlowMatchingPolicy(nn.Module):
     def _device(self) -> torch.device:
         return next(self.parameters()).device
 
-    def forward(self, context: torch.Tensor, t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-        return self.network(x_t, t, context)
+    def forward(self, img_cond: torch.Tensor, prop_cond: torch.Tensor, t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+        return self.network(x_t, t, img_cond, prop_cond)
 
-    def compute_loss(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, images: torch.Tensor, proprio: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """
         Compute flow matching loss.
         
         Args:
-            states: (batch, obs_horizon, state_dim) or (batch, state_dim)
+            images: (batch, obs_horizon, 3, H, W)
+            proprio: (batch, obs_horizon, proprio_dim)
             actions: (batch, pred_horizon, action_dim)
         """
-        batch_size = states.shape[0]
-        device = states.device
+        batch_size = images.shape[0]
+        device = images.device
 
         # Use most recent observation as context
-        if states.dim() == 3:
-            context = states[:, -1, :]
-        else:
-            context = states
+        img_cond = images[:, -1] # (batch, 3, H, W)
+        prop_cond = proprio[:, -1] # (batch, proprio_dim)
 
         # Flatten actions: (batch, pred_horizon * action_dim)
         target_actions_flat = actions.reshape(batch_size, -1)
@@ -201,7 +256,7 @@ class FlowMatchingPolicy(nn.Module):
         target_velocity = target_actions_flat - noise
 
         # Predict velocity
-        pred_velocity = self.network(x_t, t, context)
+        pred_velocity = self.network(x_t, t, img_cond, prop_cond)
         
         # Compute loss
         loss = F.mse_loss(pred_velocity, target_velocity)
@@ -210,7 +265,8 @@ class FlowMatchingPolicy(nn.Module):
 
     def reset(self):
         """Reset policy state."""
-        self.state_history = []
+        self.image_history = []
+        self.proprio_history = []
 
     def get_action(
         self,
@@ -228,23 +284,27 @@ class FlowMatchingPolicy(nn.Module):
             Desired poses (2, 3) for both end-effectors
         """
         # Construct state vector
-        state = self._construct_state(observation)
+        image, proprio = self._construct_state(observation)
 
         # Normalize state if normalizer is present
         if self.normalizer is not None:
-            state = self.normalizer.normalize(state, 'state')
+            image = image.astype(np.float32) / 255.0
+            proprio = self.normalizer.normalize(proprio, 'proprio')
 
         # Add to history
-        self.state_history.append(state)
-        if len(self.state_history) > self.config.context_length:
-            self.state_history.pop(0)
+        self.image_history.append(image)
+        self.proprio_history.append(proprio)
+        
+        if len(self.image_history) > self.config.context_length:
+            self.image_history.pop(0)
+            self.proprio_history.pop(0)
 
         # Pad history if needed
-        context = self._get_context()
+        img_cond, prop_cond = self._get_context()
 
         # Sample from flow
         with torch.no_grad():
-            action = self._sample_flow(context, goal)
+            action = self._sample_flow(img_cond, prop_cond, goal)
 
         # Denormalize action
         if self.normalizer is not None:
@@ -278,27 +338,27 @@ class FlowMatchingPolicy(nn.Module):
         Returns:
             Action chunk (chunk_size, 2, 3)
         """
-        # Construct state vector
-        state = self._construct_state(observation)
-        if self.normalizer is not None:
-            state = self.normalizer.normalize(state, 'state')
-            
-        # For flow matching trained as single step predictor, we might not handle 
-        # proper history updates in this loop without environment feedback.
-        # However, if the model output dimension was trained with horizon > 1,
-        # it would return a chunk directly.
-        
-        # Check if model is configured for horizon
-        # If pred_horizon > 1 or effective dim > 6
         if self.config.pred_horizon > 1:
-             # Model predicts full chunk at once
-            self.state_history.append(state)
-            if len(self.state_history) > self.config.context_length:
-                self.state_history.pop(0)
-            context = self._get_context()
+            # Model predicts full chunk at once
+            # Construct state vector from observation
+            image, proprio = self._construct_state(observation)
+            
+            # Normalize state if normalizer is present
+            if self.normalizer is not None:
+                image = image.astype(np.float32) / 255.0
+                proprio = self.normalizer.normalize(proprio, 'proprio')
+            
+            self.image_history.append(image)
+            self.proprio_history.append(proprio)
+            
+            if len(self.image_history) > self.config.context_length:
+                self.image_history.pop(0)
+                self.proprio_history.pop(0)
+                
+            img_cond, prop_cond = self._get_context()
             
             with torch.no_grad():
-                action = self._sample_flow(context, goal)
+                action = self._sample_flow(img_cond, prop_cond, goal)
                 
             if self.normalizer is not None:
                 action = self.normalizer.denormalize(action, 'action')
@@ -322,37 +382,52 @@ class FlowMatchingPolicy(nn.Module):
             # Repeat for chunk size
             return np.tile(action_step[np.newaxis, :, :], (chunk_size, 1, 1))
 
-    def _construct_state(self, observation: Dict[str, np.ndarray]) -> np.ndarray:
+    def _construct_state(self, observation: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Construct state vector from observation."""
+        # Image
+        image = observation['image'] # (H, W, 3)
+        image = np.transpose(image, (2, 0, 1)) # (3, H, W)
+        
+        # Proprio
         ee_poses = observation['ee_poses'].flatten()
-        link_poses = observation['link_poses'].flatten()
-        wrenches = observation['external_wrenches'].flatten()
-        # Handle missing body twists gracefully (though env should provide it now)
-        body_twists = observation.get('ee_body_twists', np.zeros_like(ee_poses)).flatten()
+        ee_velocities = observation['ee_velocities'].flatten()  # point velocities [vx, vy, omega]
+        
+        proprio_list = [ee_poses, ee_velocities]
+        
+        if self.config.use_external_wrench:
+            wrenches = observation['external_wrenches'].flatten()
+            proprio_list.append(wrenches)
 
-        state = np.concatenate([ee_poses, link_poses, wrenches, body_twists])
-        return state
+        proprio = np.concatenate(proprio_list)
+        return image, proprio
 
-    def _get_context(self) -> torch.Tensor:
+    def _get_context(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get context from state history."""
-        if len(self.state_history) == 0:
-            context = np.zeros(self.config.state_dim)
+        if len(self.image_history) == 0:
+            img_ctx = np.zeros((3, 96, 96), dtype=np.float32)
+            prop_ctx = np.zeros(self.config.proprio_dim, dtype=np.float32)
         else:
-            # Use most recent state as context (can be extended to use full history)
-            context = self.state_history[-1]
+            # Use most recent state as context
+            img_ctx = self.image_history[-1]
+            prop_ctx = self.proprio_history[-1]
 
-        return torch.FloatTensor(context).unsqueeze(0).to(self._device())
+        img_tensor = torch.FloatTensor(img_ctx).unsqueeze(0).to(self._device())
+        prop_tensor = torch.FloatTensor(prop_ctx).unsqueeze(0).to(self._device())
+        
+        return img_tensor, prop_tensor
 
     def _sample_flow(
         self,
-        context: torch.Tensor,
+        img_cond: torch.Tensor,
+        prop_cond: torch.Tensor,
         goal: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Sample from flow model using ODE integration.
 
         Args:
-            context: Context state
+            img_cond: Image condition
+            prop_cond: Proprio condition
             goal: Optional goal
 
         Returns:
@@ -375,7 +450,7 @@ class FlowMatchingPolicy(nn.Module):
             t = torch.full((1, 1), step * dt, dtype=torch.float32, device=device)
 
             # Predict velocity
-            velocity = self.network(x, t, context)
+            velocity = self.network(x, t, img_cond, prop_cond)
 
             # Euler step
             x = x + velocity * dt
@@ -384,35 +459,45 @@ class FlowMatchingPolicy(nn.Module):
 
     def train_step(
         self,
-        states: torch.Tensor,
+        images: torch.Tensor,
+        proprio: torch.Tensor,
         actions: torch.Tensor
     ) -> float:
         """
         Single training step.
 
         Args:
-            states: Batch of states (batch_size, state_dim)
-            actions: Batch of actions (batch_size, action_dim)
+            images: Batch of images (batch_size, obs_horizon, 3, H, W)
+            proprio: Batch of proprio (batch_size, obs_horizon, proprio_dim)
+            actions: Batch of actions (batch_size, pred_horizon, action_dim)
 
         Returns:
             Loss value
         """
-        batch_size = states.shape[0]
+        batch_size = images.shape[0]
+        device = images.device
+
+        # Use most recent observation as context
+        img_cond = images[:, -1]  # (batch, 3, H, W)
+        prop_cond = proprio[:, -1]  # (batch, proprio_dim)
+
+        # Flatten actions
+        actions_flat = actions.reshape(batch_size, -1)
 
         # Sample time
-        t = torch.rand(batch_size, 1).to(self.device)
+        t = torch.rand(batch_size, 1, device=device)
 
         # Sample noise
-        noise = torch.randn_like(actions)
+        noise = torch.randn_like(actions_flat)
 
         # Interpolate between noise and data
-        x_t = (1 - t) * noise + t * actions
+        x_t = (1 - t) * noise + t * actions_flat
 
         # Target velocity: (data - noise)
-        target_velocity = actions - noise
+        target_velocity = actions_flat - noise
 
         # Predict velocity
-        pred_velocity = self.network(x_t, t, states)
+        pred_velocity = self.network(x_t, t, img_cond, prop_cond)
 
         # Compute loss
         loss = torch.mean((pred_velocity - target_velocity) ** 2)
@@ -428,7 +513,7 @@ class FlowMatchingPolicy(nn.Module):
 
     def load(self, path: str):
         """Load policy from file."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self._device())
         self.config = checkpoint['config']
-        self.network = FlowMatchingNetwork(self.config).to(self.device)
+        self.network = FlowMatchingNetwork(self.config).to(self._device())
         self.network.load_state_dict(checkpoint['network_state_dict'])

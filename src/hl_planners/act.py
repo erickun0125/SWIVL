@@ -24,10 +24,11 @@ import math
 @dataclass
 class ACTConfig:
     """Configuration for ACT policy."""
-    state_dim: int = 24  # 2 EE poses + 2 link poses + external wrenches + body twists
+    state_dim: int = 18  # 12 (poses+twists) + 6 (wrench, optional)
     action_dim: int = 6  # 2 EE desired poses (3 each)
-    chunk_size: int = 10  # Number of actions in a chunk
+    pred_horizon: int = 10  # Number of actions in a chunk
     obs_horizon: int = 1  # Number of past observations to condition on
+    use_external_wrench: bool = True
     hidden_dim: int = 256
     latent_dim: int = 32  # Latent dimension for CVAE
     num_encoder_layers: int = 4
@@ -36,6 +37,44 @@ class ACTConfig:
     dropout: float = 0.1
     output_frequency: float = 10.0  # Hz
     kl_weight: float = 10.0  # Weight for KL divergence loss
+    
+    @property
+    def proprio_dim(self):
+        return 18 if self.use_external_wrench else 12
+
+
+class ImageEncoder(nn.Module):
+    """
+    Simple CNN for image encoding.
+    Input: (batch, seq, 3, 96, 96)
+    Output: (batch, seq, hidden_dim)
+    """
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 48
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 24
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 12
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # 6
+            nn.Flatten(),
+            nn.Linear(128 * 6 * 6, hidden_dim),
+            nn.ReLU()
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch, seq, 3, H, W)
+        batch, seq, c, h, w = x.shape
+        x = x.view(batch * seq, c, h, w)
+        feat = self.net(x)
+        return feat.view(batch, seq, -1)
 
 
 class PositionalEncoding(nn.Module):
@@ -72,8 +111,14 @@ class ACTEncoder(nn.Module):
         super().__init__()
         self.config = config
 
-        # Input projection
-        self.input_proj = nn.Linear(config.state_dim, config.hidden_dim)
+        # Image encoder
+        self.image_encoder = ImageEncoder(config.hidden_dim)
+        
+        # Proprio projection
+        self.proprio_proj = nn.Linear(config.proprio_dim, config.hidden_dim)
+        
+        # Fusion (Image + Proprio)
+        self.fusion_proj = nn.Linear(config.hidden_dim * 2, config.hidden_dim)
 
         # Positional encoding
         self.pos_encoder = PositionalEncoding(config.hidden_dim)
@@ -92,20 +137,28 @@ class ACTEncoder(nn.Module):
             num_layers=config.num_encoder_layers
         )
 
-    def forward(self, obs_seq: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, proprio: torch.Tensor) -> torch.Tensor:
         """
         Encode observation sequence.
 
         Args:
-            obs_seq: (batch_size, obs_horizon, state_dim)
+            images: (batch_size, obs_horizon, 3, H, W)
+            proprio: (batch_size, obs_horizon, proprio_dim)
 
         Returns:
             Encoded features (obs_horizon, batch_size, hidden_dim)
         """
-        batch_size, seq_len, _ = obs_seq.shape
+        batch_size, seq_len, _ = proprio.shape
 
-        # Project input
-        x = self.input_proj(obs_seq)  # (batch, seq_len, hidden_dim)
+        # Encode images
+        img_feat = self.image_encoder(images) # (batch, seq, hidden)
+        
+        # Encode proprio
+        proprio_feat = self.proprio_proj(proprio) # (batch, seq, hidden)
+        
+        # Fuse
+        combined = torch.cat([img_feat, proprio_feat], dim=-1)
+        x = self.fusion_proj(combined) # (batch, seq, hidden)
 
         # Transpose for transformer
         x = x.transpose(0, 1)  # (seq_len, batch, hidden_dim)
@@ -135,7 +188,7 @@ class ACTDecoder(nn.Module):
 
         # Action query embeddings (learnable)
         self.action_queries = nn.Parameter(
-            torch.randn(config.chunk_size, 1, config.hidden_dim)
+            torch.randn(config.pred_horizon, 1, config.hidden_dim)
         )
 
         # Positional encoding
@@ -171,7 +224,7 @@ class ACTDecoder(nn.Module):
             encoder_output: (obs_horizon, batch_size, hidden_dim)
 
         Returns:
-            Action sequence (batch_size, chunk_size, action_dim)
+            Action sequence (batch_size, pred_horizon, action_dim)
         """
         batch_size = latent.shape[0]
 
@@ -183,11 +236,11 @@ class ACTDecoder(nn.Module):
         memory = torch.cat([latent_feat, encoder_output], dim=0)
 
         # Prepare action queries
-        queries = self.action_queries.expand(-1, batch_size, -1)  # (chunk_size, batch, hidden_dim)
+        queries = self.action_queries.expand(-1, batch_size, -1)  # (pred_horizon, batch, hidden_dim)
         queries = self.pos_decoder(queries)
 
         # Decode
-        decoded = self.transformer_decoder(queries, memory)  # (chunk_size, batch, hidden_dim)
+        decoded = self.transformer_decoder(queries, memory)  # (pred_horizon, batch, hidden_dim)
 
         # Transpose back
         decoded = decoded.transpose(0, 1)  # (batch, chunk_size, hidden_dim)
@@ -214,7 +267,7 @@ class ACTCVAE(nn.Module):
 
         # Action encoder (for training)
         self.action_encoder = nn.Sequential(
-            nn.Linear(config.action_dim * config.chunk_size, config.hidden_dim),
+            nn.Linear(config.action_dim * config.pred_horizon, config.hidden_dim),
             nn.ReLU(),
             nn.Linear(config.hidden_dim, config.hidden_dim)
         )
@@ -228,21 +281,23 @@ class ACTCVAE(nn.Module):
 
     def encode(
         self,
-        obs_seq: torch.Tensor,
+        images: torch.Tensor,
+        proprio: torch.Tensor,
         action_seq: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Encode observations and actions to latent distribution.
 
         Args:
-            obs_seq: (batch_size, obs_horizon, state_dim)
-            action_seq: (batch_size, chunk_size, action_dim) - only for training
+            images: (batch_size, obs_horizon, 3, H, W)
+            proprio: (batch_size, obs_horizon, proprio_dim)
+            action_seq: (batch_size, pred_horizon, action_dim) - only for training
 
         Returns:
             mu, logvar, encoder_output
         """
         # Encode observations
-        encoder_output = self.encoder(obs_seq)  # (obs_horizon, batch, hidden_dim)
+        encoder_output = self.encoder(images, proprio)  # (obs_horizon, batch, hidden_dim)
 
         if action_seq is not None:
             # Training: use action encoder
@@ -285,26 +340,28 @@ class ACTCVAE(nn.Module):
             encoder_output: (obs_horizon, batch_size, hidden_dim)
 
         Returns:
-            Action sequence (batch_size, chunk_size, action_dim)
+            Action sequence (batch_size, pred_horizon, action_dim)
         """
         return self.decoder(latent, encoder_output)
 
     def forward(
         self,
-        obs_seq: torch.Tensor,
+        images: torch.Tensor,
+        proprio: torch.Tensor,
         action_seq: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass.
 
         Args:
-            obs_seq: (batch_size, obs_horizon, state_dim)
-            action_seq: (batch_size, chunk_size, action_dim) - only for training
+            images: (batch_size, obs_horizon, 3, H, W)
+            proprio: (batch_size, obs_horizon, proprio_dim)
+            action_seq: (batch_size, pred_horizon, action_dim) - only for training
 
         Returns:
             reconstructed_actions, mu, logvar
         """
-        mu, logvar, encoder_output = self.encode(obs_seq, action_seq)
+        mu, logvar, encoder_output = self.encode(images, proprio, action_seq)
         latent = self.reparameterize(mu, logvar)
         reconstructed_actions = self.decode(latent, encoder_output)
 
@@ -337,7 +394,8 @@ class ACTPolicy(nn.Module):
         self.model = ACTCVAE(self.config)
 
         # Observation history
-        self.obs_history: List[np.ndarray] = []
+        self.image_history: List[np.ndarray] = []
+        self.proprio_history: List[np.ndarray] = []
 
         # Action buffer for temporal consistency
         self.action_buffer: Optional[np.ndarray] = None
@@ -355,20 +413,22 @@ class ACTPolicy(nn.Module):
 
     def compute_loss(
         self,
-        states: torch.Tensor,
+        images: torch.Tensor,
+        proprio: torch.Tensor,
         actions: torch.Tensor
     ) -> torch.Tensor:
         """
         Compute ACT CVAE loss (reconstruction + KL).
         """
-        reconstructed_actions, mu, logvar = self.model(states, actions)
+        reconstructed_actions, mu, logvar = self.model(images, proprio, actions)
         recon_loss = F.mse_loss(reconstructed_actions, actions, reduction='mean')
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.shape[0]
         return recon_loss + self.config.kl_weight * kl_loss
 
     def reset(self):
         """Reset policy state."""
-        self.obs_history = []
+        self.image_history = []
+        self.proprio_history = []
         self.action_buffer = None
         self.action_idx = 0
 
@@ -388,24 +448,29 @@ class ACTPolicy(nn.Module):
             Desired poses (2, 3) for both end-effectors
         """
         # Construct state vector
-        state = self._construct_state(observation)
+        image, proprio = self._construct_state(observation)
         
         # Normalize state if normalizer is present
         if self.normalizer is not None:
-            state = self.normalizer.normalize(state, 'state')
+            # Image is already 0-255 uint8, need to float and normalize
+            image = image.astype(np.float32) / 255.0
+            proprio = self.normalizer.normalize(proprio, 'proprio')
 
         # Add to history
-        self.obs_history.append(state)
-        if len(self.obs_history) > self.config.obs_horizon:
-            self.obs_history.pop(0)
+        self.image_history.append(image)
+        self.proprio_history.append(proprio)
+        
+        if len(self.image_history) > self.config.obs_horizon:
+            self.image_history.pop(0)
+            self.proprio_history.pop(0)
 
         # Check if we can reuse buffered actions
-        if self.action_buffer is not None and self.action_idx < self.config.chunk_size:
+        if self.action_buffer is not None and self.action_idx < self.config.pred_horizon:
             action = self.action_buffer[self.action_idx]
             self.action_idx += 1
         else:
             # Generate new action chunk
-            obs_cond = self._get_obs_condition()
+            img_cond, prop_cond = self._get_obs_condition()
 
             with torch.no_grad():
                 self.model.eval()
@@ -415,7 +480,7 @@ class ACTPolicy(nn.Module):
                 latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
 
                 # Encode observations
-                encoder_output = self.model.encoder(obs_cond)
+                encoder_output = self.model.encoder(img_cond, prop_cond)
 
                 # Decode to actions
                 action_chunk = self.model.decode(latent, encoder_output)
@@ -452,25 +517,29 @@ class ACTPolicy(nn.Module):
             Action chunk (chunk_size, 2, 3) containing desired poses for both EEs
         """
         # Construct state vector
-        state = self._construct_state(observation)
+        image, proprio = self._construct_state(observation)
         
         # Normalize state if normalizer is present
         if self.normalizer is not None:
-            state = self.normalizer.normalize(state, 'state')
+            image = image.astype(np.float32) / 255.0
+            proprio = self.normalizer.normalize(proprio, 'proprio')
 
         # Add to history
-        self.obs_history.append(state)
-        if len(self.obs_history) > self.config.obs_horizon:
-            self.obs_history.pop(0)
+        self.image_history.append(image)
+        self.proprio_history.append(proprio)
+        
+        if len(self.image_history) > self.config.obs_horizon:
+            self.image_history.pop(0)
+            self.proprio_history.pop(0)
 
         # Generate new action chunk
-        obs_cond = self._get_obs_condition()
+        img_cond, prop_cond = self._get_obs_condition()
 
         with torch.no_grad():
             self.model.eval()
             batch_size = 1
             latent = torch.randn(batch_size, self.config.latent_dim, device=self._device())
-            encoder_output = self.model.encoder(obs_cond)
+            encoder_output = self.model.encoder(img_cond, prop_cond)
             action_chunk = self.model.decode(latent, encoder_output)
 
         action_chunk = action_chunk.squeeze(0).cpu().numpy()
@@ -484,40 +553,58 @@ class ACTPolicy(nn.Module):
         chunk_size = action_chunk.shape[0]
         return action_chunk.reshape(chunk_size, 2, 3)
 
-    def _construct_state(self, observation: Dict[str, np.ndarray]) -> np.ndarray:
+    def _construct_state(self, observation: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Construct state vector from observation."""
+        # Image
+        image = observation['image'] # (H, W, 3)
+        image = np.transpose(image, (2, 0, 1)) # (3, H, W)
+        
+        # Proprio
         ee_poses = observation['ee_poses'].flatten()
-        link_poses = observation['link_poses'].flatten()
-        wrenches = observation['external_wrenches'].flatten()
+        ee_velocities = observation['ee_velocities'].flatten()  # point velocities [vx, vy, omega]
+        
+        proprio_list = [ee_poses, ee_velocities]
+        
+        if self.config.use_external_wrench:
+            wrenches = observation['external_wrenches'].flatten()
+            proprio_list.append(wrenches)
 
-        state = np.concatenate([ee_poses, link_poses, wrenches])
-        return state
+        proprio = np.concatenate(proprio_list)
+        return image, proprio
 
-    def _get_obs_condition(self) -> torch.Tensor:
+    def _get_obs_condition(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get observation condition from history."""
         # Pad history if needed
-        while len(self.obs_history) < self.config.obs_horizon:
-            if len(self.obs_history) == 0:
-                self.obs_history.append(np.zeros(self.config.state_dim))
+        while len(self.image_history) < self.config.obs_horizon:
+            if len(self.image_history) == 0:
+                # Initialize with zeros if empty
+                self.image_history.append(np.zeros((3, 96, 96), dtype=np.float32))
+                self.proprio_history.append(np.zeros(self.config.proprio_dim, dtype=np.float32))
             else:
-                self.obs_history.insert(0, self.obs_history[0])
+                self.image_history.insert(0, self.image_history[0])
+                self.proprio_history.insert(0, self.proprio_history[0])
 
         # Stack observations
-        obs_array = np.stack(self.obs_history[-self.config.obs_horizon:], axis=0)
-        obs_tensor = torch.FloatTensor(obs_array).unsqueeze(0).to(self._device())
+        img_array = np.stack(self.image_history[-self.config.obs_horizon:], axis=0)
+        prop_array = np.stack(self.proprio_history[-self.config.obs_horizon:], axis=0)
+        
+        img_tensor = torch.FloatTensor(img_array).unsqueeze(0).to(self._device())
+        prop_tensor = torch.FloatTensor(prop_array).unsqueeze(0).to(self._device())
 
-        return obs_tensor
+        return img_tensor, prop_tensor
 
     def train_step(
         self,
-        states: torch.Tensor,
+        images: torch.Tensor,
+        proprio: torch.Tensor,
         actions: torch.Tensor
     ) -> Tuple[float, float, float]:
         """
         Single training step.
 
         Args:
-            states: Batch of observation sequences (batch_size, obs_horizon, state_dim)
+            images: Batch of images (batch_size, obs_horizon, 3, H, W)
+            proprio: Batch of proprio (batch_size, obs_horizon, proprio_dim)
             actions: Batch of action sequences (batch_size, chunk_size, action_dim)
 
         Returns:
@@ -526,7 +613,7 @@ class ACTPolicy(nn.Module):
         self.model.train()
 
         # Forward pass
-        reconstructed_actions, mu, logvar = self.model(states, actions)
+        reconstructed_actions, mu, logvar = self.model(images, proprio, actions)
 
         # Reconstruction loss (MSE)
         recon_loss = F.mse_loss(reconstructed_actions, actions, reduction='mean')
@@ -548,7 +635,8 @@ class ACTPolicy(nn.Module):
 
     def load(self, path: str):
         """Load policy from file."""
-        checkpoint = torch.load(path, map_location=self.device)
+        device = self._device()
+        checkpoint = torch.load(path, map_location=device)
         self.config = checkpoint['config']
-        self.model = ACTCVAE(self.config).to(self._device())
+        self.model = ACTCVAE(self.config).to(device)
         self.model.load_state_dict(checkpoint['model_state_dict'])

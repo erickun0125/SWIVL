@@ -108,30 +108,26 @@ def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device
     # Extract horizons from config or use defaults
     # These must match the dataset generation parameters
     obs_horizon = config.get('hl_training', {}).get('obs_horizon', 1)
-    action_horizon = config.get('hl_training', {}).get('action_horizon', 10) # Default 1.0s chunk
+    pred_horizon = config.get('hl_training', {}).get('pred_horizon', 10) # Default 10
+    use_external_wrench = config.get('hl_training', {}).get('use_external_wrench', True)
 
     if policy_type == 'flow_matching':
         from src.hl_planners.flow_matching import FlowMatchingConfig
         policy_config = FlowMatchingConfig(
             context_length=obs_horizon,
-            # Use flattened action dim for flow matching to support chunks
-            # Or keep action_dim=6 but handle shapes internally.
-            # Ideally, FlowMatching should treat (chunk, dim) as the data.
-            # We'll update FlowMatchingPolicy to handle this.
             action_dim=6, 
-            # We add a new field or reuse action_dim?
-            # Let's update the Config class in the file instead.
+            pred_horizon=pred_horizon,
+            use_external_wrench=use_external_wrench
         )
-        # Manually set horizon attribute if not in Config dataclass yet
-        policy_config.pred_horizon = action_horizon 
         policy = FlowMatchingPolicy(config=policy_config, device=device)
         
     elif policy_type == 'diffusion':
         from src.hl_planners.diffusion_policy import DiffusionPolicyConfig
         policy_config = DiffusionPolicyConfig(
             obs_horizon=obs_horizon,
-            action_horizon=action_horizon,
-            action_dim=6
+            pred_horizon=pred_horizon,
+            action_dim=6,
+            use_external_wrench=use_external_wrench
         )
         policy = DiffusionPolicy(config=policy_config, device=device)
         
@@ -139,8 +135,9 @@ def create_policy(policy_type: str, config: Dict[str, Any], device: torch.device
         from src.hl_planners.act import ACTConfig
         policy_config = ACTConfig(
             obs_horizon=obs_horizon,
-            chunk_size=action_horizon, # ACT calls it chunk_size
-            action_dim=6
+            pred_horizon=pred_horizon,
+            action_dim=6,
+            use_external_wrench=use_external_wrench
         )
         policy = ACTPolicy(config=policy_config, device=device)
         
@@ -210,22 +207,26 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
         print(f"Dataset path {dataset_path} does not exist. Creating dummy dataset.")
         # ... dummy dataset logic ... (kept as fallback)
         N = 100
-        action_horizon = config.get('hl_training', {}).get('action_horizon', 10)
-        T = action_horizon
-        state_dim = 24
+        pred_horizon = config.get('hl_training', {}).get('pred_horizon', 10)
+        T = pred_horizon
+        proprio_dim = 18 if config.get('hl_training', {}).get('use_external_wrench', True) else 12
         action_dim = 6
         
-        obs = np.random.randn(N, T, state_dim).astype(np.float32)
+        # Dummy images: (N, T, 3, 96, 96)
+        images = np.random.randint(0, 255, (N, T, 3, 96, 96)).astype(np.uint8)
+        proprio = np.random.randn(N, T, proprio_dim).astype(np.float32)
         action = np.random.randn(N, T, action_dim).astype(np.float32)
         
         class DummyDataset(torch.utils.data.Dataset):
-            def __init__(self, obs, action):
-                self.obs = torch.from_numpy(obs)
+            def __init__(self, images, proprio, action):
+                self.images = torch.from_numpy(images)
+                self.proprio = torch.from_numpy(proprio)
                 self.action = torch.from_numpy(action)
-            def __len__(self): return len(self.obs)
-            def __getitem__(self, idx): return self.obs[idx], self.action[idx]
+            def __len__(self): return len(self.proprio)
+            def __getitem__(self, idx): 
+                return (self.images[idx], self.proprio[idx]), self.action[idx]
             
-        dataset = DummyDataset(obs, action)
+        dataset = DummyDataset(images, proprio, action)
         train_size = int(0.8 * len(dataset))
         val_size = len(dataset) - train_size
         return random_split(dataset, [train_size, val_size]), LinearNormalizer()
@@ -233,24 +234,26 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
     import h5py
     
     class BiArtHDF5Dataset(torch.utils.data.Dataset):
-        def __init__(self, hdf5_path, obs_horizon=1, pred_horizon=1):
+        def __init__(self, hdf5_path, obs_horizon=1, pred_horizon=10, use_external_wrench=True):
             """
             Args:
                 hdf5_path: Path to .h5 file
-                obs_horizon: Number of past steps to stack (default 1 for now)
-                pred_horizon: Number of future steps to predict (default 1 for now)
+                obs_horizon: Number of past steps to stack
+                pred_horizon: Number of future steps to predict
+                use_external_wrench: Whether to include external wrenches in observation
             """
             super().__init__()
             self.file_path = hdf5_path
             self.obs_horizon = obs_horizon
             self.pred_horizon = pred_horizon
+            self.use_external_wrench = use_external_wrench
             self.normalizer = LinearNormalizer()
             
             # Load all data into memory (for simplicity)
             self.episodes = []
             
             # Temporary buffers for computing stats
-            all_states = []
+            all_proprio = []
             all_actions = []
             
             with h5py.File(self.file_path, 'r') as f:
@@ -267,20 +270,41 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
                     ee_poses = obs_group['ee_poses'][:]  # (T, 2, 3)
                     link_poses = obs_group['link_poses'][:] # (T, 2, 3)
                     wrenches = obs_group['external_wrenches'][:] # (T, 2, 3)
+                    
+                    # Get sequence length from loaded data
+                    T = ee_poses.shape[0]
+                    
                     body_twists = obs_group.get('ee_body_twists')
                     if body_twists is not None:
                         body_twists = body_twists[:]
                     else:
                         body_twists = np.zeros_like(ee_poses)
                     
-                    # Flatten state: (T, 18)
-                    T = ee_poses.shape[0]
-                    state = np.concatenate([
-                        ee_poses.reshape(T, -1), 
-                        link_poses.reshape(T, -1), 
-                        wrenches.reshape(T, -1),
-                        body_twists.reshape(T, -1)
-                    ], axis=1)
+                    # Load images: (T, H, W, 3) -> (T, 3, H, W)
+                    images = obs_group['images'][:] 
+                    images = np.transpose(images, (0, 3, 1, 2))
+                    
+                    # Construct proprioception
+                    # EE Poses (6) + EE Velocities (6) + [Optional] Wrenches (6)
+                    # NOTE: ee_velocities are point velocities [vx, vy, omega], NOT twists
+                    proprio_list = [
+                        ee_poses.reshape(T, -1),
+                        np.zeros((T, 6))  # Default fallback
+                    ]
+                    
+                    # Load velocities from file (support both old and new naming)
+                    if 'ee_velocities' in obs_group:
+                        ee_velocities = obs_group['ee_velocities'][:]
+                        proprio_list[1] = ee_velocities.reshape(T, -1)
+                    elif 'ee_twists' in obs_group:
+                        # Legacy support for old data files
+                        ee_velocities = obs_group['ee_twists'][:]
+                        proprio_list[1] = ee_velocities.reshape(T, -1)
+                        
+                    if self.use_external_wrench:
+                        proprio_list.append(wrenches.reshape(T, -1))
+                        
+                    proprio = np.concatenate(proprio_list, axis=1)
                     
                     # Load action: (T, 2, 3) -> (T, 6)
                     action_group = g['action']
@@ -288,23 +312,27 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
                     action = desired_poses.reshape(T, -1)
                     
                     self.episodes.append({
-                        'state': state, # Keep as numpy for now
+                        'image': images, # Keep as numpy (uint8)
+                        'proprio': proprio, # Keep as numpy
                         'action': action
                     })
-                    all_states.append(state)
+                    all_proprio.append(proprio)
                     all_actions.append(action)
             
             # Compute stats
-            all_states_concat = np.concatenate(all_states, axis=0)
+            all_proprio_concat = np.concatenate(all_proprio, axis=0)
             all_actions_concat = np.concatenate(all_actions, axis=0)
-            self.normalizer.fit(all_states_concat, 'state')
+            self.normalizer.fit(all_proprio_concat, 'proprio')
             self.normalizer.fit(all_actions_concat, 'action')
             print("Normalization stats computed.")
             
             # Normalize data in memory
             for ep in self.episodes:
-                ep['state'] = torch.from_numpy(
-                    self.normalizer.normalize(ep['state'], 'state').astype(np.float32)
+                # Images: [0, 255] -> [0, 1]
+                ep['image'] = torch.from_numpy(ep['image'].astype(np.float32) / 255.0)
+                
+                ep['proprio'] = torch.from_numpy(
+                    self.normalizer.normalize(ep['proprio'], 'proprio').astype(np.float32)
                 )
                 ep['action'] = torch.from_numpy(
                     self.normalizer.normalize(ep['action'], 'action').astype(np.float32)
@@ -313,7 +341,7 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             # Create indices
             self.indices = []
             for ep_idx, episode in enumerate(self.episodes):
-                seq_len = len(episode['state'])
+                seq_len = len(episode['proprio'])
                 # Valid start indices
                 # Need enough history: i >= obs_horizon - 1
                 # Need enough future: i + pred_horizon <= seq_len
@@ -332,7 +360,9 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             # Assuming policy expects (obs_horizon, state_dim) or flattened
             start = t - self.obs_horizon + 1
             end = t + 1
-            obs_seq = episode['state'][start:end] # (obs_horizon, state_dim)
+            
+            image_seq = episode['image'][start:end] # (obs_horizon, 3, H, W)
+            proprio_seq = episode['proprio'][start:end] # (obs_horizon, proprio_dim)
             
             # Get action window
             # Assuming policy expects (pred_horizon, action_dim)
@@ -341,21 +371,28 @@ def load_dataset(dataset_path: str, config: Dict[str, Any]):
             act_end = t + self.pred_horizon
             action_seq = episode['action'][act_start:act_end] # (pred_horizon, action_dim)
             
-            return obs_seq, action_seq
+            return (image_seq, proprio_seq), action_seq
 
     # Determine horizons based on config/policy type
     # For generic compatibility, default to horizons that match the policies
     
     # Safe defaults
     obs_h = config.get('hl_training', {}).get('obs_horizon', 1)
-    pred_h = config.get('hl_training', {}).get('action_horizon', 10) # Default 10 for 1s chunk
+    pred_h = config.get('hl_training', {}).get('pred_horizon', 10)
+    use_wrench = config.get('hl_training', {}).get('use_external_wrench', True)
     
     print(f"Dataset Configuration:")
     print(f"  Observation Horizon: {obs_h}")
-    print(f"  Prediction Horizon (Chunk Size): {pred_h}")
+    print(f"  Prediction Horizon: {pred_h}")
+    print(f"  External Wrench: {use_wrench}")
     
     # Create dataset
-    full_dataset = BiArtHDF5Dataset(dataset_path, obs_horizon=obs_h, pred_horizon=pred_h)
+    full_dataset = BiArtHDF5Dataset(
+        dataset_path, 
+        obs_horizon=obs_h, 
+        pred_horizon=pred_h,
+        use_external_wrench=use_wrench
+    )
     
     # Split
     val_ratio = config.get('hl_training', {}).get('val_ratio', 0.2)
@@ -379,13 +416,14 @@ def train_epoch(
     total_loss = 0.0
     num_batches = 0
 
-    for batch_idx, (states, actions) in enumerate(train_loader):
-        states = states.to(device)
+    for batch_idx, ((images, proprio), actions) in enumerate(train_loader):
+        images = images.to(device)
+        proprio = proprio.to(device)
         actions = actions.to(device)
 
         # Forward pass
         optimizer.zero_grad()
-        loss = policy.compute_loss(states, actions)
+        loss = policy.compute_loss(images, proprio, actions)
 
         # Backward pass
         loss.backward()
@@ -412,11 +450,12 @@ def validate(policy, val_loader, device: torch.device):
     num_batches = 0
 
     with torch.no_grad():
-        for states, actions in val_loader:
-            states = states.to(device)
+        for (images, proprio), actions in val_loader:
+            images = images.to(device)
+            proprio = proprio.to(device)
             actions = actions.to(device)
 
-            loss = policy.compute_loss(states, actions)
+            loss = policy.compute_loss(images, proprio, actions)
             total_loss += loss.item()
             num_batches += 1
 
@@ -432,7 +471,10 @@ def train(
     batch_size: Optional[int] = None,
     device: str = 'auto',
     checkpoint_dir: Optional[str] = None,
-    resume_from: Optional[str] = None
+    resume_from: Optional[str] = None,
+    obs_horizon: Optional[int] = None,
+    pred_horizon: Optional[int] = None,
+    use_external_wrench: Optional[bool] = None
 ):
     """
     Train high-level policy.
@@ -469,6 +511,14 @@ def train(
         batch_size = config.get('hl_training', {}).get('batch_size', 64)
     if checkpoint_dir is None:
         checkpoint_dir = config.get('hl_training', {}).get('output', {}).get('checkpoint_dir', './checkpoints')
+        
+    # Apply overrides
+    if obs_horizon is not None:
+        config.setdefault('hl_training', {})['obs_horizon'] = obs_horizon
+    if pred_horizon is not None:
+        config.setdefault('hl_training', {})['pred_horizon'] = pred_horizon
+    if use_external_wrench is not None:
+        config.setdefault('hl_training', {})['use_external_wrench'] = use_external_wrench
 
     # Create policy
     policy = create_policy(policy_type, config, torch_device)
@@ -636,6 +686,12 @@ def main():
         default=None,
         help='Batch size (overrides config)'
     )
+    
+    parser.add_argument(
+        '--no_wrench',
+        action='store_true',
+        help='Disable external wrench input'
+    )
 
     # Device
     parser.add_argument(
@@ -654,6 +710,18 @@ def main():
         help='Directory to save checkpoints'
     )
     parser.add_argument(
+        '--pred_horizon',
+        type=int,
+        default=None,
+        help='Prediction horizon (chunk size)'
+    )
+    parser.add_argument(
+        '--obs_horizon',
+        type=int,
+        default=None,
+        help='Observation horizon'
+    )
+    parser.add_argument(
         '--resume_from',
         type=str,
         default=None,
@@ -662,7 +730,23 @@ def main():
 
     args = parser.parse_args()
 
-    # Train
+    # Update config with args if needed (hacky but works for now)
+    # Ideally we should pass these to train() and merge there
+    # For now, we'll rely on config file mostly, but let's handle the flags
+    
+    # We need to modify the config dict inside train(), but train() loads it.
+    # Let's just pass them as args if we were refactoring fully.
+    # For now, let's assume the user modifies the config file or we add support later.
+    # Actually, let's just update the config dict after loading in train() if we passed it.
+    # But train() doesn't take config dict.
+    
+    # Let's stick to the requested changes.
+    # The user asked to "allow setting obs_horizon... default 1".
+    # I've added it to the config loading logic in create_policy/load_dataset via config dict.
+    # If I want to support CLI override, I need to pass it down.
+    
+    # Let's update train() signature to accept overrides.
+    
     train(
         policy_type=args.policy,
         config_path=args.config,
@@ -671,7 +755,10 @@ def main():
         batch_size=args.batch_size,
         device=args.device,
         checkpoint_dir=args.checkpoint_dir,
-        resume_from=args.resume_from
+        resume_from=args.resume_from,
+        obs_horizon=args.obs_horizon,
+        pred_horizon=args.pred_horizon,
+        use_external_wrench=not args.no_wrench if args.no_wrench else None
     )
 
 

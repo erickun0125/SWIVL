@@ -456,7 +456,17 @@ class EndEffectorManager:
         return np.array([g.get_pose() for g in self.grippers])
 
     def get_velocities(self) -> np.ndarray:
-        """Get spatial velocities [vx, vy, omega] (2, 3)."""
+        """
+        Get EE point velocities in world frame [vx, vy, omega] (2, 3).
+        
+        NOTE: This returns POINT VELOCITIES, NOT twists!
+        - These are the velocities of each gripper's body origin point
+        - Observed in the world/spatial frame
+        - Order [vx, vy, omega] intentionally differs from twist [omega, vx, vy]
+          to make clear this is NOT a twist
+        
+        For proper body twists, use get_body_twists() instead.
+        """
         return np.array([g.get_velocity() for g in self.grippers])
 
     def get_body_twists(self) -> np.ndarray:
