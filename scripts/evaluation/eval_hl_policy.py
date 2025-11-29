@@ -477,6 +477,13 @@ class HLPolicyEvaluator:
                 self.draw_action_chunk(screen, self.action_chunk, 
                                        min(self.action_chunk_idx - 1, len(self.action_chunk) - 1))
                 
+                # Draw external wrenches
+                if 'external_wrenches' in obs:
+                    for i in range(2):
+                        pose = obs['ee_poses'][i]
+                        wrench = obs['external_wrenches'][i]
+                        self.draw_wrench_arrow(screen, pose, wrench)
+
                 self.env.window.blit(screen, screen.get_rect())
                 pygame.display.flip()
                 self.env.clock.tick(self.env.metadata['render_fps'])
@@ -502,6 +509,58 @@ class HLPolicyEvaluator:
                 
         self.env.close()
         pygame.quit()
+
+    def draw_wrench_arrow(self, surface, pose, wrench, scale=1.0):
+        """
+        Draw an arrow representing the external wrench (force).
+        
+        Args:
+            surface: Pygame surface
+            pose: EE pose [x, y, theta]
+            wrench: External wrench [tau, fx, fy]
+            scale: Scale factor for visualization
+        """
+        x, y, theta = pose
+        tau, fx, fy = wrench
+        
+        # Force vector magnitude
+        force_mag = np.linalg.norm([fx, fy])
+        
+        if force_mag < 0.1:
+            return
+            
+        # Draw force arrow
+        # Start at EE position
+        start_pos = (int(x), int(y))
+        
+        # End position (scaled)
+        end_x = x + fx * scale
+        end_y = y + fy * scale
+        end_pos = (int(end_x), int(end_y))
+        
+        # Color based on magnitude (Purple -> Red)
+        color = (128, 0, 128) # Purple
+        if force_mag > 20.0:
+            color = (255, 0, 0) # Red
+            
+        pygame.draw.line(surface, color, start_pos, end_pos, 3)
+        
+        # Draw arrow head
+        angle = np.arctan2(fy, fx)
+        head_size = 8
+        arrow_p1 = (
+            int(end_x - head_size * np.cos(angle - np.pi/6)),
+            int(end_y - head_size * np.sin(angle - np.pi/6))
+        )
+        arrow_p2 = (
+            int(end_x - head_size * np.cos(angle + np.pi/6)),
+            int(end_y - head_size * np.sin(angle + np.pi/6))
+        )
+        
+        pygame.draw.polygon(surface, color, [end_pos, arrow_p1, arrow_p2])
+        
+        # Optional: Draw torque as a small arc or text?
+        # For now, just force is enough for visual feedback
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate HL Policy with Action Chunking")
