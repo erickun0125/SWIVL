@@ -69,13 +69,13 @@ class ScrewImpedanceDemo(BaseBimanualDemo):
         
         # Set default impedance variables
         controller.set_impedance_variables(
-            d_l_parallel=10.0,    # Low damping for internal motion (compliant)
-            d_r_parallel=10.0,
-            d_l_perp=100.0,       # High damping for bulk motion (stiff)
-            d_r_perp=100.0,
-            k_p_l=3.0,            # Stiffness for pose error correction
-            k_p_r=3.0,
-            alpha=10.0            # Characteristic length (pixels)
+            d_l_parallel=100.0,
+            d_r_parallel=100.0,
+            d_l_perp=10.0,
+            d_r_perp=10.0,
+            k_p_l=1.0,
+            k_p_r=1.0,
+            alpha=1.0
         )
         
         return controller

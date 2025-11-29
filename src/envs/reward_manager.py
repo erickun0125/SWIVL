@@ -326,7 +326,7 @@ class RewardManager:
             for w in wrenches
         ]).max()
 
-        return max_wrench > self.max_wrench_threshold * 1.5
+        return max_wrench > self.max_wrench_threshold * 1.5 * 10
 
     def update_weights(self, new_weights: RewardWeights):
         """Update reward weights."""

@@ -42,7 +42,7 @@ class PDControllerDemo(BaseBimanualDemo):
             kp_angular=800.0,
             kd_angular=1000.0
         )
-        controller = MultiGripperPDController(num_grippers=2, gains=gains)
+        controller = MultiGripperPDController(num_grippers=2, gains=gains, max_force=100.0, max_torque=500)
         controller.set_timestep(self.env.dt)
         return controller
     

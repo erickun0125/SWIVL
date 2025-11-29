@@ -7,17 +7,13 @@ variables for compliant bimanual manipulation tasks.
 The RL policy implements SWIVL Layer 3 (Impedance Variable Modulation):
     a_t = (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
 
-The learned impedance parameters control:
-- d_∥: Parallel damping (internal motion, compliant along joint axis)
-- d_⊥: Perpendicular damping (bulk motion, stiff to maintain grasp)
-- k_p: Pose error correction gain for reference twist field
-- α: Characteristic length for metric tensor G
+Configuration:
+    All settings should be managed in scripts/configs/rl_config.yaml
+    Use ImpedanceLearningConfig.from_dict(config) to create env config
+    Use PPOImpedancePolicy.from_config(env, config) to create policy
 
-The RL policy works in conjunction with:
-1. Layer 1: High-level policy generates desired poses (ACT, Diffusion, Flow Matching)
-2. Layer 2: Reference twist field generator
-3. Layer 3: RL policy determines optimal impedance parameters ← THIS MODULE
-4. Layer 4: Screw-decomposed impedance controller
+Training:
+    python scripts/training/train_ll_policy.py --config scripts/configs/rl_config.yaml
 
 Algorithm: PPO (Proximal Policy Optimization) from Stable-Baselines3
 """
@@ -31,6 +27,17 @@ from src.rl_policy.ppo_impedance_policy import (
     SWIVLFeatureExtractor,
     SWIVLLoggingCallback
 )
+from src.rl_policy.config_utils import (
+    load_rl_config,
+    validate_rl_config,
+    get_device,
+    get_ppo_config,
+    get_network_config,
+    get_reward_config,
+    get_output_config,
+    print_config_summary,
+    load_default_config
+)
 
 __all__ = [
     # Environment
@@ -40,4 +47,14 @@ __all__ = [
     'PPOImpedancePolicy',
     'SWIVLFeatureExtractor',
     'SWIVLLoggingCallback',
+    # Config utilities
+    'load_rl_config',
+    'validate_rl_config',
+    'get_device',
+    'get_ppo_config',
+    'get_network_config',
+    'get_reward_config',
+    'get_output_config',
+    'print_config_summary',
+    'load_default_config',
 ]
