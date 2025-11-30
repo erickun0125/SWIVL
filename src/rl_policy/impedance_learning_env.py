@@ -106,8 +106,14 @@ class ImpedanceLearningConfig:
     # Reward weights (per SWIVL Paper Section 3.3.2)
     # =========================================================================
     tracking_weight: float = 1.0
-    fighting_force_weight: float = 0.5
+    # Exponential safety reward: r_safety = w_safety * exp(-k * ||F_perp||^2)
+    # Provides alive bonus when fighting forces are low
+    safety_reward_weight: float = 1.0
+    safety_exp_scale: float = 0.01  # k in exp(-k * ||F_perp||^2)
     twist_accel_weight: float = 0.01
+    
+    # Termination penalty for failure cases (grasp drift, wrench limit)
+    termination_penalty: float = 10.0
 
     # =========================================================================
     # Timing
@@ -119,6 +125,9 @@ class ImpedanceLearningConfig:
     # Episode settings
     max_episode_steps: int = 1000
     max_grasp_drift: float = 50.0
+    
+    # Wrench limit for termination (failure case)
+    max_external_wrench: float = 200.0  # N (combined force magnitude)
 
     # =========================================================================
     # Normalization scales
@@ -196,8 +205,10 @@ class ImpedanceLearningConfig:
             
             # Reward weights
             tracking_weight=reward_cfg.get('tracking_weight', 1.0),
-            fighting_force_weight=reward_cfg.get('fighting_force_weight', 0.5),
+            safety_reward_weight=reward_cfg.get('safety_reward_weight', 1.0),
+            safety_exp_scale=reward_cfg.get('safety_exp_scale', 0.01),
             twist_accel_weight=reward_cfg.get('twist_accel_weight', 0.01),
+            termination_penalty=reward_cfg.get('termination_penalty', 10.0),
             
             # Timing
             control_dt=env_cfg.get('control_dt', 0.01),
@@ -207,6 +218,7 @@ class ImpedanceLearningConfig:
             # Episode settings
             max_episode_steps=env_cfg.get('max_episode_steps', 1000),
             max_grasp_drift=env_cfg.get('max_grasp_drift', 50.0),
+            max_external_wrench=env_cfg.get('max_external_wrench', 200.0),
             
             # Normalization scales
             norm_pos_scale=norm_cfg.get('pos_scale', 512.0),
@@ -477,17 +489,34 @@ class ImpedanceLearningEnv(gym.Env):
 
         obs, _, terminated, truncated, info = self.base_env.step(wrenches)
 
-        reward = self._compute_reward(obs, current_twists, control_info)
+        # Check termination conditions
+        failure_termination = False
+        termination_reason = None
+        
+        if self._check_grasp_drift(obs):
+            terminated = True
+            failure_termination = True
+            termination_reason = 'grasp_drift'
+            
+        if self._check_wrench_limit(obs):
+            terminated = True
+            failure_termination = True
+            termination_reason = 'wrench_limit'
+
+        # Compute reward with termination penalty for failure cases
+        reward = self._compute_reward(
+            obs, current_twists, control_info, 
+            failure_termination=failure_termination
+        )
 
         self.elapsed_time_in_chunk += self.config.control_dt
         self.episode_steps += 1
 
         if self.episode_steps >= self.config.max_episode_steps:
             truncated = True
-            
-        if self._check_grasp_drift(obs):
-            terminated = True
-            info['termination_reason'] = 'grasp_drift'
+        
+        if termination_reason is not None:
+            info['termination_reason'] = termination_reason
 
         rl_obs = self._get_rl_observation(obs)
         norm_obs = self._normalize_obs(rl_obs)
@@ -496,6 +525,7 @@ class ImpedanceLearningEnv(gym.Env):
 
         info['control_info'] = control_info
         info['current_alpha'] = self.current_alpha
+        info['failure_termination'] = failure_termination
 
         return norm_obs, reward, terminated, truncated, info
 
@@ -628,6 +658,39 @@ class ImpedanceLearningEnv(gym.Env):
                 return True
                 
         return False
+    
+    def _check_wrench_limit(self, obs: Dict[str, np.ndarray]) -> bool:
+        """
+        Check if external wrench exceeds safety limit.
+        
+        Per SWIVL Paper Section 3.3.2:
+        Episodes terminate when external wrenches exceed safe operating limits,
+        as excessive wrenches risk hardware damage and grasp instability.
+        
+        Uses the dual metric G^(-1) = diag(1/α², 1, 1) to compute wrench magnitude,
+        ensuring consistent weighting between moment and force components:
+        
+        ||F||_{G^(-1)}² = τ²/α² + fx² + fy²
+        
+        This is dual to the twist metric G = diag(α², 1, 1), preserving the
+        reciprocal product (virtual power) relationship between twists and wrenches.
+        """
+        alpha = self.current_alpha
+        
+        for i in range(2):
+            wrench = obs['external_wrenches'][i]
+            # wrench = [tau, fx, fy] in SE(2)
+            tau, fx, fy = wrench[0], wrench[1], wrench[2]
+            
+            # Compute wrench magnitude using dual metric G^(-1)
+            # ||F||_{G^(-1)}² = τ²/α² + fx² + fy²
+            wrench_magnitude_sq = (tau**2 / (alpha**2)) + fx**2 + fy**2
+            wrench_magnitude = np.sqrt(wrench_magnitude_sq)
+            
+            if wrench_magnitude > self.config.max_external_wrench:
+                return True
+                
+        return False
 
     def _update_trajectories(self, obs: Dict[str, np.ndarray]):
         """Update trajectories using high-level policy."""
@@ -703,15 +766,30 @@ class ImpedanceLearningEnv(gym.Env):
         self,
         obs: Dict[str, np.ndarray],
         current_twists: np.ndarray,
-        control_info: Dict
+        control_info: Dict,
+        failure_termination: bool = False
     ) -> float:
-        """Compute reward for SWIVL impedance learning."""
+        """
+        Compute reward for SWIVL impedance learning.
+        
+        Per SWIVL Paper Section 3.3.2:
+        r_t = r_track + r_safety + r_reg + r_term
+        
+        Key design choices:
+        - r_safety uses exponential form to provide positive "alive bonus" 
+          when fighting forces are low, avoiding the pathological behavior
+          where agents learn to terminate early (all-negative rewards)
+        - r_term applies termination penalty for failure cases (grasp drift,
+          wrench limit) to discourage unsafe behaviors
+        """
         reward = 0.0
         alpha = self.current_alpha
         G = np.diag([alpha**2, 1.0, 1.0])
         cfg = self.config
 
-        # r_track: G-metric velocity tracking error
+        # =====================================================================
+        # r_track: G-metric velocity tracking error (negative penalty)
+        # =====================================================================
         tracking_error = 0.0
         for i in range(2):
             twist_error = current_twists[i] - self.current_ref_twists[i]
@@ -719,17 +797,43 @@ class ImpedanceLearningEnv(gym.Env):
             tracking_error += g_norm_sq
         reward -= cfg.tracking_weight * tracking_error
 
-        # r_safety: Fighting force penalty
+        # =====================================================================
+        # r_safety: Exponential safety reward (positive alive bonus)
+        # 
+        # r_safety = w_safety * exp(-k * Σ||F_⊥||_{G^{-1}}²)
+        # 
+        # Uses the dual metric G^{-1} = diag(1/α², 1, 1) for wrench norms,
+        # which is mathematically consistent with the twist metric G and
+        # ensures dimensional consistency (moment and force have same units).
+        # 
+        # ||F||_{G^{-1}}² = τ²/α² + fx² + fy²
+        # 
+        # Properties:
+        # - When ||F_⊥|| ≈ 0: r_safety ≈ w_safety (max positive reward)
+        # - As ||F_⊥|| increases: r_safety → 0 exponentially
+        # - Acts as "alive bonus" encouraging safe, low-force behavior
+        # =====================================================================
         if self.config.controller_type == 'screw_decomposed':
             fighting_force_sq = 0.0
             for i in range(2):
                 P_perp = self.controller.controllers[i].P_perp
                 F_ext = obs['external_wrenches'][i]
                 F_perp = P_perp.T @ F_ext
-                fighting_force_sq += np.linalg.norm(F_perp)**2
-            reward -= cfg.fighting_force_weight * fighting_force_sq
+                
+                # Use dual metric G^{-1} for wrench norm (dimensionally consistent)
+                # ||F_perp||_{G^{-1}}² = τ²/α² + fx² + fy²
+                tau_perp, fx_perp, fy_perp = F_perp[0], F_perp[1], F_perp[2]
+                fighting_force_sq += (tau_perp**2 / (alpha**2)) + fx_perp**2 + fy_perp**2
+            
+            # Exponential safety reward
+            safety_reward = cfg.safety_reward_weight * np.exp(
+                -cfg.safety_exp_scale * fighting_force_sq
+            )
+            reward += safety_reward
 
-        # r_reg: Twist acceleration regularization
+        # =====================================================================
+        # r_reg: Twist acceleration regularization (negative penalty)
+        # =====================================================================
         if self.prev_twists is not None:
             twist_accel_sq = 0.0
             dt = cfg.control_dt
@@ -737,6 +841,18 @@ class ImpedanceLearningEnv(gym.Env):
                 twist_accel = (current_twists[i] - self.prev_twists[i]) / dt
                 twist_accel_sq += np.linalg.norm(twist_accel)**2
             reward -= cfg.twist_accel_weight * twist_accel_sq
+
+        # =====================================================================
+        # r_term: Termination penalty for failure cases
+        # 
+        # Applied when episode terminates due to:
+        # - Grasp drift exceeding threshold
+        # - External wrench exceeding safety limit
+        # 
+        # This discourages the agent from learning to intentionally fail
+        # =====================================================================
+        if failure_termination:
+            reward -= cfg.termination_penalty
 
         return reward
 

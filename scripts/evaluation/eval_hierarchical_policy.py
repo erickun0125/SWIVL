@@ -82,7 +82,8 @@ class HierarchicalPolicyEvaluator:
         ll_config_path: str = 'scripts/configs/rl_config.yaml',
         device: str = 'auto',
         render_mode: str = 'human',
-        execution_horizon: int = 10
+        execution_horizon: int = 10,
+        use_wrench_in_hl: bool = True
     ):
         """
         Initialize hierarchical policy evaluator.
@@ -103,6 +104,7 @@ class HierarchicalPolicyEvaluator:
         print(f"Using device: {self.device}")
         
         self.execution_horizon = execution_horizon
+        self.use_wrench_in_hl = use_wrench_in_hl
         
         # Load configurations
         self.hl_config = self._load_config(hl_config_path)
@@ -299,8 +301,12 @@ class HierarchicalPolicyEvaluator:
         """Extract proprioception vector for HL policy."""
         ee_poses = obs['ee_poses'].flatten()
         ee_velocities = obs['ee_velocities'].flatten()
-        wrenches = obs['external_wrenches'].flatten()
-        return np.concatenate([ee_poses, ee_velocities, wrenches])
+        
+        if self.use_wrench_in_hl:
+            wrenches = obs['external_wrenches'].flatten()
+            return np.concatenate([ee_poses, ee_velocities, wrenches])
+        else:
+            return np.concatenate([ee_poses, ee_velocities])
     
     def process_hl_observation(self, obs: Dict[str, np.ndarray], img: np.ndarray):
         """Process observation for HL policy input."""
@@ -996,6 +1002,10 @@ def main():
         help='Steps to execute before re-planning'
     )
     parser.add_argument(
+        '--no_wrench', action='store_true',
+        help='Exclude wrench from HL policy observation (use if HL was trained without wrench)'
+    )
+    parser.add_argument(
         '--num_episodes', type=int, default=None,
         help='Number of episodes for batch evaluation (omit for interactive)'
     )
@@ -1014,7 +1024,8 @@ def main():
         ll_config_path=args.ll_config,
         device=args.device,
         render_mode='human' if args.num_episodes is None else None,
-        execution_horizon=args.execution_horizon
+        execution_horizon=args.execution_horizon,
+        use_wrench_in_hl=not args.no_wrench
     )
     
     if args.num_episodes is not None:

@@ -93,8 +93,11 @@ environment:
   # Episode settings
   max_episode_steps: 1000
   
-  # Termination: grasp drift threshold (geodesic distance in pixels)
+  # Termination conditions
+  # Grasp drift threshold (geodesic distance in pixels)
   max_grasp_drift: 50.0
+  # External wrench limit (force magnitude in N) - excessive force triggers termination
+  max_external_wrench: 200.0
   
   # Observation normalization scales
   normalization:
@@ -138,14 +141,22 @@ rl_training:
     activation: "relu"
   
   # Reward weights (per SWIVL Paper Section 3.3.2)
-  # r_t = r_track + r_safety + r_reg
+  # r_t = r_track + r_safety + r_reg + r_term
   reward:
-    # r_track = -w_track * Σ ||V_i - V_i^ref||_G^2 (G-metric tracking)
+    # r_track = -w_track * Σ ||V_i - V_i^ref||_G^2 (G-metric tracking penalty)
     tracking_weight: 0.0001
-    # r_safety = -w_int * Σ ||F_i,⊥||^2 (fighting force penalty)
-    fighting_force_weight: 0.0001
-    # r_reg = -w_reg * Σ ||V̇_i||^2 (twist acceleration regularization)
+    
+    # r_safety = w_safety * exp(-k * Σ ||F_i,⊥||^2) (exponential safety reward)
+    # Acts as "alive bonus" - positive reward when fighting forces are low
+    safety_reward_weight: 1.0
+    safety_exp_scale: 0.01
+    
+    # r_reg = -w_reg * Σ ||V̇_i||^2 (twist acceleration regularization penalty)
     twist_accel_weight: 0.000001
+    
+    # r_term = -w_term (termination penalty for failure cases)
+    # Applied when episode terminates due to grasp drift or wrench limit
+    termination_penalty: 10.0
   
   # Evaluation during training
   evaluation:

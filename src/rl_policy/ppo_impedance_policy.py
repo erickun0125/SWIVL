@@ -237,6 +237,7 @@ class SWIVLLoggingCallback(BaseCallback):
     - Fighting force metrics (F_⊥)
     - G-metric tracking performance
     - Per-arm impedance modulation patterns
+    - Termination statistics (grasp drift, wrench limit)
     """
 
     def __init__(self, verbose: int = 0):
@@ -244,14 +245,25 @@ class SWIVLLoggingCallback(BaseCallback):
         self.episode_rewards = []
         self.episode_lengths = []
         self.fighting_forces = []
+        self.failure_terminations = []
+        self.termination_reasons = {'grasp_drift': 0, 'wrench_limit': 0, 'success': 0}
 
     def _on_step(self) -> bool:
         """Called at each step."""
-        # Track fighting force from info if available
+        # Track fighting force and termination info
         for info in self.locals.get('infos', []):
             if 'control_info' in info and info['control_info']:
                 ff = info['control_info'].get('total_fighting_force', 0.0)
                 self.fighting_forces.append(ff)
+            
+            # Track failure terminations
+            if info.get('failure_termination', False):
+                self.failure_terminations.append(1)
+                reason = info.get('termination_reason', 'unknown')
+                if reason in self.termination_reasons:
+                    self.termination_reasons[reason] += 1
+            elif self.locals.get('dones', [False])[0]:
+                self.termination_reasons['success'] += 1
         return True
 
     def _on_rollout_end(self) -> None:
@@ -325,6 +337,22 @@ class SWIVLLoggingCallback(BaseCallback):
             self.logger.record('swivl/fighting_force_mean', np.mean(self.fighting_forces))
             self.logger.record('swivl/fighting_force_max', np.max(self.fighting_forces))
             self.fighting_forces = []  # Reset for next rollout
+        
+        # Log termination statistics
+        total_terms = sum(self.termination_reasons.values())
+        if total_terms > 0:
+            self.logger.record('swivl/term_grasp_drift_rate', 
+                             self.termination_reasons['grasp_drift'] / total_terms)
+            self.logger.record('swivl/term_wrench_limit_rate', 
+                             self.termination_reasons['wrench_limit'] / total_terms)
+            self.logger.record('swivl/term_success_rate', 
+                             self.termination_reasons['success'] / total_terms)
+            self.logger.record('swivl/failure_termination_count', 
+                             len(self.failure_terminations))
+        
+        # Reset termination tracking
+        self.failure_terminations = []
+        self.termination_reasons = {'grasp_drift': 0, 'wrench_limit': 0, 'success': 0}
 
 
 class PPOImpedancePolicy:

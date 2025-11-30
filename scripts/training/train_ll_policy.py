@@ -211,8 +211,9 @@ def train(config: Dict[str, Any], device: str):
     
     print(f"\n  Reward weights:")
     print(f"    Tracking: {env_config.tracking_weight}")
-    print(f"    Fighting force: {env_config.fighting_force_weight}")
+    print(f"    Safety (exponential): w={env_config.safety_reward_weight}, κ={env_config.safety_exp_scale}")
     print(f"    Twist acceleration: {env_config.twist_accel_weight}")
+    print(f"    Termination penalty: {env_config.termination_penalty}")
     
     # Create training environment
     print(f"\nCreating training environment...")
