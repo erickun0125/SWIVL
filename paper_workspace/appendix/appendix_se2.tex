@@ -332,7 +332,7 @@ In the SE(2) simulation environment, we use direct end-effector wrench control w
 The reward function for SE(2) specializes the general formulation from Method Section 3.3.2, adapted for planar manipulation with the learned metric tensor $G = \mathrm{diag}(\alpha^2, 1, 1)$:
 
 $$
-r_t = r_{\text{track}} + r_{\text{safety}} + r_{\text{reg}}
+r_t = r_{\text{track}} + r_{\text{safety}} + r_{\text{reg}} + r_{\text{term}}
 $$
 
 \subsubsection{Motion Tracking Reward}
@@ -351,13 +351,33 @@ $$
 
 This ensures tracking error is measured consistently with the impedance control framework, with adaptive weighting between rotational and translational components via the learned parameter $\alpha$.
 
-\subsubsection{Safety Reward}
+\subsubsection{Exponential Safety Reward}
 
-Following Method Eq.~\eqref{eq:reward_safety}, the safety reward minimizes internal wrenches---wrench components orthogonal to the object's allowable motion direction:
+Following Method Eq.~\eqref{eq:reward_safety}, the safety reward uses an \textbf{exponential form} that provides a positive `alive bonus' when fighting forces are low:
 
 $$
-r_{\text{safety}} = -w_{\text{int}} \sum_{i \in \{l,r\}} \|\mathcal{F}_{i,\perp}\|_2^2
+r_{\text{safety}} = w_{\text{safety}} \exp\left(-\kappa \sum_{i \in \{l,r\}} \|\mathcal{F}_{i,\perp}\|_{G^{-1}}^2\right)
 $$
+
+where $\kappa > 0$ is a decay rate and the wrench norm uses the \textbf{dual metric} $G^{-1} = \mathrm{diag}(1/\alpha^2, 1, 1)$:
+
+$$
+\|\mathcal{F}_{i,\perp}\|_{G^{-1}}^2 = \frac{m_{z,\perp}^2}{\alpha^2} + f_{x,\perp}^2 + f_{y,\perp}^2
+$$
+
+\textbf{Mathematical Justification for the Dual Metric.} Twists and wrenches are elements of dual vector spaces related through the reciprocal product (virtual power): $P = \mathcal{F}^\top \mathcal{V}$. When the twist space is equipped with metric $G$, the wrench space naturally inherits the dual metric $G^{-1}$:
+\begin{itemize}
+\item \textbf{Dimensional consistency:} The moment $m_z$ has units [force$\times$length], while forces $f_x, f_y$ have units [force]. Using the Euclidean norm $\|F\|_2^2 = m_z^2 + f_x^2 + f_y^2$ is \textit{dimensionally inconsistent}. The dual metric $G^{-1}$ with $m_z^2/\alpha^2$ normalizes the moment by the characteristic length, yielding consistent [force$^2$] units for all terms.
+\item \textbf{Musical isomorphism:} The metric $G$ on $\mathfrak{se}(2)$ induces an isomorphism to the dual space $\mathfrak{se}(2)^*$ via $\mathcal{V} \mapsto G\mathcal{V}$. The corresponding inner product on $\mathfrak{se}(2)^*$ is given by $G^{-1}$.
+\item \textbf{Adaptive weighting:} Since $\alpha$ is learned, the policy discovers task-appropriate weighting between moment and force penalties.
+\end{itemize}
+
+\textbf{Design Rationale.} A naive quadratic penalty $r_{\text{safety}} = -w \sum_i \|\mathcal{F}_{i,\perp}\|^2$ produces all-negative rewards, which can lead to pathological learning: the agent may learn to intentionally trigger early termination to avoid accumulating negative rewards. The exponential formulation avoids this by providing:
+\begin{itemize}
+\item \textbf{Positive baseline:} When $\|\mathcal{F}_{i,\perp}\| \approx 0$, the agent receives $r_{\text{safety}} \approx w_{\text{safety}} > 0$
+\item \textbf{Smooth decay:} As fighting forces increase, the reward smoothly decays toward zero
+\item \textbf{Alive bonus effect:} The positive reward incentivizes the agent to maintain safe operation and survive longer episodes
+\end{itemize}
 
 \textbf{Wrench Decomposition via Projection Operators.} Consistent with Method Section 3.3.2 and the twist decomposition in Layer 4, wrenches decompose using the transpose of twist projection operators. For measured wrench $\mathcal{F}_i = [m_{z,i}, f_{x,i}, f_{y,i}]^T \in \mathbb{R}^3$:
 
@@ -388,8 +408,6 @@ where the last equality follows from $P_{i,\parallel} P_{i,\perp} = 0$ (orthogon
 \end{itemize}
 \end{itemize}
 
-By penalizing $\|\mathcal{F}_{i,\perp}\|_2^2$, the policy learns to minimize non-productive forces while maintaining necessary productive forces for manipulation.
-
 \subsubsection{Regularization Reward}
 
 Following Method Eq.~\eqref{eq:reward_regularization}, the regularization reward encourages smooth motion:
@@ -400,12 +418,27 @@ $$
 
 where $\dot{\mathcal{V}}_i = [\ddot{\theta}_i, \dot{v}_{x,i}, \dot{v}_{y,i}]^T \in \mathbb{R}^3$ is the SE(2) twist acceleration. This reduces energy consumption, joint jerkiness, and Cartesian jerkiness, promoting natural and efficient movements.
 
-\subsubsection{Termination Conditions}
+\subsubsection{Termination Penalty}
 
-Following Method Section 3.3.2, grasp stability is enforced through early termination rather than reward penalties. Episodes terminate immediately (task failure) when grasp drift exceeds safety thresholds:
+Following Method Eq.~\eqref{eq:reward_termination}, a penalty is applied when episodes terminate due to failure conditions:
 
 $$
-\text{Terminate if: } \exists i \in \{l, r\} \text{ such that } \left\|\left[\log\left((T_{\text{grip},i}^{\text{init}})^{-1} T_{\text{grip},i}\right)\right]^\vee\right\|_2 > d_{\max}
+r_{\text{term}} = \begin{cases}
+-w_{\text{term}} & \text{if failure termination (grasp drift or wrench limit)} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+This explicit penalty discourages the agent from learning behaviors that intentionally trigger failure conditions to end episodes early.
+
+\subsubsection{Termination Conditions}
+
+Episodes terminate immediately (with termination penalty $r_{\text{term}}$ applied) under two failure conditions:
+
+\textbf{(1) Grasp Drift.} Grasp stability is monitored via geodesic distance on SE(2):
+
+$$
+\text{Terminate if: } \exists i \in \{l, r\} \text{ such that } \left\|\left[\log\left((T_{\text{grip},i}^{\text{init}})^{-1} T_{\text{grip},i}\right)\right]^\vee\right\|_G > d_{\max}
 $$
 
 where $T_{\text{grip},i}^{\text{init}}$ is the initial grasp pose, $T_{\text{grip},i}$ is the current grasp pose, and $d_{\max}$ is the maximum allowable drift threshold. For SE(2), the logarithm map computes planar geodesic distance:
@@ -413,12 +446,33 @@ where $T_{\text{grip},i}^{\text{init}}$ is the initial grasp pose, $T_{\text{gri
 $$
 \left[\log(\Delta T)\right]^\vee = \begin{bmatrix}
 \Delta\theta \\
-\Delta x \cos\theta_{init} + \Delta y \sin\theta_{init} \\
--\Delta x \sin\theta_{init} + \Delta y \cos\theta_{init}
+\Delta x \cos\theta_{\text{init}} + \Delta y \sin\theta_{\text{init}} \\
+-\Delta x \sin\theta_{\text{init}} + \Delta y \cos\theta_{\text{init}}
 \end{bmatrix}
 $$
 
-This ensures grasp stability throughout manipulation without explicit reward shaping.
+\textbf{(2) Wrench Limit.} External wrenches are monitored to prevent hardware damage. We use the \textbf{dual metric} $G^{-1} = \mathrm{diag}(1/\alpha^2, 1, 1)$ to compute wrench magnitude, ensuring consistent weighting between moment and force components:
+
+$$
+\text{Terminate if: } \exists i \in \{l, r\} \text{ such that } \|\mathcal{F}_i\|_{G^{-1}} > \mathcal{F}_{\max}
+$$
+
+where the $G^{-1}$-weighted wrench norm is:
+$$
+\|\mathcal{F}_i\|_{G^{-1}}^2 = \frac{m_{z,i}^2}{\alpha^2} + f_{x,i}^2 + f_{y,i}^2
+$$
+
+This dual metric is consistent with the twist metric $G = \mathrm{diag}(\alpha^2, 1, 1)$, preserving the reciprocal product (virtual power) relationship: $\langle \mathcal{F}, \mathcal{V} \rangle = \mathcal{F}^\top \mathcal{V}$. The learned characteristic length $\alpha$ thus provides adaptive weighting between moment and force limits.
+
+Excessive wrenches can cause:
+\begin{itemize}
+\item Grasp slippage and object dropping
+\item Object deformation or damage
+\item End-effector or joint damage
+\item Dangerous interactions in real-world deployment
+\end{itemize}
+
+Both conditions represent task failure and trigger the termination penalty, encouraging the agent to learn safe manipulation strategies.
 
 \subsection{SE(2) $\to$ SE(3) Extension Path}
 

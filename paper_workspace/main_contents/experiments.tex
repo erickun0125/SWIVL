@@ -102,7 +102,14 @@ SWIVL (Ours) & \textbf{[--]} & \textbf{[--]} & \textbf{[--]} & [--] \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main_results} presents quantitative results across all joint types. We observe consistent patterns across the two object categories.
+Table~\ref{tab:main_results} presents quantitative results across all joint types. We observe consistent patterns across the two object categories. Figure~\ref{fig:swivl_inference} illustrates a successful manipulation sequence using the full SWIVL framework, demonstrating coordinated bimanual control with learned impedance modulation.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/swivl_inference.jpg}
+    \caption{\textbf{SWIVL inference sequence.} Time-ordered frames showing successful bimanual manipulation of an articulated object. The impedance parameters panel (left) displays learned values: damping coefficients $d_\parallel, d_\perp$ for internal and bulk motions, stiffness $k_p$, and characteristic length $\alpha$. Red arrows indicate wrench feedback from F/T sensors. The policy adaptively modulates compliance to achieve coordinated manipulation while maintaining low fighting forces.}
+    \label{fig:swivl_inference}
+\end{figure}
 
 \paragraph{Success Rate.}
 SWIVL achieves the highest success rates across both joint types, with an average improvement of [--]\% over Pos-Ctrl and [--]\% over Imp-Ctrl. The performance gap is pronounced for both articulated objects (revolute and prismatic), where kinematic constraints impose strict coordination requirements that constraint-unaware controllers cannot satisfy.
@@ -133,7 +140,7 @@ Interestingly, SWIVL maintains competitive tracking RMSE despite prioritizing co
 %------------------------------------------------------------------------------
 
 \paragraph{Why Position Control Fails.}
-Position control's fundamental limitation is its inability to accommodate kinematic constraints. When the high-level Flow Matching Policy outputs action chunks, these represent motion \textit{intentions} learned from demonstrations---they do not guarantee kinematic consistency between the two arms. Under high-stiffness control, even small inconsistencies ($<$1\% position error) accumulate into substantial fighting forces because the controller treats the reference as a hard constraint to be achieved regardless of physical consequences. This is particularly problematic for articulated objects where the holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$ must be satisfied continuously.
+Position control's fundamental limitation is its inability to accommodate kinematic constraints. When the high-level Flow Matching Policy outputs action chunks, these represent motion \textit{intentions} learned from demonstrations---they do not guarantee kinematic consistency between the two arms. Under high-stiffness control, even small inconsistencies ($<$1\% position error) accumulate into substantial fighting forces because the controller treats the reference as a hard constraint to be achieved regardless of physical consequences. This is particularly problematic for articulated objects where the holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$ must be satisfied continuously. Figure~\ref{fig:failure_modes} illustrates two representative failure modes: (a) grasp drift caused by excessive fighting forces that destabilize the grasp (Figure~\ref{fig:failure_grasp_drift}), and (b) wrench limit violations where uncontrolled forces exceed safe operating thresholds (Figure~\ref{fig:failure_wrench_limit}).
 
 \paragraph{Why Classical Impedance Control Is Insufficient.}
 Classical impedance control introduces compliance but suffers from two key limitations in our setting:
@@ -141,6 +148,25 @@ Classical impedance control introduces compliance but suffers from two key limit
     \item \textbf{Linearization errors}: The approximation $J_l^{-1}(e_R) \approx I_3$ assumes small orientation errors, which is violated during articulated manipulation where constraint mismatches can cause large trajectory deviations.
     \item \textbf{Lack of object awareness}: Fixed isotropic impedance parameters cannot distinguish between motion along the object's kinematic constraint (which should be compliant) and motion orthogonal to it (which may require stiffness for stability). This one-size-fits-all approach is fundamentally mismatched to articulated object manipulation.
 \end{enumerate}
+
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/failure_grasp_drift.jpg}
+        \caption{Grasp drift failure}
+        \label{fig:failure_grasp_drift}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/failure_wrench_limit.jpg}
+        \caption{Wrench limit exceeded}
+        \label{fig:failure_wrench_limit}
+    \end{subfigure}
+    \caption{\textbf{Failure modes in baseline controllers.} (a) \textit{Grasp drift}: High-stiffness position control generates excessive fighting forces that cause the object to slip from the gripper, resulting in large goal error (L=143.4px, R=152.0px). (b) \textit{Wrench limit exceeded}: Without object-aware compliance, kinematically inconsistent commands produce dangerous wrench magnitudes (visualized as red arrows) that exceed safe operating limits, risking hardware damage and grasp instability.}
+    \label{fig:failure_modes}
+\end{figure}
 
 \paragraph{SWIVL's Advantages.}
 SWIVL addresses these limitations through three mechanisms:

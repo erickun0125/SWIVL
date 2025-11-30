@@ -347,10 +347,10 @@ Minimizing $\|\mathcal{F}_{i,\perp}\|^2$ implicitly resolves the bulk motion amb
 \subsubsection{Reward Design}
 \label{sec:reward_design}
 
-The reward balances three objectives for stable, force-compliant manipulation:
+The reward balances four objectives for stable, force-compliant manipulation:
 \begin{equation}
 \label{eq:reward}
-r_t = r_{\text{track}} + r_{\text{safety}} + r_{\text{reg}}.
+r_t = r_{\text{track}} + r_{\text{safety}} + r_{\text{reg}} + r_{\text{term}}.
 \end{equation}
 
 \textbf{Motion Tracking ($r_{\text{track}}$).} Encourages reference following with the learned $G$-metric:
@@ -360,12 +360,12 @@ r_{\text{track}} = -w_{\text{track}} \sum_{i \in \{l,r\}} \|\mathcal{V}_i - \mat
 \end{equation}
 Using the $G$-metric ensures tracking error is measured consistently with the impedance framework, with adaptive weighting via the learned $\alpha$.
 
-\textbf{Safe Inter-arm Force Interaction ($r_{\text{safety}}$).} Penalizes bulk forces:
+\textbf{Safe Inter-arm Force Interaction ($r_{\text{safety}}$).} We employ an exponential safety reward that provides a positive `alive bonus' when fighting forces are low:
 \begin{equation}
 \label{eq:reward_safety}
-r_{\text{safety}} = -w_{\text{int}} \sum_{i \in \{l,r\}} \|\mathcal{F}_{i,\perp}\|_2^2.
+r_{\text{safety}} = w_{\text{safety}} \exp\left(-\kappa \sum_{i \in \{l,r\}} \|\mathcal{F}_{i,\perp}\|_{G^{-1}}^2\right),
 \end{equation}
-By penalizing $\|\mathcal{F}_{i,\perp}\|_2^2$, the policy learns to suppress excessive bulk forces while maintaining necessary internal forces. This wrench decomposition is fully consistent with the twist decomposition framework.
+where $\kappa > 0$ is a decay rate and $\|\cdot\|_{G^{-1}}$ denotes the dual metric norm. The dual metric $G^{-1} = \mathrm{diag}(1/\alpha^2, I_3)$ is mathematically induced from the twist metric $G$ and ensures dimensional consistency between moment and force components. This formulation has two key properties: (i) when $\|\mathcal{F}_{i,\perp}\| \approx 0$, the policy receives $r_{\text{safety}} \approx w_{\text{safety}}$, incentivizing safe operation; (ii) as fighting forces increase, the reward decays smoothly toward zero. Unlike quadratic penalties (all negative rewards), this exponential form prevents the pathological behavior where agents learn to terminate early to avoid accumulating negative rewards.
 
 \textbf{Motion Smoothness ($r_{\text{reg}}$).} Regularizes twist acceleration:
 \begin{equation}
@@ -374,12 +374,31 @@ r_{\text{reg}} = -w_{\text{reg}} \sum_{i \in \{l,r\}} \|\dot{\mathcal{V}}_i\|^2,
 \end{equation}
 reducing jerkiness for motion smoothness.
 
-\textbf{Termination Conditions.} Episodes terminate if grasp drift exceeds a threshold:
+\textbf{Termination Penalty ($r_{\text{term}}$).} Applied upon failure termination:
 \begin{equation}
-\label{eq:termination}
-\text{Terminate if } \exists i \in \{l,r\}: \left\|\left[\log\left((T_{\text{grip},i}^{\text{init}})^{-1} T_{\text{grip},i}\right)\right]^\vee\right\|_G > d_{\max},
+\label{eq:reward_termination}
+r_{\text{term}} = \begin{cases}
+-w_{\text{term}} & \text{if failure termination} \\
+0 & \text{otherwise}
+\end{cases}
 \end{equation}
-where $T_{\text{grip},i}^{\text{init}}$ and $T_{\text{grip},i}$ are initial and current grasp poses. This geodesic distance on SE(3) captures both translational and rotational drift with consistent metric weighting, encouraging stable grasps without explicit reward shaping.
+This explicit penalty discourages the agent from learning behaviors that intentionally trigger termination conditions.
+
+\textbf{Termination Conditions.} Episodes terminate (with $r_{\text{term}}$ applied) under two failure conditions:
+
+\textit{(1) Grasp Drift.} If grasp pose drift exceeds a threshold:
+\begin{equation}
+\label{eq:termination_grasp}
+\exists i \in \{l,r\}: \left\|\left[\log\left((T_{\text{grip},i}^{\text{init}})^{-1} T_{\text{grip},i}\right)\right]^\vee\right\|_G > d_{\max},
+\end{equation}
+where $T_{\text{grip},i}^{\text{init}}$ and $T_{\text{grip},i}$ are initial and current grasp poses.
+
+\textit{(2) Wrench Limit.} If external wrenches exceed safe operating limits:
+\begin{equation}
+\label{eq:termination_wrench}
+\exists i \in \{l,r\}: \|\mathcal{F}_i\|_{G^{-1}} > \mathcal{F}_{\max},
+\end{equation}
+where $\|\mathcal{F}\|_{G^{-1}}^2 = \mathcal{F}^\top G^{-1} \mathcal{F}$ uses the dual metric $G^{-1}$ to weight moment and force components consistently with the twist metric $G$. Excessive wrenches risk hardware damage, grasp slippage, and object deformation.
 
 \subsubsection{Policy Architecture and Training}
 
