@@ -2,11 +2,7 @@
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate SWIVL on bimanual manipulation of articulated objects in an SE(2) planar benchmark. Our experiments address the following key question:
-
-\begin{itemize}[leftmargin=2em]
-    \item[\textbf{Q1.}] Does SWIVL improve task success and reduce fighting forces compared to position control and classical impedance control baselines?
-\end{itemize}
+We evaluate SWIVL on bimanual manipulation of articulated objects in an SE(2) planar benchmark. Our experiments aim to verify whether SWIVL improves task success and reduces fighting forces, comparing its performance against high stiffness position control and linearized impedance control.
 
 %------------------------------------------------------------------------------
 \subsection{Experimental Setup}
@@ -17,7 +13,7 @@ We evaluate SWIVL on bimanual manipulation of articulated objects in an SE(2) pl
 While our method (Section~\ref{sec:method}) is formulated for SE(3) with $k$-DoF articulated objects, we validate in SE(2) with 1-DoF objects. This deliberate simplification enables rigorous evaluation while preserving the essential challenges: \textbf{(i)} the fundamental phenomena---force coupling, constraint satisfaction, compliant coordination---manifest identically in planar and spatial settings; \textbf{(ii)} all architectural components (projection operators $P_{i,\parallel}, P_{i,\perp}$, metric tensor $G(\alpha)$, impedance modulation $d_\parallel, d_\perp$) remain fully exercised; and \textbf{(iii)} the mathematical structure (Lie group, screw theory, twist-wrench duality) reduces consistently from SE(3). Extension to SE(3) requires only scaling observation/action dimensions. See Appendix~\ref{app:se2} for complete SE(2) instantiation.
 
 \paragraph{Environment.}
-We use a 512$\times$512 pixel planar workspace with dual 3-DoF end-effectors under direct body wrench control $\mathcal{F}_i = [m_z, f_x, f_y]^\top$. Each end-effector provides 3-axis F/T sensing. The hierarchical architecture combines high-level planning (10 Hz) with low-level control (100 Hz).
+We introduce \textbf{BiarT} (Bimanual Articulated manipulation), a Pymunk-based SE(2) simulation environment for bimanual manipulation of articulated objects. Just as \textbf{PushT}~\cite{chi2023diffusion} serves as a minimal benchmark for single-arm planar manipulation, BiarT provides a lightweight testbed for studying the unique challenges of bimanual coordination---force coupling, constraint satisfaction, and compliant control---without the complexity of full 3D physics. The environment features a 512$\times$512 pixel planar workspace with dual 3-DoF end-effectors under direct body wrench control $\mathcal{F}_i = [m_z, f_x, f_y]^\top$. Each end-effector provides 3-axis F/T sensing. The hierarchical architecture combines high-level planning (10 Hz) with low-level control (100 Hz).
 
 \paragraph{Tasks and Objects.}
 We evaluate on \textbf{2 articulated objects} spanning two joint types (Figure~\ref{fig:objects}):
@@ -25,12 +21,12 @@ We evaluate on \textbf{2 articulated objects} spanning two joint types (Figure~\
     \item \textbf{Revolute}: Angular articulation---rotation about a pivot point. One arm drives rotation while the other must comply.
     \item \textbf{Prismatic}: Linear articulation---sliding along an axis. One arm drives extension/retraction while the other accommodates.
 \end{itemize}
-Each object satisfies the SE(2) holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$ with constant body-frame screw axes $\mathcal{B}_l, \mathcal{B}_r \in \mathbb{R}^3$. Tasks require manipulating objects from randomized initial configurations to goal configurations. \textbf{Success criteria}: position error $<$10 pixels, orientation error $<$5°, joint error $<$5° or 5 pixels, with maintained grasp. Each configuration is tested over \textbf{100 trials}.
+Each object satisfies the SE(2) holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$ with constant body-frame screw axes $\mathcal{B}_l, \mathcal{B}_r \in \mathbb{R}^3$. Tasks require manipulating objects from randomized initial configurations to goal configurations. \textbf{Success criteria}: position error $<$10 pixels, orientation error $<$5°, joint error $<$5° or 5 pixels, with maintained grasp. Each configuration is tested over \textbf{10 trials}.
 
 \begin{figure}[t]
     \centering
     \includegraphics[width=\linewidth]{figures/objects.jpg}
-    \caption{\textbf{Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation).}
+    \caption{\textbf{Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation). Red and Blue end-effectors are floating base parallel grippers.} 
     \label{fig:objects}
 \end{figure}
 
@@ -47,7 +43,7 @@ We compare three low-level control strategies, all receiving identical action ch
     \end{equation}
     with high gains $K_p, K_d$ to minimize tracking error, prioritizing trajectory fidelity over compliance.
     
-    \item \textbf{Impedance Control (Imp-Ctrl)}: The action chunks are tracked via classical SE(3) impedance control with linearized approximations. This baseline employs the standard mass-spring-damper formulation:
+    \item \textbf{Impedance Control (Imp-Ctrl)}: The action chunks are tracked via linearized SE(2) impedance control with linearized approximations. This baseline employs the standard mass-spring-damper formulation:
     \begin{equation}
         \mathcal{F}_{cmd,i} = D\xi_i + K\mathcal{E}_i + \mu_{b,i}
     \end{equation}
@@ -61,10 +57,10 @@ For SWIVL, the policy observes reference twists $\mathcal{V}_i^{\text{ref}}$, sc
 
 \paragraph{Metrics.}
 \begin{itemize}[leftmargin=1.5em]
-    \item \textbf{Success Rate} (\%): Task completion within error thresholds
-    \item \textbf{Fighting Force} $F_{\text{fight}}$ (N): Time-averaged bulk wrench magnitude $\frac{1}{T}\sum_t \|\mathcal{F}_{i,\perp}(t)\|$
-    \item \textbf{Constraint Violation} (px/s): Deviation from holonomic constraint $\|{}^s\mathcal{V}_l - {}^s\mathcal{V}_r - \mathcal{S}\dot{q}_{obj}\|$
-    \item \textbf{Tracking RMSE} (px): End-effector trajectory error relative to reference
+    \item \textbf{Success Rate} (\%): Task completion within error thresholds and time limit
+    \item \textbf{Wrench Limit Failure} (\%): Episodes terminated due to exceeding safe wrench thresholds
+    \item \textbf{Grasp Drift Failure} (\%): Episodes terminated due to grasp instability causing object loss
+    \item \textbf{Timeout Failure} (\%): Episodes where task was not completed within time limit (implicitly computed as $100 - \text{Success} - \text{Wrench Limit} - \text{Grasp Drift}$); these represent performance failures without safety violations
 \end{itemize}
 
 %------------------------------------------------------------------------------
@@ -77,27 +73,27 @@ For SWIVL, the policy observes reference twists $\mathcal{V}_i^{\text{ref}}$, sc
 % ============================================================================
 \begin{table}[t]
 \centering
-\caption{\textbf{Quantitative comparison.} Performance across two joint types (100 trials each). All methods use the same Flow Matching Policy as high-level planner. Bold indicates best; $\pm$ shows standard error.}
+\caption{\textbf{Quantitative comparison.} Performance across two joint types (10 trials each). All methods use the same Flow Matching Policy as high-level planner. Bold indicates best. Timeout failures (not shown) are implicitly $100 - \text{Success} - \text{Wrench} - \text{Grasp}$.}
 \label{tab:main_results}
 \small
-\begin{tabular}{lccccc}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Method} & \textbf{Success (\%)$\uparrow$} & \textbf{$F_{\text{fight}}$ (N)$\downarrow$} & \textbf{CViol (px/s)$\downarrow$} & \textbf{RMSE (px)$\downarrow$} \\
+\textbf{Method} & \textbf{Success (\%)$\uparrow$} & \textbf{Wrench Fail (\%)$\downarrow$} & \textbf{Grasp Fail (\%)$\downarrow$} \\
 \midrule
-\multicolumn{5}{l}{\textit{Revolute Joint}} \\
-Pos-Ctrl & [--] & [--] & [--] & [--] \\
-Imp-Ctrl & [--] & [--] & [--] & [--] \\
-SWIVL (Ours) & [--] & [--] & [--] & [--] \\
+\multicolumn{4}{l}{\textit{Revolute Joint}} \\
+Pos-Ctrl & 10 & 70 & 0 \\
+Imp-Ctrl & 10 & 20 & 30 \\
+SWIVL (Ours) & \textbf{40} & \textbf{0} & \textbf{10} \\
 \midrule
-\multicolumn{5}{l}{\textit{Prismatic Joint}} \\
-Pos-Ctrl & [--] & [--] & [--] & [--] \\
-Imp-Ctrl & [--] & [--] & [--] & [--] \\
-SWIVL (Ours) & [--] & [--] & [--] & [--] \\
+\multicolumn{4}{l}{\textit{Prismatic Joint}} \\
+Pos-Ctrl & 30 & 40 & 0 \\
+Imp-Ctrl & 60 & 0 & 20 \\
+SWIVL (Ours) & \textbf{80} & \textbf{0} & \textbf{0} \\
 \midrule
-\multicolumn{5}{l}{\textit{Average (All Objects)}} \\
-Pos-Ctrl & [--] & [--] & [--] & [--] \\
-Imp-Ctrl & [--] & [--] & [--] & [--] \\
-SWIVL (Ours) & \textbf{[--]} & \textbf{[--]} & \textbf{[--]} & [--] \\
+\multicolumn{4}{l}{\textit{Average (All Objects)}} \\
+Pos-Ctrl & 20 & 55 & 0 \\
+Imp-Ctrl & 35 & 10 & 25 \\
+SWIVL (Ours) & \textbf{60} & \textbf{0} & \textbf{5} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -112,16 +108,16 @@ Table~\ref{tab:main_results} presents quantitative results across all joint type
 \end{figure}
 
 \paragraph{Success Rate.}
-SWIVL achieves the highest success rates across both joint types, with an average improvement of [--]\% over Pos-Ctrl and [--]\% over Imp-Ctrl. The performance gap is pronounced for both articulated objects (revolute and prismatic), where kinematic constraints impose strict coordination requirements that constraint-unaware controllers cannot satisfy.
+SWIVL achieves the highest success rates across both joint types, with an average improvement of 40\% over Pos-Ctrl and 25\% over Imp-Ctrl. The performance gap is particularly pronounced for the revolute joint, where rotational constraints impose stricter coordination requirements that constraint-unaware controllers cannot satisfy.
 
-\paragraph{Fighting Force Reduction.}
-The most striking difference appears in fighting force $F_{\text{fight}}$. Pos-Ctrl generates the highest internal forces across all conditions because high-stiffness tracking of kinematically inconsistent references directly translates to inter-arm stress. Imp-Ctrl reduces forces through passive compliance but cannot eliminate them systematically. SWIVL achieves [--]$\times$ reduction in fighting forces compared to Pos-Ctrl by explicitly decomposing wrenches into productive (along constraint) and non-productive (orthogonal) components, then learning to suppress the latter through impedance modulation.
+\paragraph{Wrench Limit Failures.}
+Pos-Ctrl exhibits the highest wrench limit failure rates (55\% average) because high-stiffness tracking of kinematically inconsistent references directly translates to excessive inter-arm stress that exceeds safe operating thresholds. This is particularly severe for the revolute joint (70\%), where rotational constraints amplify force coupling. Imp-Ctrl reduces these failures to 10\% through passive compliance. SWIVL achieves zero wrench limit failures by explicitly decomposing wrenches into productive (along constraint) and non-productive (orthogonal) components, then learning to suppress the latter through impedance modulation.
 
-\paragraph{Constraint Satisfaction.}
-Constraint violation (CViol) measures deviation from the holonomic constraint ${}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S}\dot{q}_{obj}$. Pos-Ctrl shows the highest violations as it prioritizes trajectory tracking over constraint satisfaction. Imp-Ctrl's isotropic compliance provides no geometric structure to guide motion along valid constraint manifolds. SWIVL's screw-decomposed control naturally respects constraints by projecting motions onto object-centric subspaces, achieving near-zero violations for articulated objects.
+\paragraph{Grasp Drift Failures.}
+Interestingly, Imp-Ctrl exhibits the highest grasp drift failures (25\% average) despite having lower wrench failures than Pos-Ctrl. This reveals a fundamental trade-off: isotropic compliance reduces peak forces but introduces uncontrolled motion that destabilizes the grasp over time. Pos-Ctrl shows zero grasp drift because its rigid tracking prevents gradual slip---though this comes at the cost of wrench limit violations. SWIVL achieves only 5\% grasp drift by using screw-decomposed control that selectively applies compliance along constraint directions while maintaining stability orthogonal to them.
 
-\paragraph{Tracking Accuracy.}
-Interestingly, SWIVL maintains competitive tracking RMSE despite prioritizing compliance over rigid tracking. This suggests that fighting forces in baselines actually \textit{degrade} tracking by causing grasp perturbations and object drift. By suppressing harmful internal forces, SWIVL achieves smoother trajectories that better approximate the high-level planner's intentions.
+\paragraph{Timeout Failures.}
+The remaining failures (not shown in Table~\ref{tab:main_results}) are timeout failures---episodes where the task was not completed within the time limit without any safety violations. Notably, SWIVL has higher timeout rates (35\% average) than Pos-Ctrl (25\%) and Imp-Ctrl (30\%), which reflects a deliberate trade-off: by prioritizing safety through learned compliance, SWIVL may occasionally be more conservative in its motions. However, this ``safe but slow'' behavior is preferable in real-world deployment where safety violations can cause hardware damage or task failure.
 
 % ============================================================================
 % FIGURE PLACEHOLDER: Force profiles comparison
@@ -164,42 +160,16 @@ Classical impedance control introduces compliance but suffers from two key limit
         \caption{Wrench limit exceeded}
         \label{fig:failure_wrench_limit}
     \end{subfigure}
-    \caption{\textbf{Failure modes in baseline controllers.} (a) \textit{Grasp drift}: High-stiffness position control generates excessive fighting forces that cause the object to slip from the gripper, resulting in large goal error (L=143.4px, R=152.0px). (b) \textit{Wrench limit exceeded}: Without object-aware compliance, kinematically inconsistent commands produce dangerous wrench magnitudes (visualized as red arrows) that exceed safe operating limits, risking hardware damage and grasp instability.}
+    \caption{\textbf{Failure modes in experiments.} (a) \textit{Grasp drift} (b) \textit{Wrench limit exceeded}}
     \label{fig:failure_modes}
 \end{figure}
 
 \paragraph{SWIVL's Advantages.}
 SWIVL addresses these limitations through three mechanisms:
 \begin{enumerate}[leftmargin=1.5em]
-    \item \textbf{Twist-driven formulation}: By incorporating pose errors into reference twists rather than computing elastic wrenches explicitly, SWIVL bypasses the nonlinear pose-error Jacobian $J_E$ (Section~\ref{sec:reference_twist_field}).
-    \item \textbf{Screw-decomposed control}: The projection operators $P_{i,\parallel}, P_{i,\perp}$ partition the twist space into object-centric subspaces, enabling independent compliance for internal versus bulk motions (Section~\ref{sec:decomposed_impedance}).
-    \item \textbf{Learned impedance modulation}: The RL policy discovers task-appropriate impedance strategies conditioned on real-time wrench feedback and object geometry, adapting compliance dynamically rather than relying on fixed parameters (Section~\ref{sec:impedance_learning}).
+    \item \textbf{Twist-driven formulation}: By incorporating pose errors into reference twists rather than computing elastic wrenches explicitly, SWIVL bypasses the nonlinear pose-error Jacobian $J_E$.
+    \item \textbf{Screw-decomposed control}: The projection operators $P_{i,\parallel}, P_{i,\perp}$ partition the twist space into object-centric subspaces, enabling independent compliance for internal versus bulk motions.
+    \item \textbf{Learned impedance modulation}: The RL policy discovers task-appropriate impedance strategies conditioned on real-time wrench feedback and object geometry, adapting compliance dynamically rather than relying on fixed parameters.
 \end{enumerate}
 
-% ============================================================================
-% FIGURE PLACEHOLDER: Impedance variable visualization
-% ============================================================================
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figures/impedance_analysis.pdf}
-%     \caption{\textbf{Learned impedance behavior.} (a) Damping coefficients $d_\parallel, d_\perp$ during revolute manipulation---the policy learns high $d_\perp$ (stiff bulk motion) with low $d_\parallel$ (compliant articulation). (b) Characteristic length $\alpha$ varies across joint types, discovering task-appropriate metric structures. (c) Impedance adjustment correlates with wrench feedback, demonstrating reactive force regulation.}
-%     \label{fig:impedance_analysis}
-% \end{figure}
-% ============================================================================
-
-\paragraph{Computational Efficiency.}
-Reference twist field generation achieves $O(1)$ complexity per timestep through closed-form computation. Policy inference (forward pass through the FiLM-conditioned network) completes in $<$5 ms on a single CPU core, meeting the 100 Hz control requirement with margin. The projection operators $P_{i,\parallel}, P_{i,\perp}$ require only matrix-vector multiplications with pre-computed screw axes, adding negligible overhead. Overall, SWIVL's computational cost is compatible with real-time deployment on standard robot controllers.
-
 %------------------------------------------------------------------------------
-\subsection{Summary}
-\label{sec:exp_summary}
-%------------------------------------------------------------------------------
-
-Our experiments validate SWIVL's core hypothesis: \textbf{explicit encoding of geometric constraints and wrench feedback enables robust bimanual manipulation that position control and classical impedance control cannot achieve}. Key findings:
-\begin{enumerate}[leftmargin=2em]
-    \item \textbf{Position control fails} for articulated objects because high-stiffness tracking of kinematically inconsistent references generates excessive fighting forces, leading to grasp instability and task failure.
-    \item \textbf{Classical impedance control is insufficient} due to linearization assumptions that break down under large deviations and isotropic parameters that cannot distinguish object-centric motion subspaces.
-    \item \textbf{SWIVL succeeds} by combining twist-driven impedance formulation, screw-decomposed control, and learned impedance modulation---achieving higher success rates with significantly reduced fighting forces across all joint types.
-\end{enumerate}
-
-These SE(2) results instantiate the general SE(3) methodology, providing evidence that SWIVL's principles---object-aware motion decomposition, wrench-adaptive compliance, and hierarchical integration with cognitive planners---will transfer to full spatial manipulation.

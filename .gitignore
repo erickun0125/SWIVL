@@ -13,7 +13,6 @@ __pycache__/
 *.pth
 *.pkl
 *.png
-*.jpg
 *.jpeg
 *.gif
 *.mp4

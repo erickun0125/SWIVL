@@ -38,7 +38,7 @@ For planar articulated objects with a \\textbf{single kinematic joint}, the scre
 \item \textbf{Prismatic joint} (translation along direction $\hat{d}$): $\mathcal{S} = \begin{bmatrix} 0 \\ d_x \\ d_y \end{bmatrix}$ where $(d_x, d_y)$ defines sliding direction
 \end{itemize}
 
-In the general SE(3) formulation (Section~\ref{sec:problem_formulation}), the object Jacobian $J_s(\mathbf{q}_{obj}) \in \mathbb{R}^{6 \times k}$ relates internal joint velocities to relative end-effector motion. In our SE(2), 1-DoF setting, this reduces to a single spatial screw axis $\mathcal{S} \in \mathbb{R}^3$ and the kinematic constraint becomes:
+In the general SE(3) formulation, the object Jacobian $J_s(\mathbf{q}_{obj}) \in \mathbb{R}^{6 \times k}$ relates internal joint velocities to relative end-effector motion. In our SE(2), 1-DoF setting, this reduces to a single spatial screw axis $\mathcal{S} \in \mathbb{R}^3$ and the kinematic constraint becomes:
 
 $$
 {}^s\mathcal{V}_l - {}^s\mathcal{V}_r = \mathcal{S} \, \dot{q}_{obj}, \quad {}^s\mathcal{V}_i \in \mathbb{R}^3, \quad \mathcal{S} \in \mathbb{R}^3, \quad \dot{q}_{obj} \in \mathbb{R}.
@@ -313,7 +313,7 @@ where $\mathcal{V}_i^{\text{ref}} = \mathrm{Ad}_{T_{b_id_i}} \mathcal{V}_i^{\tex
 
 \textbf{Execution:}
 
-In our SE(2) simulation environment with direct body wrench control, the commanded wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands to update end-effector poses, consistent with the impedance-based control framework.
+In our BiarT SE(2) simulation environment (Section~\ref{sec:exp_setup}) with direct body wrench control, the commanded wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands to update end-effector poses, consistent with the impedance-based control framework.
 
 \textbf{Kinematic Constraint Satisfaction:}
 
@@ -323,7 +323,7 @@ By construction, the projection-based structure ensures the holonomic constraint
 
 \subsubsection{Direct End-Effector Control}
 
-In the SE(2) simulation environment, we use direct end-effector wrench control without intermediate joint-space representations. The commanded body wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ (computed from the impedance controller above) are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands through forward dynamics to update end-effector poses at each control step. This wrench-based control scheme is appropriate for the planar manipulation tasks and allows us to focus on the core challenges of force coupling and constraint satisfaction while maintaining full consistency with the impedance control framework in Method Section 3.2.4.
+In the BiarT environment, we use direct end-effector wrench control without intermediate joint-space representations. The commanded body wrenches $\mathcal{F}_{\mathrm{cmd}, i} \in \mathbb{R}^3$ (computed from the impedance controller above) are directly applied as control inputs to the end-effectors. The simulation environment integrates these wrench commands through forward dynamics to update end-effector poses at each control step. This wrench-based control scheme is appropriate for the planar manipulation tasks and allows us to focus on the core challenges of force coupling and constraint satisfaction while maintaining full consistency with the impedance control framework in Method Section 3.2.4.
 
 \textbf{Control Frequency:} 100 Hz (policy and controller run at the same frequency).
 
@@ -498,9 +498,9 @@ The SE(2) experimental validation serves as a controlled study of SWIVL's core p
 
 \textbf{Validation Strategy:}
 \begin{enumerate}
-\item SE(2) experiments (current work): Isolate force coupling and constraint satisfaction with impedance-based control
+\item SE(2) experiments in BiarT (current work): Isolate force coupling and constraint satisfaction with impedance-based control
 \item SE(3) simulation: Validate 6-DoF extension with gravity, collisions, and per-arm impedance modulation
 \item Real-world deployment: Franka FR3 dual-arm setup
 \end{enumerate}
 
-The SE(2) results provide strong evidence that SWIVL's principles---learned impedance variables, projection-based motion decomposition, FiLM-based object conditioning, and screw-decomposed control---will transfer to full SE(3) manipulation.
+The BiarT SE(2) results provide strong evidence that SWIVL's principles---learned impedance variables, projection-based motion decomposition, FiLM-based object conditioning, and screw-decomposed control---will transfer to full SE(3) manipulation.
