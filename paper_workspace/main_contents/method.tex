@@ -141,7 +141,7 @@ Here, $\alpha$ acts as the radius of gyration, representing the ratio between th
 \begin{figure}[t]
     \centering
     \includegraphics[width=\linewidth]{figures/reference_twist_field.jpg}
-    \caption{\textbf{Reference Twist Field Generator.} The generator transforms sparse high-level waypoints into dense, stable reference twists. (Left) Sparse action chunks from the high-level policy are interpolated via SE(3) trajectory smoothing. (Center) Body twists $\mathcal{V}_i^{\text{des}}$ are computed by differentiation. (Right) The stable imitation vector field combines the desired twist with a pose-error corrective term $k_{p_i}\mathcal{E}_i$, enabling closed-loop reference generation that balances imitation fidelity with robustness to deviations.}
+    \caption{\textbf{Reference Twist Field Generator.} The generator transforms sparse high-level waypoints into dense, stable reference twists. The stable imitation vector field combines the desired twist with a pose-error corrective term $k_{p_i}\mathcal{E}_i$, that balances imitation fidelity with robustness to deviations.}
     \label{fig:reference_twist_field}
 \end{figure}
 
