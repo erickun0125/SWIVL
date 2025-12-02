@@ -402,7 +402,7 @@ where $\|\mathcal{F}\|_{G^{-1}}^2 = \mathcal{F}^\top G^{-1} \mathcal{F}$ uses th
 
 \subsubsection{Policy Architecture and Training}
 
-The policy $\pi_\theta: \mathcal{O} \to \mathcal{A}$ uses a multi-stream architecture with \textbf{Feature-wise Linear Modulation (FiLM)}~\cite{perez2018film} to inject object geometry into feature processing. Separate encoders process reference twists, wrenches, and proprioception, with FiLM layers modulating features based on screw axes $\{\mathcal{B}_l, \mathcal{B}_r\}$, enabling dynamic adaptation across joint types.
+The policy $\pi_\theta: \mathcal{O} \to \mathcal{A}$ uses a multi-stream architecture with Feature-wise Linear Modulation (FiLM) to inject object geometry into feature processing. Separate encoders process reference twists, wrenches, and proprioception, with FiLM layers modulating features based on screw axes $\{\mathcal{B}_l, \mathcal{B}_r\}$, enabling dynamic adaptation across joint types.
 
 We train with \textbf{Proximal Policy Optimization (PPO)}~\cite{schulman2017ppo}:
 \begin{equation}

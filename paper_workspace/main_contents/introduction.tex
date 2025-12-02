@@ -2,13 +2,6 @@
 \section{Introduction}
 \label{sec:introduction}
 
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=0.85\linewidth]{figures/bimanipulation_example_image.jpg}
-    \caption{\textbf{Bimanual manipulation of an articulated object.}}
-    \label{fig:teaser}
-\end{figure}
-
 Learning-based robotic manipulation has achieved strong performance in single-arm settings, particularly for structured pick-and-place tasks learned via demonstration. However, extending such approaches to \textbf{dual-arm manipulation of an articulated object} remains challenging. Coordinated bimanual interaction induces rich \textbf{inter-arm force coupling} and must satisfy complex \textbf{object-centric kinematic constraints}. Existing Learning-from-Demonstration (LfD) frameworks---typically grounded in high-stiffness position control with no explicit representation of object kinematics---often generate unstable motions and large internal forces when multiple arms physically interact with a shared object.
 
 \subsection*{Cognitive vs. Physical Intelligence}
@@ -34,7 +27,7 @@ In this setting, we use high-level planners (VLA, Imitation Learning Policies, T
 To address these problems, we introduce \textbf{SWIVL} (\textbf{S}crew-\textbf{W}rench informed \textbf{I}mpedance \textbf{V}ariable \textbf{L}earning). SWIVL enables safe bimanual manipulation with object-aware decomposed impedance control via screw axes and adaptive impedance variable modulation via wrench feedback. This work makes the following contributions:
 
 \begin{enumerate}
-    \item \textbf{Twist-Driven SE(3) Impedance Control via Stable Imitation Vector Fields.}:  Bypass the nonlinear pose-error Jacobian inherent in SE(3) impedance control by incorporating pose errors directly into reference twists, enabling geometrically consistent compliance even under large trajectory deviations.
+    \item \textbf{Twist-Driven SE(3) Impedance Control via Stable Imitation Vector Fields}:  Bypass the nonlinear pose-error Jacobian inherent in SE(3) impedance control by incorporating pose errors directly into reference twists, enabling geometrically consistent compliance even under large trajectory deviations.
 
     \item \textbf{Screw Axes-Decomposed Twist and Wrench Spaces}: Orthogonal projection operators structurally partition control into internal (joint articulation) and bulk (object transport) components, and dually decompose wrenches into internal forces and bulk forces, enabling independent compliant behavior for each object kinematics aware subspace.
 
