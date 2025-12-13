@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swivl"
+version = "0.1.0"
+description = "SWIVL: Screw-Wrench informed Impedance Variable Learning for bimanual manipulation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Kyungseo Park", email = "erickun0125@snu.ac.kr"}
+]
+keywords = ["robotics", "manipulation", "impedance-control", "bimanual", "reinforcement-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "gymnasium>=0.28.0",
+    "numpy>=1.20.0",
+    "pymunk>=6.0.0",
+    "pygame>=2.0.0",
+    "opencv-python>=4.5.0",
+    "shapely>=1.8.0",
+    "scipy>=1.9.0",
+]
+
+[project.optional-dependencies]
+rl = [
+    "torch>=2.0.0",
+    "stable-baselines3>=2.0.0",
+    "tensorboard>=2.10.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+]
+all = ["swivl[rl,dev]"]
+
+[project.urls]
+Homepage = "https://github.com/your-username/swivl"
+Documentation = "https://github.com/your-username/swivl/tree/main/docs"
+Repository = "https://github.com/your-username/swivl"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["scripts/tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+
+
+
+
+

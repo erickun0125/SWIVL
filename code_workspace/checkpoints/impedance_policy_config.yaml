@@ -1,0 +1,147 @@
+final_eval_results:
+  mean_fighting_force: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    GnuHd2JDjEA=
+  mean_length: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    zczMzMxMWUA=
+  mean_reward: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    1V0B3bwrcsA=
+  std_fighting_force: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    BcKgqCcyVkA=
+  std_length: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    sgWLfw/FO0A=
+  std_reward: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    HQj/cPbjXkA=
+training_config:
+  device:
+    type: auto
+  environment:
+    control_dt: 0.01
+    hl_chunk_duration: 1.0
+    joint_type: revolute
+    max_episode_steps: 1000
+    max_external_wrench: 200.0
+    max_grasp_drift: 50.0
+    name: BiArt
+    normalization:
+      angle_scale: 3.14159
+      pos_scale: 512.0
+      twist_angular_scale: 10.0
+      twist_linear_scale: 500.0
+      wrench_scale: 100.0
+    object:
+      link_length: 40.0
+      link_mass: 0.5
+      link_width: 12.0
+    policy_dt: 0.01
+    render_mode: null
+  experiment:
+    name: swivl_impedance_learning
+    notes: 'SWIVL Layer 3: Impedance Modulation Policy Training
+
+      - Learns optimal impedance variables for bimanual manipulation
+
+      - Uses screw-decomposed twist-driven impedance controller
+
+      '
+    seed: 42
+    tags:
+    - bimanual
+    - impedance_control
+    - hierarchical_rl
+    - swivl
+  hl_policy:
+    checkpoint: checkpoints/act_best.pth
+    config_path: scripts/configs/hl_policy_config.yaml
+    type: act
+  ll_controller:
+    robot:
+      inertia: 97.6
+      mass: 1.2
+    screw_decomposed:
+      default_alpha: 10.0
+      max_alpha: 20.0
+      max_d_parallel: 50.0
+      max_d_perp: 50.0
+      max_force: 100.0
+      max_k_p: 10.0
+      max_torque: 500.0
+      min_alpha: 1.0
+      min_d_parallel: 1.0
+      min_d_perp: 1.0
+      min_k_p: 0.1
+    se2_impedance:
+      max_damping_angular: 20.0
+      max_damping_linear: 50.0
+      max_stiffness_angular: 100.0
+      max_stiffness_linear: 200.0
+      min_damping_angular: 0.5
+      min_damping_linear: 1.0
+      min_stiffness_angular: 5.0
+      min_stiffness_linear: 10.0
+    type: screw_decomposed
+  rl_training:
+    algorithm: ppo
+    evaluation:
+      deterministic: true
+      eval_freq: 10000
+      n_eval_episodes: 5
+    logging:
+      log_interval: 100
+      tensorboard_log: ./logs/impedance_rl/
+      verbose: 1
+    network:
+      activation: relu
+      features_dim: 256
+      policy_layers:
+      - 256
+      - 128
+      value_layers:
+      - 256
+      - 128
+    output:
+      checkpoint_dir: ./checkpoints
+      checkpoint_name: impedance_policy.zip
+      save_freq: 50000
+    ppo:
+      batch_size: 64
+      clip_range: 0.2
+      ent_coef: 0.01
+      gae_lambda: 0.95
+      gamma: 0.99
+      learning_rate: 0.0003
+      max_grad_norm: 0.5
+      n_epochs: 10
+      n_steps: 2048
+      vf_coef: 0.5
+    reward:
+      safety_exp_scale: 0.01
+      safety_reward_weight: 1.0
+      termination_penalty: 10.0
+      tracking_weight: 0.0001
+      twist_accel_weight: 1.0e-06
+    total_timesteps: 1000

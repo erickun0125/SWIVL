@@ -1,0 +1,296 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:introduction}{{1}{1}{Introduction}{section.1}{}}
+\citation{chi2023diffusion}
+\citation{zhao2023learning}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Our Approach : SWIVL}{2}{subsection.1.1}\protected@file@percent }
+\citation{brohan2023rt1}
+\citation{brohan2023rt2}
+\citation{black2024pi0}
+\citation{team2024octo}
+\citation{padalkar2023openx}
+\citation{andrychowicz2020learning}
+\citation{khatib1987unified}
+\citation{hogan1985impedance}
+\citation{raibert1981hybrid}
+\citation{lee2019force,suomalainen2022survey}
+\citation{johannink2019residual,ankile2025imitation}
+\citation{he2025hover,he2024omnih2o}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
+\newlabel{sec:related_work}{{2}{3}{Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Learning Paradigms for Manipulation}{3}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Force-Compliant Control}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Hierarchical Integration of Cognitive and Physical Control}{3}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Method}{4}{section.3}\protected@file@percent }
+\newlabel{sec:method}{{3}{4}{Method}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Problem Setup and Key Challenges}{4}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:problem_setup}{{3.1}{4}{Problem Setup and Key Challenges}{subsection.3.1}{}}
+\newlabel{eq:holonomic_constraint}{{1}{4}{Problem Setup and Key Challenges}{equation.3.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Architecture Overview}{5}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:architecture_overview}{{3.2}{5}{Architecture Overview}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Stable Imitation Vector Field (Layer 2)}{5}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:reference_twist_field}{{3.3}{5}{Stable Imitation Vector Field (Layer 2)}{subsection.3.3}{}}
+\newlabel{eq:se3_constraint}{{2}{5}{Stable Imitation Vector Field (Layer 2)}{equation.3.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {SWIVL Architecture.} Four-layer hierarchy bridging cognitive planning with physical execution. High-level waypoints are transformed into stable reference twists (Layer 2), which are tracked by a screw-decomposed impedance controller (Layer 4) with learned compliance modulation (Layer 3). Wrench feedback enables adaptive force regulation.\relax }}{6}{figure.caption.3}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:architecture_overview}{{1}{6}{\textbf {SWIVL Architecture.} Four-layer hierarchy bridging cognitive planning with physical execution. High-level waypoints are transformed into stable reference twists (Layer 2), which are tracked by a screw-decomposed impedance controller (Layer 4) with learned compliance modulation (Layer 3). Wrench feedback enables adaptive force regulation.\relax }{figure.caption.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 1: SE(3) Trajectory Smoothing.}{6}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Step 2: Body Twist Computation.}{6}{section*.5}\protected@file@percent }
+\newlabel{eq:body_twist}{{4}{6}{Step 2: Body Twist Computation}{equation.3.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 3: Stable Imitation Vector Field.}{6}{section*.6}\protected@file@percent }
+\newlabel{eq:vector_field}{{5}{6}{Step 3: Stable Imitation Vector Field}{equation.3.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Reference Twist Field Generator.} The generator transforms sparse high-level waypoints into dense, stable reference twists. The stable imitation vector field combines the desired twist with a pose-error corrective term $k_{p_i}\mathcal  {E}_i$, that balances imitation fidelity with robustness to deviations.\relax }}{7}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:reference_twist_field}{{2}{7}{\textbf {Reference Twist Field Generator.} The generator transforms sparse high-level waypoints into dense, stable reference twists. The stable imitation vector field combines the desired twist with a pose-error corrective term $k_{p_i}\mathcal {E}_i$, that balances imitation fidelity with robustness to deviations.\relax }{figure.caption.7}{}}
+\newlabel{eq:pose_error}{{6}{7}{Step 3: Stable Imitation Vector Field}{equation.3.6}{}}
+\newlabel{eq:inner_product}{{7}{7}{Step 3: Stable Imitation Vector Field}{equation.3.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Screw Axes-Decomposed Impedance Control (Layer 4)}{8}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:screw_decomposed_control}{{3.4}{8}{Screw Axes-Decomposed Impedance Control (Layer 4)}{subsection.3.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.1}Motion Space Decomposition}{8}{subsubsection.3.4.1}\protected@file@percent }
+\newlabel{sec:motion_decomposition}{{3.4.1}{8}{Motion Space Decomposition}{subsubsection.3.4.1}{}}
+\newlabel{eq:projection_operators}{{8}{8}{Motion Space Decomposition}{equation.3.8}{}}
+\newlabel{eq:twist_decomp_internal}{{9}{8}{Motion Space Decomposition}{equation.3.9}{}}
+\newlabel{eq:twist_decomp_bulk}{{10}{8}{Motion Space Decomposition}{equation.3.10}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.2}Controller Formulation}{8}{subsubsection.3.4.2}\protected@file@percent }
+\newlabel{sec:controller_formulation}{{3.4.2}{8}{Controller Formulation}{subsubsection.3.4.2}{}}
+\newlabel{eq:damping_matrix}{{11}{8}{Controller Formulation}{equation.3.11}{}}
+\newlabel{eq:impedance_control_main}{{12}{8}{Controller Formulation}{equation.3.12}{}}
+\newlabel{eq:joint_torque}{{13}{9}{Controller Formulation}{equation.3.13}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.3}Dual Interpretation of the Controller}{9}{subsubsection.3.4.3}\protected@file@percent }
+\newlabel{sec:controller_interpretation}{{3.4.3}{9}{Dual Interpretation of the Controller}{subsubsection.3.4.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Interpretation 1: Twist-Driven SE(3) Impedance.}{9}{section*.8}\protected@file@percent }
+\newlabel{eq:impedance_equivalence}{{17}{9}{Interpretation 1: Twist-Driven SE(3) Impedance}{equation.3.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Interpretation 2: Task-Semantic Motion Decomposition.}{9}{section*.9}\protected@file@percent }
+\newlabel{eq:decomposed_control}{{18}{9}{Interpretation 2: Task-Semantic Motion Decomposition}{equation.3.18}{}}
+\newlabel{eq:wrench_fb_internal}{{19}{9}{Interpretation 2: Task-Semantic Motion Decomposition}{equation.3.19}{}}
+\newlabel{eq:wrench_fb_bulk}{{20}{9}{Interpretation 2: Task-Semantic Motion Decomposition}{equation.3.20}{}}
+\newlabel{eq:orthogonality_1}{{21}{9}{Interpretation 2: Task-Semantic Motion Decomposition}{equation.3.21}{}}
+\newlabel{eq:orthogonality_2}{{22}{9}{Interpretation 2: Task-Semantic Motion Decomposition}{equation.3.22}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Wrench-Adaptive Impedance Learning (Layer 3)}{10}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:impedance_policy}{{3.5}{10}{Wrench-Adaptive Impedance Learning (Layer 3)}{subsection.3.5}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.5.1}Observation and Action Spaces}{10}{subsubsection.3.5.1}\protected@file@percent }
+\newlabel{eq:action_space}{{23}{10}{Observation and Action Spaces}{equation.3.23}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.5.2}Wrench Decomposition and Force Regulation}{10}{subsubsection.3.5.2}\protected@file@percent }
+\newlabel{sec:wrench_decomposition}{{3.5.2}{10}{Wrench Decomposition and Force Regulation}{subsubsection.3.5.2}{}}
+\newlabel{eq:wrench_decomposition}{{26}{11}{Wrench Decomposition and Force Regulation}{equation.3.26}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.5.3}Reward Design}{11}{subsubsection.3.5.3}\protected@file@percent }
+\newlabel{sec:reward_design}{{3.5.3}{11}{Reward Design}{subsubsection.3.5.3}{}}
+\newlabel{eq:reward}{{28}{11}{Reward Design}{equation.3.28}{}}
+\newlabel{eq:reward_tracking}{{29}{11}{Reward Design}{equation.3.29}{}}
+\newlabel{eq:reward_safety}{{30}{11}{Reward Design}{equation.3.30}{}}
+\newlabel{eq:reward_regularization}{{31}{11}{Reward Design}{equation.3.31}{}}
+\citation{schulman2017ppo}
+\citation{schulman2016gae}
+\citation{chi2023diffusion}
+\newlabel{eq:reward_termination}{{32}{12}{Reward Design}{equation.3.32}{}}
+\newlabel{eq:termination_grasp}{{33}{12}{Reward Design}{equation.3.33}{}}
+\newlabel{eq:termination_wrench}{{34}{12}{Reward Design}{equation.3.34}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.5.4}Policy Architecture and Training}{12}{subsubsection.3.5.4}\protected@file@percent }
+\newlabel{eq:ppo}{{35}{12}{Policy Architecture and Training}{equation.3.35}{}}
+\newlabel{eq:gae}{{36}{12}{Policy Architecture and Training}{equation.3.36}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{12}{section.4}\protected@file@percent }
+\newlabel{sec:experiments}{{4}{12}{Experiments}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Experimental Setup}{12}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:exp_setup}{{4.1}{12}{Experimental Setup}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{SE(2) Benchmark Rationale.}{12}{section*.10}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces SWIVL Training\relax }}{13}{algorithm.1}\protected@file@percent }
+\newlabel{alg:SWIVL_training}{{1}{13}{SWIVL Training\relax }{algorithm.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Environment.}{13}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tasks and Objects.}{13}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{High-Level Planner.}{13}{section*.14}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation). Red and Blue end-effectors are floating base parallel grippers.\relax }}{14}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:objects}{{3}{14}{\textbf {Benchmark objects.} Two SE(2) articulated objects spanning two joint types: revolute (angular articulation) and prismatic (linear articulation). Red and Blue end-effectors are floating base parallel grippers.\relax }{figure.caption.13}{}}
+\@writefile{toc}{\contentsline {paragraph}{Methods Under Comparison.}{14}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Implementation.}{14}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Metrics.}{14}{section*.17}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces \textbf  {Quantitative comparison.} Performance across two joint types (10 trials each). All methods use the same Flow Matching Policy as high-level planner. Bold indicates best. Timeout failures (not shown) are implicitly $100 - \text  {Success} - \text  {Wrench} - \text  {Grasp}$.\relax }}{15}{table.caption.18}\protected@file@percent }
+\newlabel{tab:main_results}{{1}{15}{\textbf {Quantitative comparison.} Performance across two joint types (10 trials each). All methods use the same Flow Matching Policy as high-level planner. Bold indicates best. Timeout failures (not shown) are implicitly $100 - \text {Success} - \text {Wrench} - \text {Grasp}$.\relax }{table.caption.18}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces \textbf  {SWIVL inference sequence.} Time-ordered frames showing successful bimanual manipulation of an articulated object. The impedance parameters panel (left) displays learned values: damping coefficients $d_\parallel , d_\perp $ for internal and bulk motions, stiffness $k_p$, and characteristic length $\alpha $. Red arrows indicate wrench feedback from F/T sensors. The policy adaptively modulates compliance to achieve coordinated manipulation while maintaining low fighting forces.\relax }}{15}{figure.caption.19}\protected@file@percent }
+\newlabel{fig:swivl_inference}{{4}{15}{\textbf {SWIVL inference sequence.} Time-ordered frames showing successful bimanual manipulation of an articulated object. The impedance parameters panel (left) displays learned values: damping coefficients $d_\parallel , d_\perp $ for internal and bulk motions, stiffness $k_p$, and characteristic length $\alpha $. Red arrows indicate wrench feedback from F/T sensors. The policy adaptively modulates compliance to achieve coordinated manipulation while maintaining low fighting forces.\relax }{figure.caption.19}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Results}{15}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:results}{{4.2}{15}{Results}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Success Rate.}{15}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Wrench Limit Failures.}{16}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Grasp Drift Failures.}{16}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Timeout Failures.}{16}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Analysis}{16}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:analysis}{{4.3}{16}{Analysis}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why Position Control Fails.}{16}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why Classical Impedance Control Is Insufficient.}{16}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{SWIVL's Advantages.}{16}{section*.27}\protected@file@percent }
+\newlabel{fig:failure_grasp_drift}{{5a}{17}{Grasp drift failure\relax }{figure.caption.26}{}}
+\newlabel{sub@fig:failure_grasp_drift}{{a}{17}{Grasp drift failure\relax }{figure.caption.26}{}}
+\newlabel{fig:failure_wrench_limit}{{5b}{17}{Wrench limit exceeded\relax }{figure.caption.26}{}}
+\newlabel{sub@fig:failure_wrench_limit}{{b}{17}{Wrench limit exceeded\relax }{figure.caption.26}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces \textbf  {Failure modes in experiments.} (a) \textit  {Grasp drift} (b) \textit  {Wrench limit exceeded}\relax }}{17}{figure.caption.26}\protected@file@percent }
+\newlabel{fig:failure_modes}{{5}{17}{\textbf {Failure modes in experiments.} (a) \textit {Grasp drift} (b) \textit {Wrench limit exceeded}\relax }{figure.caption.26}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Discussion}{17}{section.5}\protected@file@percent }
+\newlabel{sec:discussion}{{5}{17}{Discussion}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Key Findings}{17}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:key_findings}{{5.1}{17}{Key Findings}{subsection.5.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Position Control Is Fundamentally Limited.}{17}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Classical Impedance Control Is Insufficient.}{17}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Object-Aware Decomposition Enables Physical Intelligence.}{17}{section*.30}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Limitations and Future Work}{17}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:limitations}{{5.2}{17}{Limitations and Future Work}{subsection.5.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Current Limitations.}{17}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Future Directions.}{18}{section*.32}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Broader Impact}{18}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:broader_impact}{{5.3}{18}{Broader Impact}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusion}{18}{section.6}\protected@file@percent }
+\newlabel{sec:conclusion}{{6}{18}{Conclusion}{section.6}{}}
+\bibstyle{plainnat}
+\bibdata{references}
+\bibcite{andrychowicz2020learning}{{1}{2020}{{Andrychowicz et~al.}}{{Andrychowicz, Baker, Chociej, Jozefowicz, McGrew, Pachocki, Petron, Plappert, Powell, Ray, et~al.}}}
+\bibcite{ankile2025imitation}{{2}{2025}{{Ankile et~al.}}{{Ankile, Simeonov, Shenfeld, Torne, and Agrawal}}}
+\bibcite{black2024pi0}{{3}{2024}{{Black et~al.}}{{Black, Brown, Driess, Esmail, Equi, Finn, Fusai, Groom, Hausman, Ichter, et~al.}}}
+\bibcite{brohan2023rt1}{{4}{2022}{{Brohan et~al.}}{{Brohan, Brown, Carbajal, Chebotar, Dabis, Finn, Gopalakrishnan, Hausman, Herzog, Hsu, et~al.}}}
+\bibcite{brohan2023rt2}{{5}{2023}{{Brohan et~al.}}{{Brohan, Brown, Carbajal, Chebotar, Chen, Choromanski, Ding, Driess, Dubey, Finn, et~al.}}}
+\bibcite{chi2023diffusion}{{6}{2025}{{Chi et~al.}}{{Chi, Xu, Feng, Cousineau, Du, Burchfiel, Tedrake, and Song}}}
+\bibcite{he2024omnih2o}{{7}{2024}{{He et~al.}}{{He, Luo, He, Xiao, Zhang, Zhang, Kitani, Liu, and Shi}}}
+\bibcite{he2025hover}{{8}{2025}{{He et~al.}}{{He, Xiao, Lin, Luo, Xu, Jiang, Kautz, Liu, Shi, Wang, et~al.}}}
+\bibcite{hogan1985impedance}{{9}{1985}{{Hogan}}{{}}}
+\bibcite{johannink2019residual}{{10}{2019}{{Johannink et~al.}}{{Johannink, Bahl, Nair, Luo, Kumar, Loskyll, Ojea, Solowjow, and Levine}}}
+\bibcite{khatib1987unified}{{11}{1987}{{Khatib}}{{}}}
+\bibcite{lee2019force}{{12}{2019}{{Lee et~al.}}{{Lee, Zhu, Srinivasan, Shah, Savarese, Fei-Fei, Garg, and Bohg}}}
+\bibcite{park2017modern}{{13}{2017}{{Lynch and Park}}{{}}}
+\bibcite{team2024octo}{{14}{2024}{{{Octo Model Team} et~al.}}{{{Octo Model Team}, Ghosh, Walke, Pertsch, Black, Mees, Dasari, Hejna, Kreiman, Xu, et~al.}}}
+\bibcite{padalkar2023openx}{{15}{2024}{{O'Neill et~al.}}{{O'Neill, Rehman, Maddukuri, Gupta, Padalkar, Lee, Pooley, Gupta, Mandlekar, Jain, et~al.}}}
+\bibcite{raibert1981hybrid}{{16}{1981}{{Raibert and Craig}}{{}}}
+\bibcite{schulman2016gae}{{17}{2015}{{Schulman et~al.}}{{Schulman, Moritz, Levine, Jordan, and Abbeel}}}
+\bibcite{schulman2017ppo}{{18}{2017}{{Schulman et~al.}}{{Schulman, Wolski, Dhariwal, Radford, and Klimov}}}
+\bibcite{suomalainen2022survey}{{19}{2022}{{Suomalainen et~al.}}{{Suomalainen, Karayiannidis, and Kyrki}}}
+\bibcite{zhao2023learning}{{20}{2023}{{Zhao et~al.}}{{Zhao, Kumar, Levine, and Finn}}}
+\citation{park2017modern}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Notation and Mathematical Preliminaries}{20}{appendix.A}\protected@file@percent }
+\newlabel{app:notation}{{A}{20}{Notation and Mathematical Preliminaries}{appendix.A}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Coordinate Frames and Basic Notation}{20}{subsection.A.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}SE(3) and SE(2) Configuration Spaces}{20}{subsection.A.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Twists and Wrenches}{21}{subsection.A.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Screw Theory}{21}{subsection.A.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Summary of Key Notation}{22}{subsection.A.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Summary of mathematical notation used throughout the paper.\relax }}{22}{table.caption.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {B}Impedance Control on SE(3)}{22}{appendix.B}\protected@file@percent }
+\newlabel{app:impedance}{{B}{22}{Impedance Control on SE(3)}{appendix.B}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}Notation}{23}{subsection.B.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}Metric Tensor on $\mathfrak  {se}(3)$}{23}{subsection.B.2}\protected@file@percent }
+\newlabel{app:metric}{{B.2}{23}{Metric Tensor on $\mathfrak {se}(3)$}{subsection.B.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.2.1}Inner Product as Kinetic Energy}{23}{subsubsection.B.2.1}\protected@file@percent }
+\newlabel{eq:app_inner_product}{{39}{23}{Inner Product as Kinetic Energy}{equation.B.39}{}}
+\newlabel{eq:app_kinetic_energy_metric}{{40}{23}{Inner Product as Kinetic Energy}{equation.B.40}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.2.2}Riemannian Metric Extension}{23}{subsubsection.B.2.2}\protected@file@percent }
+\newlabel{eq:app_riemannian_metric}{{41}{23}{Riemannian Metric Extension}{equation.B.41}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.2.3}Geodesics and Action Minimization}{23}{subsubsection.B.2.3}\protected@file@percent }
+\newlabel{eq:app_action_integral}{{42}{23}{Geodesics and Action Minimization}{equation.B.42}{}}
+\newlabel{eq:app_euler_poincare_rot}{{43}{23}{Geodesics and Action Minimization}{equation.B.43}{}}
+\newlabel{eq:app_euler_poincare_trans}{{44}{23}{Geodesics and Action Minimization}{equation.B.44}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.2.4}Geodesic Distance and Weighted Pose Error}{24}{subsubsection.B.2.4}\protected@file@percent }
+\newlabel{eq:app_geodesic_distance}{{45}{24}{Geodesic Distance and Weighted Pose Error}{equation.B.45}{}}
+\newlabel{eq:app_pose_error_components}{{46}{24}{Geodesic Distance and Weighted Pose Error}{equation.B.46}{}}
+\newlabel{eq:app_weighted_error}{{47}{24}{Geodesic Distance and Weighted Pose Error}{equation.B.47}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Virtual Mass-Spring-Damper System on SE(3)}{24}{subsection.B.3}\protected@file@percent }
+\newlabel{app:virtual_system}{{B.3}{24}{Virtual Mass-Spring-Damper System on SE(3)}{subsection.B.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.3.1}Potential Energy of Pose Error}{24}{subsubsection.B.3.1}\protected@file@percent }
+\newlabel{eq:app_potential_energy}{{48}{24}{Potential Energy of Pose Error}{equation.B.48}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.3.2}Pose-Error Jacobian and Elastic Wrench Derivation}{24}{subsubsection.B.3.2}\protected@file@percent }
+\newlabel{app:error_jacobian}{{B.3.2}{24}{Pose-Error Jacobian and Elastic Wrench Derivation}{subsubsection.B.3.2}{}}
+\newlabel{eq:app_trans_error_rate}{{49}{24}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.49}{}}
+\newlabel{eq:app_rot_error_dynamics}{{50}{24}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.50}{}}
+\newlabel{eq:app_left_jacobian}{{51}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.51}{}}
+\newlabel{eq:app_rot_error_rate}{{52}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.52}{}}
+\newlabel{eq:app_weighted_error_rate}{{53}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.53}{}}
+\newlabel{eq:app_error_jacobian}{{54}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.54}{}}
+\newlabel{eq:app_potential_power}{{55}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.55}{}}
+\newlabel{eq:app_elastic_wrench}{{56}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.56}{}}
+\newlabel{eq:app_elastic_components}{{57}{25}{Pose-Error Jacobian and Elastic Wrench Derivation}{equation.B.57}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.3.3}Twist Error and Kinetic Energy}{25}{subsubsection.B.3.3}\protected@file@percent }
+\newlabel{app:twist_error}{{B.3.3}{25}{Twist Error and Kinetic Energy}{subsubsection.B.3.3}{}}
+\newlabel{eq:app_adjoint}{{58}{25}{Twist Error and Kinetic Energy}{equation.B.58}{}}
+\newlabel{eq:app_twist_error}{{59}{25}{Twist Error and Kinetic Energy}{equation.B.59}{}}
+\newlabel{eq:app_virtual_kinetic}{{60}{25}{Twist Error and Kinetic Energy}{equation.B.60}{}}
+\newlabel{eq:app_kinetic_rate}{{61}{25}{Twist Error and Kinetic Energy}{equation.B.61}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.3.4}Complete Virtual Dynamics via Power Balance}{26}{subsubsection.B.3.4}\protected@file@percent }
+\newlabel{app:power_balance}{{B.3.4}{26}{Complete Virtual Dynamics via Power Balance}{subsubsection.B.3.4}{}}
+\newlabel{eq:app_energy_balance}{{62}{26}{Complete Virtual Dynamics via Power Balance}{equation.B.62}{}}
+\newlabel{eq:app_power_balance_expanded}{{63}{26}{Complete Virtual Dynamics via Power Balance}{equation.B.63}{}}
+\newlabel{eq:app_power_balance_factored}{{64}{26}{Complete Virtual Dynamics via Power Balance}{equation.B.64}{}}
+\newlabel{eq:app_virtual_dynamics}{{65}{26}{Complete Virtual Dynamics via Power Balance}{equation.B.65}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.4}The Pose-Error Jacobian Problem}{26}{subsection.B.4}\protected@file@percent }
+\newlabel{app:jacobian_problem}{{B.4}{26}{The Pose-Error Jacobian Problem}{subsection.B.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.5}Impedance Controller Implementation}{26}{subsection.B.5}\protected@file@percent }
+\newlabel{app:controller_implementation}{{B.5}{26}{Impedance Controller Implementation}{subsection.B.5}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.5.1}Operational Space Dynamics}{26}{subsubsection.B.5.1}\protected@file@percent }
+\newlabel{eq:app_joint_dynamics}{{66}{26}{Operational Space Dynamics}{equation.B.66}{}}
+\newlabel{eq:app_op_space_dynamics}{{67}{26}{Operational Space Dynamics}{equation.B.67}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.5.2}Controller Design via Virtual-Robot Coupling}{27}{subsubsection.B.5.2}\protected@file@percent }
+\newlabel{eq:app_general_controller}{{71}{27}{Controller Design via Virtual-Robot Coupling}{equation.B.71}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.5.3}Simplified Cases}{27}{subsubsection.B.5.3}\protected@file@percent }
+\newlabel{eq:app_simplified_1}{{72}{27}{Simplified Cases}{equation.B.72}{}}
+\newlabel{eq:app_simplified_2}{{73}{27}{Simplified Cases}{equation.B.73}{}}
+\newlabel{eq:app_simplified_3}{{74}{27}{Simplified Cases}{equation.B.74}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.6}SWIVL's Twist-Driven Approach}{28}{subsection.B.6}\protected@file@percent }
+\newlabel{app:swivl_approach}{{B.6}{28}{SWIVL's Twist-Driven Approach}{subsection.B.6}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.6.1}Reference Twist with Pose Error Correction}{28}{subsubsection.B.6.1}\protected@file@percent }
+\newlabel{eq:app_ref_twist}{{75}{28}{Reference Twist with Pose Error Correction}{equation.B.75}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.6.2}Controller Formulation}{28}{subsubsection.B.6.2}\protected@file@percent }
+\newlabel{eq:app_swivl_cmd}{{76}{28}{Controller Formulation}{equation.B.76}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {B.6.3}Equivalence to SE(3) Impedance}{28}{subsubsection.B.6.3}\protected@file@percent }
+\newlabel{eq:app_expanded}{{77}{28}{Equivalence to SE(3) Impedance}{equation.B.77}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}SWIVL Instantiation in SE(2)}{28}{appendix.C}\protected@file@percent }
+\newlabel{app:se2}{{C}{28}{SWIVL Instantiation in SE(2)}{appendix.C}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.1}SE(2) Geometric Formulation (1-DoF Object)}{29}{subsection.C.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.1.1}Configuration Space}{29}{subsubsection.C.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.1.2}Twist Space}{29}{subsubsection.C.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.1.3}Screw Axis in SE(2)}{29}{subsubsection.C.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.1.4}Wrench Space}{30}{subsubsection.C.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.1.5}Adjoint Representation}{30}{subsubsection.C.1.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.2}Reference Twist Field Generator in SE(2)}{30}{subsection.C.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.2.1}SE(2) Trajectory Smoothing}{30}{subsubsection.C.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.2.2}Body Twist Computation}{30}{subsubsection.C.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.2.3}Stable Imitation Vector Field}{30}{subsubsection.C.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.3}Bulk-Internal Decomposition via Projection Operators in SE(2)}{31}{subsection.C.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.3.1}Metric Tensor and Inner Product}{31}{subsubsection.C.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.3.2}Projection Operators}{31}{subsubsection.C.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.3.3}Twist Decomposition}{31}{subsubsection.C.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.3.4}Wrench Decomposition}{32}{subsubsection.C.3.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.4}Low-Level Policy Architecture for SE(2)}{32}{subsection.C.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.4.1}Observation Space}{32}{subsubsection.C.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.4.2}Action Space}{33}{subsubsection.C.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.4.3}SE(2) Screw-decomposed Controller}{33}{subsubsection.C.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.5}Controller Implementation}{34}{subsection.C.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.5.1}Direct End-Effector Control}{34}{subsubsection.C.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.6}Reward Function in SE(2)}{34}{subsection.C.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.6.1}Motion Tracking Reward}{34}{subsubsection.C.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.6.2}Exponential Safety Reward}{34}{subsubsection.C.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.6.3}Regularization Reward}{35}{subsubsection.C.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.6.4}Termination Penalty}{36}{subsubsection.C.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {C.6.5}Termination Conditions}{36}{subsubsection.C.6.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.7}SE(2) $\to $ SE(3) Extension Path}{37}{subsection.C.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {D}Learning Settings for SE(2) Implementation}{37}{appendix.D}\protected@file@percent }
+\newlabel{app:learning_settings}{{D}{37}{Learning Settings for SE(2) Implementation}{appendix.D}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.1}Network Architecture}{37}{subsection.D.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.1.1}Input and Output Specifications}{37}{subsubsection.D.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.1.2}Multi-Stream Encoder Architecture}{38}{subsubsection.D.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.1.3}Multi-Modal Fusion and Policy Head}{39}{subsubsection.D.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.1.4}Architectural Components}{39}{subsubsection.D.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.2}Training Configuration}{40}{subsection.D.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.2.1}Reinforcement Learning Algorithm}{40}{subsubsection.D.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.2.2}Hyperparameters}{40}{subsubsection.D.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {D.2.3}Initialization Strategy}{41}{subsubsection.D.2.3}\protected@file@percent }
+\gdef \@abspage@last{41}
