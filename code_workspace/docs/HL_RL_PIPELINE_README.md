@@ -1,285 +1,314 @@
-# High-Level Policy + RL Impedance Learning Pipeline
+# SWIVL Hierarchical Control Pipeline
 
-This document describes the hierarchical control pipeline combining high-level imitation learning policies with low-level RL-based impedance parameter learning.
+This document describes the SWIVL (Screw-Wrench Informed Impedance Variable Learning) hierarchical control pipeline for bimanual manipulation of articulated objects.
 
 ## Overview
 
-The pipeline consists of three main components:
+SWIVL is a four-layer hierarchical control framework:
 
 ```
-High-Level Policy → Trajectory Generator → Impedance Controller (with RL-learned parameters)
+Layer 1: High-Level Policy → desired poses (10 Hz)
+Layer 2: Reference Twist Field Generator → reference twists (100 Hz)
+Layer 3: Impedance Modulation Policy (RL) → impedance variables (100 Hz)
+Layer 4: Screw-Decomposed Impedance Controller → control wrenches (100 Hz)
 ```
 
-### 1. High-Level Policies
-
-High-level policies generate desired poses for the end-effectors at 10 Hz. Three types of policies are available:
-
-#### Flow Matching Policy
-- **Location**: `src/hl_planners/flow_matching.py`
-- **Description**: Conditional flow matching for trajectory generation
-- **Method**: Learns velocity fields for continuous normalizing flows
-- **Advantages**: Fast inference, smooth trajectories
-
-#### Diffusion Policy
-- **Location**: `src/hl_planners/diffusion_policy.py`
-- **Description**: Diffusion-based imitation learning
-- **Method**: Denoising diffusion with DDIM sampling
-- **Advantages**: Strong performance on complex tasks, action chunking
-- **Reference**: Chi et al., "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion" (2023)
-
-#### ACT (Action Chunking with Transformers)
-- **Location**: `src/hl_planners/act.py`
-- **Description**: Transformer-based imitation learning with CVAE
-- **Method**: CVAE + Transformer encoder-decoder
-- **Advantages**: Temporal consistency, excellent for bimanual tasks
-- **Reference**: Zhao et al., "Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware" (2023)
-
-### 2. Trajectory Generator
-
-- **Location**: `src/trajectory_generator.py`
-- **Description**: Converts desired poses into smooth, continuous trajectories
-- **Method**: Cubic spline interpolation or minimum jerk trajectories
-- **Output**: Desired pose and twist (velocity) at each timestep
-
-### 3. RL Impedance Learning
-
-#### Overview
-The RL policy learns optimal impedance parameters (damping D and stiffness K) for the impedance controller. The inertia matrix M is always set to the task space inertia.
-
-#### Environment
-- **Location**: `src/rl_policy/impedance_learning_env.py`
-- **Type**: Gymnasium environment
-
-**State Space (30 dimensions)**:
-- External wrench (6): [fx_0, fy_0, tau_0, fx_1, fy_1, tau_1]
-- Current pose (6): [x_0, y_0, theta_0, x_1, y_1, theta_1]
-- Current twist (6): [vx_0, vy_0, omega_0, vx_1, vy_1, omega_1]
-- Desired pose (6): [x_d0, y_d0, theta_d0, x_d1, y_d1, theta_d1]
-- Desired twist (6): [vx_d0, vy_d0, omega_d0, vx_d1, vy_d1, omega_d1]
-
-**Action Space (12 dimensions)**:
-- Arm 0: [D_linear_x, D_linear_y, D_angular, K_linear_x, K_linear_y, K_angular]
-- Arm 1: [D_linear_x, D_linear_y, D_angular, K_linear_x, K_linear_y, K_angular]
-
-Actions are normalized to [-1, 1] and scaled to safe ranges.
-
-**Reward Function**:
-```python
-reward = - tracking_weight * tracking_error
-         - wrench_weight * wrench_magnitude
-         - smoothness_weight * parameter_change
-```
-
-#### PPO Policy
-- **Location**: `src/rl_policy/ppo_impedance_policy.py`
-- **Algorithm**: Proximal Policy Optimization (PPO)
-- **Implementation**: Stable-Baselines3
-- **Features**:
-  - Custom feature extractor for impedance learning
-  - Separate encoders for wrenches, poses, and twists
-  - Tensorboard logging of impedance statistics
-
-## Usage
-
-### 1. Training High-Level Policy
-
-First, train a high-level policy using your preferred method (Flow Matching, Diffusion, or ACT).
-
-```python
-from src.hl_planners import FlowMatchingPolicy, DiffusionPolicy, ACTPolicy
-
-# Example: Flow Matching
-hl_policy = FlowMatchingPolicy(device='cuda')
-# ... training code ...
-hl_policy.save('checkpoints/flow_matching.pth')
-```
-
-### 2. Training RL Impedance Policy
-
-Once you have a trained high-level policy, train the RL impedance policy:
-
-```bash
-# With Flow Matching policy
-python -m src.rl_policy.train_impedance_policy \
-    --hl_policy flow_matching \
-    --hl_policy_path checkpoints/flow_matching.pth \
-    --total_timesteps 1000000 \
-    --output_path checkpoints/impedance_policy.zip
-
-# With Diffusion Policy
-python -m src.rl_policy.train_impedance_policy \
-    --hl_policy diffusion \
-    --hl_policy_path checkpoints/diffusion.pth \
-    --total_timesteps 1000000 \
-    --output_path checkpoints/impedance_diffusion.zip
-
-# With ACT
-python -m src.rl_policy.train_impedance_policy \
-    --hl_policy act \
-    --hl_policy_path checkpoints/act.pth \
-    --total_timesteps 1000000 \
-    --output_path checkpoints/impedance_act.zip
-```
-
-**Training Arguments**:
-- `--hl_policy`: Type of high-level policy ('flow_matching', 'diffusion', 'act', 'none')
-- `--hl_policy_path`: Path to pre-trained high-level policy checkpoint
-- `--total_timesteps`: Total training timesteps (default: 1,000,000)
-- `--learning_rate`: PPO learning rate (default: 3e-4)
-- `--n_steps`: Steps per PPO update (default: 2048)
-- `--batch_size`: Batch size (default: 64)
-- `--output_path`: Where to save trained policy
-- `--tensorboard_log`: Path for tensorboard logs
-- `--device`: Device for computation ('auto', 'cpu', 'cuda')
-
-### 3. Using the Complete Pipeline
-
-```python
-from src.hl_planners import DiffusionPolicy
-from src.rl_policy import ImpedanceLearningEnv, PPOImpedancePolicy
-from src.envs.biart import BiartEnv
-from src.trajectory_generator import MinimumJerkTrajectory
-from src.ll_controllers.task_space_impedance import TaskSpaceImpedanceController
-
-# 1. Load high-level policy
-hl_policy = DiffusionPolicy(device='cuda')
-hl_policy.load('checkpoints/diffusion.pth')
-
-# 2. Load RL impedance policy
-env = ImpedanceLearningEnv(hl_policy=hl_policy)
-rl_policy = PPOImpedancePolicy.load_from_file('checkpoints/impedance_policy.zip', env)
-
-# 3. Run inference
-obs, _ = env.reset()
-hl_policy.reset()
-
-for step in range(1000):
-    # Get RL observation and predict impedance parameters
-    rl_obs = env._get_rl_observation(obs)
-    action = rl_policy.predict(rl_obs, deterministic=True)
-
-    # Step environment (RL policy controls impedance parameters)
-    obs, reward, terminated, truncated, info = env.step(action)
-
-    if terminated or truncated:
-        obs, _ = env.reset()
-        hl_policy.reset()
-```
-
-## Pipeline Details
-
-### Control Flow
-
-1. **High-Level Policy** (10 Hz):
-   - Input: Current state (EE poses, link poses, external wrenches)
-   - Output: Desired poses for both end-effectors
-
-2. **Trajectory Generator** (100 Hz):
-   - Input: Desired poses from high-level policy
-   - Output: Smooth trajectory with desired pose and twist at each timestep
-
-3. **RL Impedance Policy** (10 Hz):
-   - Input: External wrench, current state, desired state
-   - Output: Impedance parameters (D, K) for both arms
-
-4. **Impedance Controller** (100 Hz):
-   - Input: Current pose, desired pose, desired twist, impedance parameters
-   - Output: Wrench command
-
-### Key Features
-
-- **Bimanual Control**: Both arms are controlled independently by the impedance controller, but the RL policy learns impedance parameters for both arms jointly
-- **Hierarchical Learning**: High-level policy learns task-level behavior, RL policy learns low-level compliance
-- **Adaptive Compliance**: Impedance parameters adapt based on force feedback and task requirements
-- **Temporal Consistency**: Action chunking in Diffusion and ACT policies ensures smooth trajectories
-
-## Architecture Diagram
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     High-Level Policy                        │
-│              (Flow Matching / Diffusion / ACT)               │
-│                                                              │
-│  Input: Current State                                        │
-│  Output: Desired Poses (10 Hz)                              │
-└──────────────────────┬───────────────────────────────────────┘
+│  LAYER 1: HIGH-LEVEL POLICY                                 │
+│  (FlowMatching / Diffusion / ACT / Teleoperation)          │
+│  Input: Image + Proprioception                              │
+│  Output: Sparse waypoints {T_sd[τ]} at 10 Hz               │
+└──────────────────────┬──────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Trajectory Generator                        │
-│                 (Cubic Spline / Min Jerk)                    │
-│                                                              │
-│  Input: Desired Poses                                        │
-│  Output: Continuous Trajectory (pose + twist, 100 Hz)       │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-                       │  ┌──────────────────────────────────┐
-                       │  │   RL Impedance Policy (PPO)      │
-                       │  │                                  │
-                       │  │  Input: State + Desired State    │
-                       │  │  Output: D, K (10 Hz)            │
-                       │  └───────────┬──────────────────────┘
-                       │              │
-                       ▼              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Impedance Controller                        │
-│                   (Task Space, 100 Hz)                       │
-│                                                              │
-│  Input: Current Pose, Desired Pose/Twist, D, K              │
-│  Output: Wrench Command                                      │
-│                                                              │
-│  Control Law: F = K(x_d - x) + D(ẋ_d - ẋ)                  │
-│  Note: M (inertia) = Task Space Inertia (fixed)             │
-└──────────────────────┬───────────────────────────────────────┘
+│  LAYER 2: REFERENCE TWIST FIELD GENERATOR                   │
+│  1. SE(3) Trajectory Smoothing (SLERP + Cubic Spline)       │
+│  2. Body Twist Computation                                   │
+│  3. Stable Imitation Vector Field:                          │
+│     V_ref = Ad_{T_bd} V_des + k_p * E                       │
+│  Output: Dense reference twists at 100 Hz                   │
+└──────────────────────┬──────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                     Bimanual Robot                           │
-│                      (SE(2) Dynamics)                        │
+│  LAYER 3: IMPEDANCE MODULATION POLICY (PPO)                 │
+│  Observation (30D):                                         │
+│    [V_ref(6), B(6), F(6), T(6), V(6)]                      │
+│  Action (7D):                                               │
+│    (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α)          │
+│  Output: Impedance variables at 100 Hz                      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 4: SCREW-DECOMPOSED IMPEDANCE CONTROLLER             │
+│  Damping Matrix: K_d = G(P_∥ d_∥ + P_⊥ d_⊥)                │
+│  Control Law: F_cmd = K_d(V_ref - V) + μ_b                 │
+│  Output: Control wrenches at 100 Hz                         │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  PHYSICS ENGINE (BiArtEnv + Pymunk)                         │
+│  Output: Next state observation                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Benefits of This Approach
+## Layer 1: High-Level Policies
 
-1. **Modularity**: Each component can be trained and tested independently
-2. **Transferability**: High-level policies can be reused with different impedance strategies
-3. **Sample Efficiency**: RL only learns low-dimensional impedance parameters
-4. **Interpretability**: Impedance parameters have clear physical meaning
-5. **Safety**: Impedance bounds ensure safe parameter ranges
+High-level policies generate desired poses for end-effectors at 10 Hz.
 
-## Next Steps
+### Available Policies
 
-1. **Collect Demonstrations**: Gather expert demonstrations for high-level policy training
-2. **Train High-Level Policy**: Train Flow Matching, Diffusion, or ACT policy
-3. **Train RL Policy**: Use trained high-level policy to train impedance parameters
-4. **Fine-tune**: Optionally fine-tune the complete pipeline end-to-end
-5. **Deploy**: Use the trained pipeline for bimanual manipulation tasks
+| Policy | Location | Description |
+|--------|----------|-------------|
+| **Flow Matching** | `src/hl_planners/flow_matching.py` | Continuous normalizing flows, fast inference |
+| **Diffusion** | `src/hl_planners/diffusion_policy.py` | Diffusion-based with DDIM sampling |
+| **ACT** | `src/hl_planners/act.py` | Transformer-based with CVAE, action chunking |
+| **Teleoperation** | `src/hl_planners/teleoperation.py` | Keyboard-based control |
 
-## References
+### Training HL Policy
 
-1. Chi, C., et al. (2023). "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion"
-2. Zhao, T. Z., et al. (2023). "Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware"
-3. Lipson, H., et al. (2022). "Conditional Flow Matching for Trajectory Generation"
-4. Schulman, J., et al. (2017). "Proximal Policy Optimization Algorithms"
+```bash
+cd code_workspace
+
+# Train Flow Matching
+python scripts/training/train_hl_policy.py --policy flow_matching
+
+# Train ACT
+python scripts/training/train_hl_policy.py --policy act
+
+# Train Diffusion
+python scripts/training/train_hl_policy.py --policy diffusion
+```
+
+## Layer 2: Reference Twist Field Generator
+
+Transforms sparse waypoints into dense, stable reference twists.
+
+### Key Equations
+
+**Body Twist Computation:**
+```
+V_des = [ω_des, v_des]
+[ω_des] = R^T Ṙ
+v_des = R^T ṗ
+```
+
+**Stable Imitation Vector Field:**
+```
+V_ref = Ad_{T_bd} V_des + k_p * E
+```
+
+Where:
+- `Ad_{T_bd}`: Adjoint transformation from desired to body frame
+- `E = [α * e_R, e_p]`: Weighted pose error
+- `k_p`: Learned pose error correction gain
+
+## Layer 3: Impedance Modulation Policy (PPO)
+
+RL policy that learns to modulate impedance variables based on wrench feedback and object geometry.
+
+### Observation Space (30D)
+
+| Component | Dimension | Description |
+|-----------|-----------|-------------|
+| Reference twists | 6 | V_l^ref, V_r^ref ∈ R³ × 2 |
+| Screw axes | 6 | B_l, B_r ∈ R³ × 2 (object geometry) |
+| Wrenches | 6 | F_l, F_r ∈ R³ × 2 (F/T sensor feedback) |
+| EE poses | 6 | (x, y, θ) × 2 |
+| EE body twists | 6 | (ω, vx, vy) × 2 |
+
+### Action Space (7D)
+
+| Parameter | Description | Range |
+|-----------|-------------|-------|
+| `d_l_∥, d_r_∥` | Damping for internal motion (per-arm) | [1, 50] |
+| `d_l_⊥, d_r_⊥` | Damping for bulk motion (per-arm) | [1, 50] |
+| `k_p_l, k_p_r` | Pose correction gains (per-arm) | [0.1, 10] |
+| `α` | Characteristic length (metric tensor) | [1, 20] |
+
+### Reward Function
+
+```
+r_t = r_track + r_safety + r_reg + r_term
+```
+
+| Component | Formula | Description |
+|-----------|---------|-------------|
+| `r_track` | `-w_track * Σ\|\|V - V_ref\|\|²_G` | G-metric tracking error |
+| `r_safety` | `w_safety * exp(-κ * Σ\|\|F_⊥\|\|²_{G⁻¹})` | Exponential safety (alive bonus) |
+| `r_reg` | `-w_reg * Σ\|\|V̇\|\|²` | Twist acceleration penalty |
+| `r_term` | `-w_term` (on failure) | Termination penalty |
+
+**Key Design Choices:**
+- Exponential safety reward provides positive "alive bonus" when fighting forces are low
+- Dual metric G⁻¹ for wrenches ensures dimensional consistency: `||F||²_{G⁻¹} = τ²/α² + fx² + fy²`
+- Termination penalty prevents learning to intentionally fail
+
+### Termination Conditions
+
+1. **Grasp Drift**: Geodesic distance exceeds threshold (50 px)
+2. **Wrench Limit**: External wrench magnitude exceeds limit (200 N)
+
+### Training LL Policy
+
+```bash
+cd code_workspace
+
+# Train with HL policy
+python scripts/training/train_ll_policy.py \
+    --hl_policy act \
+    --hl_checkpoint checkpoints/act_best.pth \
+    --total_timesteps 500000
+
+# Train without HL policy (hold position mode)
+python scripts/training/train_ll_policy.py --hl_policy none
+
+# Override settings via command line
+python scripts/training/train_ll_policy.py \
+    --config scripts/configs/rl_config.yaml \
+    --hl_policy flow_matching \
+    --total_timesteps 100000
+```
+
+## Layer 4: Screw-Decomposed Impedance Controller
+
+Executes compliant control with independent regulation of bulk and internal motions.
+
+### Motion Space Decomposition
+
+Using metric tensor `G = diag(α², 1, 1)`:
+
+**Projection Operators:**
+```
+P_∥ = B (B^T G B)^{-1} B^T G    (internal motion)
+P_⊥ = I - P_∥                    (bulk motion)
+```
+
+**Damping Matrix:**
+```
+K_d = G(P_∥ d_∥ + P_⊥ d_⊥)
+```
+
+### Control Law
+
+```
+F_cmd = K_d (V_ref - V) + μ_b
+```
+
+Where:
+- `V_ref = Ad_{T_bd} V_des + k_p * E`: Reference twist from Layer 2
+- `μ_b`: Coriolis/centrifugal compensation
+
+## Usage
+
+### Complete Pipeline Evaluation
+
+```bash
+cd code_workspace
+
+# Interactive mode with visualization
+python scripts/evaluation/eval_hierarchical_policy.py \
+    --hl_policy act \
+    --hl_checkpoint checkpoints/act_best.pth \
+    --ll_checkpoint checkpoints/impedance_policy.zip \
+    --no_wrench
+
+# Batch evaluation
+python scripts/evaluation/eval_hierarchical_policy.py \
+    --hl_policy act \
+    --hl_checkpoint checkpoints/act_best.pth \
+    --ll_checkpoint checkpoints/impedance_policy.zip \
+    --num_episodes 100 \
+    --no_wrench \
+    --output_path evaluation_results/results.json
+```
+
+### Programmatic Usage
+
+```python
+from src.envs.biart import BiArtEnv
+from src.rl_policy.impedance_learning_env import ImpedanceLearningEnv
+from stable_baselines3 import PPO
+
+# Load environment
+env = ImpedanceLearningEnv(config=config, hl_policy=hl_policy)
+
+# Load trained LL policy
+ll_policy = PPO.load("checkpoints/impedance_policy.zip")
+
+# Run inference
+obs, _ = env.reset()
+for step in range(1000):
+    action, _ = ll_policy.predict(obs, deterministic=True)
+    obs, reward, terminated, truncated, info = env.step(action)
+    
+    # Access impedance parameters
+    print(f"α: {info['current_alpha']:.2f}")
+```
+
+## Configuration
+
+All settings are in `scripts/configs/rl_config.yaml`:
+
+```yaml
+ll_controller:
+  type: "screw_decomposed"
+  screw_decomposed:
+    min_d_parallel: 1.0
+    max_d_parallel: 50.0
+    min_alpha: 1.0
+    max_alpha: 20.0
+
+rl_training:
+  total_timesteps: 500000
+  reward:
+    tracking_weight: 0.0001
+    safety_reward_weight: 1.0
+    safety_exp_scale: 0.01
+    termination_penalty: 10.0
+
+environment:
+  max_grasp_drift: 50.0
+  max_external_wrench: 200.0
+```
+
+## Key Files
+
+| File | Description |
+|------|-------------|
+| `src/rl_policy/impedance_learning_env.py` | Layer 3 Gym environment |
+| `src/rl_policy/ppo_impedance_policy.py` | PPO policy with FiLM conditioning |
+| `src/ll_controllers/se2_screw_decomposed_impedance.py` | Layer 4 controller |
+| `scripts/training/train_ll_policy.py` | Training script |
+| `scripts/evaluation/eval_hierarchical_policy.py` | Evaluation script |
+| `scripts/configs/rl_config.yaml` | Configuration file |
 
 ## Troubleshooting
 
-### High-level policy not generating good trajectories
-- Check if the policy is properly loaded
-- Verify observation preprocessing
-- Ensure sufficient training data/timesteps
-
 ### RL policy not learning
-- Reduce reward weights if learning is unstable
-- Adjust PPO hyperparameters (learning rate, batch size)
-- Check if impedance bounds are reasonable
-- Verify environment observations are correct
+- Check reward weights in `rl_config.yaml`
+- Verify HL policy is generating reasonable trajectories
+- Monitor fighting force in TensorBoard
 
 ### Unstable control
-- Reduce maximum impedance parameters
-- Increase smoothness penalty in reward
-- Check if trajectory generator is producing smooth trajectories
+- Reduce `max_d_parallel` and `max_d_perp`
+- Increase `termination_penalty`
+- Check screw axes are computed correctly
 
-## Contact
+### Grasp failures
+- Lower `max_grasp_drift` threshold
+- Increase `safety_reward_weight`
+- Verify initial grasp is stable
 
-For questions or issues, please open an issue on GitHub.
+## References
+
+1. Lynch & Park - Modern Robotics (twist/wrench conventions)
+2. Chi et al. - Diffusion Policy (2023)
+3. Zhao et al. - ACT / ALOHA (2023)
+4. Schulman et al. - PPO (2017)
