@@ -1,0 +1,200 @@
+# =============================================================================
+# SWIVL RL Configuration - Single Source of Truth
+# =============================================================================
+#
+# This file is the ONLY place to configure RL training settings.
+# All other scripts load from this file.
+#
+# Usage:
+#   python scripts/training/train_ll_policy.py --config scripts/configs/rl_config.yaml
+#
+# =============================================================================
+
+# =============================================================================
+# High-Level Policy Configuration (Layer 1)
+# =============================================================================
+hl_policy:
+  # Policy type: flow_matching, diffusion, act, or none
+  type: "none"
+  
+  # Checkpoint path (null for random initialization or no HL policy)
+  checkpoint: null
+  
+  # HL policy config file path (for loading architecture settings)
+  config_path: "scripts/configs/hl_policy_config.yaml"
+
+# =============================================================================
+# Low-Level Controller Configuration (Layer 4)
+# =============================================================================
+ll_controller:
+  # Controller type: se2_impedance or screw_decomposed (SWIVL)
+  type: "screw_decomposed"
+  
+  # Robot physical parameters
+  robot:
+    mass: 1.2        # kg
+    inertia: 97.6    # kg⋅m² (pixels²)
+  
+  # SWIVL Screw-Decomposed Impedance Controller Parameters
+  # Action space: (d_l_∥, d_r_∥, d_l_⊥, d_r_⊥, k_p_l, k_p_r, α) ∈ R^7
+  screw_decomposed:
+    # Parallel damping d_∥ (internal motion, compliant along joint axis)
+    min_d_parallel: 1.0
+    max_d_parallel: 50.0
+    
+    # Perpendicular damping d_⊥ (bulk motion, stiff to maintain grasp)
+    min_d_perp: 1.0
+    max_d_perp: 50.0
+    
+    # Pose error correction gain k_p (reference twist field)
+    min_k_p: 0.1
+    max_k_p: 10.0
+    
+    # Characteristic length α (metric tensor G = diag(α², 1, 1))
+    min_alpha: 1.0
+    max_alpha: 20.0
+    default_alpha: 10.0
+    
+    # Controller output limits
+    max_force: 100.0     # N
+    max_torque: 500.0    # N⋅m
+  
+  # Classical SE(2) Impedance Controller Parameters (alternative)
+  se2_impedance:
+    min_damping_linear: 1.0
+    max_damping_linear: 50.0
+    min_damping_angular: 0.5
+    max_damping_angular: 20.0
+    min_stiffness_linear: 10.0
+    max_stiffness_linear: 200.0
+    min_stiffness_angular: 5.0
+    max_stiffness_angular: 100.0
+
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+environment:
+  name: "BiArt"
+  
+  # Joint type: revolute, prismatic, or fixed
+  joint_type: "revolute"
+  
+  # Object parameters
+  object:
+    link_length: 40.0
+    link_width: 12.0
+    link_mass: 0.5
+  
+  # Control frequency
+  control_dt: 0.01   # 100 Hz (low-level control)
+  policy_dt: 0.01    # 100 Hz (RL policy, same as control)
+  hl_chunk_duration: 1.0  # seconds (high-level policy chunk duration)
+  
+  # Episode settings
+  max_episode_steps: 1000
+  
+  # Termination conditions
+  # Grasp drift threshold (geodesic distance in pixels)
+  max_grasp_drift: 50.0
+  # External wrench limit (force magnitude in N) - excessive force triggers termination
+  max_external_wrench: 200.0
+  
+  # Observation normalization scales
+  normalization:
+    pos_scale: 512.0
+    angle_scale: 3.14159  # pi
+    wrench_scale: 100.0
+    twist_linear_scale: 500.0
+    twist_angular_scale: 10.0
+  
+  # Render mode: human, rgb_array, or null
+  render_mode: null
+
+# =============================================================================
+# RL Training Configuration (Layer 3 - Impedance Modulation Policy)
+# =============================================================================
+rl_training:
+  # Algorithm: PPO (Proximal Policy Optimization)
+  algorithm: "ppo"
+  
+  # Total training timesteps
+  total_timesteps: 500000
+  
+  # PPO hyperparameters (per stable-baselines3)
+  ppo:
+    learning_rate: 3.0e-4
+    n_steps: 2048          # Steps per update
+    batch_size: 64         # Minibatch size
+    n_epochs: 10           # Optimization epochs per update
+    gamma: 0.99            # Discount factor
+    gae_lambda: 0.95       # GAE parameter
+    clip_range: 0.2        # PPO clip range
+    ent_coef: 0.01         # Entropy coefficient
+    vf_coef: 0.5           # Value function coefficient
+    max_grad_norm: 0.5     # Gradient clipping
+  
+  # Policy network architecture
+  network:
+    features_dim: 256      # Feature extractor output dimension
+    policy_layers: [256, 128]  # Policy network hidden layers
+    value_layers: [256, 128]   # Value network hidden layers
+    activation: "relu"
+  
+  # Reward weights (per SWIVL Paper Section 3.3.2)
+  # r_t = r_track + r_safety + r_reg + r_term
+  reward:
+    # r_track = -w_track * Σ ||V_i - V_i^ref||_G^2 (G-metric tracking penalty)
+    tracking_weight: 0.0001
+    
+    # r_safety = w_safety * exp(-k * Σ ||F_i,⊥||^2) (exponential safety reward)
+    # Acts as "alive bonus" - positive reward when fighting forces are low
+    safety_reward_weight: 1.0
+    safety_exp_scale: 0.01
+    
+    # r_reg = -w_reg * Σ ||V̇_i||^2 (twist acceleration regularization penalty)
+    twist_accel_weight: 0.000001
+    
+    # r_term = -w_term (termination penalty for failure cases)
+    # Applied when episode terminates due to grasp drift or wrench limit
+    termination_penalty: 10.0
+  
+  # Evaluation during training
+  evaluation:
+    eval_freq: 10000          # Evaluate every N timesteps
+    n_eval_episodes: 5        # Number of evaluation episodes
+    deterministic: true       # Use deterministic policy for eval
+  
+  # Logging
+  logging:
+    tensorboard_log: "./logs/impedance_rl/"
+    log_interval: 100         # Log every N steps
+    verbose: 1                # Verbosity: 0 (none), 1 (info), 2 (debug)
+  
+  # Checkpoints
+  output:
+    checkpoint_dir: "./checkpoints"
+    checkpoint_name: "impedance_policy.zip"
+    save_freq: 50000          # Save checkpoint every N timesteps
+
+# =============================================================================
+# Device Configuration
+# =============================================================================
+device:
+  # auto, cpu, or cuda
+  type: "auto"
+
+# =============================================================================
+# Experiment Tracking
+# =============================================================================
+experiment:
+  name: "swivl_impedance_learning"
+  seed: 42
+  tags:
+    - "bimanual"
+    - "impedance_control"
+    - "hierarchical_rl"
+    - "swivl"
+  notes: |
+    SWIVL Layer 3: Impedance Modulation Policy Training
+    - Learns optimal impedance variables for bimanual manipulation
+    - Uses screw-decomposed twist-driven impedance controller

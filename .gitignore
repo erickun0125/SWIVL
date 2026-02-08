@@ -1,0 +1,37 @@
+# Paper workspace (private)
+paper_workspace/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+checkpoints/
+logs/
+tensorboard_logs/
+*.zip
+
+# Data
+data/
+*.h5
+
+# Claude Code
+.claude/

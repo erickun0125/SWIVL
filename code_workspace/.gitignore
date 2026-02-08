@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+
+# LaTeX artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.log
+*.out
+*.fls
+*.synctex.gz
+
+# Model checkpoints
+*.pt
+*.pth
+*.pkl
+
+# Media (training recordings)
+*.gif
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+
+# Data
+*.h5
+
+# Tensorboard
+events.out.tfevents.*

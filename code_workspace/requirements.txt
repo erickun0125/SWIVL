@@ -1,0 +1,14 @@
+gymnasium>=0.28.0
+numpy>=1.20.0
+pymunk>=6.0.0
+pygame>=2.0.0
+opencv-python>=4.5.0
+shapely>=1.8.0
+scipy>=1.9.0
+pyyaml>=6.0
+h5py>=3.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+stable-baselines3>=2.0.0
+tensorboard>=2.10.0
+tqdm>=4.0.0
