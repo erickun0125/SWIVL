@@ -353,7 +353,7 @@ def _get_trajectory_targets(self, t):
         desired_poses.append(traj_point.pose)            # Spatial
         desired_twists.append(traj_point.velocity_body)  # Body ★MR
         # Transform acceleration to body frame
-        accel_body = world_to_body_acceleration(...)
+        accel_body = spatial_to_body_acceleration(...)
         desired_accelerations.append(accel_body)
 
     return np.array(desired_poses), np.array(desired_twists), np.array(desired_accelerations)

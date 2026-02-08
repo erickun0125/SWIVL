@@ -27,159 +27,12 @@ from src.envs.object_manager import JointType
 from src.ll_controllers.pd_controller import MultiGripperPDController, PDGains
 from src.se2_math import normalize_angle
 from src.bimanual_utils import compute_constrained_velocity
+from src.data_utils import DataCollector
 
-
-class AutoVelocityController:
-    """
-    Automatic velocity controller that generates velocity commands toward a goal.
-    """
-    
-    def __init__(self, linear_speed=20.0, angular_speed=0.5, joint_speed=0.5):
-        """
-        Initialize automatic velocity controller.
-        
-        Args:
-            linear_speed: Maximum linear velocity magnitude (pixels/s)
-            angular_speed: Maximum angular velocity magnitude (rad/s)
-            joint_speed: Maximum joint velocity magnitude
-        """
-        self.linear_speed = linear_speed
-        self.angular_speed = angular_speed
-        self.joint_speed = joint_speed
-        self.velocity = np.zeros(3)
-        self.joint_velocity = 0.0
-    
-    def compute_velocity_toward_goal(self, current_pose, goal_pose, gain=0.5):
-        """
-        Compute velocity command to move from current pose toward goal pose.
-        
-        Args:
-            current_pose: Current [x, y, theta] of controlled EE
-            goal_pose: Goal [x, y, theta] of controlled EE
-            gain: Proportional gain for velocity computation
-        
-        Returns:
-            velocity: [vx, vy, omega] velocity command
-        """
-        # Position error
-        pos_error = goal_pose[:2] - current_pose[:2]
-        pos_dist = np.linalg.norm(pos_error)
-        
-        # Compute linear velocity (proportional with saturation and minimum speed)
-        if pos_dist > 0.5:
-            vel_mag = min(max(pos_dist * gain, self.linear_speed * 0.75), self.linear_speed)
-            linear_vel = (pos_error / pos_dist) * vel_mag
-        else:
-            linear_vel = np.zeros(2)
-        
-        # Compute angular velocity (proportional with saturation)
-        ang_error = normalize_angle(goal_pose[2] - current_pose[2])
-        angular_vel = np.clip(ang_error * gain, -self.angular_speed, self.angular_speed)
-        
-        self.velocity = np.array([linear_vel[0], linear_vel[1], angular_vel])
-        return self.velocity
-    
-    def compute_joint_velocity_toward_goal(self, current_q, goal_q, gain=0.5):
-        """
-        Compute joint velocity command to move toward goal joint state.
-        """
-        q_error = goal_q - current_q
-        self.joint_velocity = np.clip(q_error * gain, -self.joint_speed, self.joint_speed)
-        return self.joint_velocity
-    
-    def get_velocity_array(self):
-        """Return current EE velocity as array."""
-        return self.velocity.copy()
-    
-    def get_joint_velocity(self):
-        """Return current joint velocity."""
-        return self.joint_velocity
-
-
-class DataCollector:
-    """Collects and saves demonstration data."""
-    
-    def __init__(self, save_dir: str):
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
-        self.reset_buffer()
-        
-    def reset_buffer(self):
-        """Reset data buffer."""
-        self.images = []
-        self.ee_poses = []
-        self.ee_velocities = []
-        self.external_wrenches = []
-        self.joint_states = []
-        self.link_poses = []
-        self.actions = []  # Desired poses
-        
-    def add_step(self, obs: Dict, action: np.ndarray, image: np.ndarray):
-        """
-        Add a step to the buffer.
-        
-        Args:
-            obs: Observation dictionary
-            action: Action taken (desired poses)
-            image: Rendered image (H, W, 3)
-        """
-        self.images.append(image)
-        self.ee_poses.append(obs['ee_poses'])
-        self.ee_velocities.append(obs['ee_velocities'])
-        self.external_wrenches.append(obs['external_wrenches'])
-        self.link_poses.append(obs['link_poses'])
-        
-        # Handle joint state (scalar or array)
-        joint_state = obs.get('joint_state', 0.0)
-        self.joint_states.append(joint_state)
-        
-        self.actions.append(action)
-        
-    def save_episode(self, episode_idx: int, joint_type: str = 'revolute'):
-        """Save buffered data to HDF5."""
-        if len(self.images) == 0:
-            print("No data to save.")
-            return None
-            
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"rule_based_{joint_type}_{timestamp}_ep{episode_idx}.h5"
-        filepath = os.path.join(self.save_dir, filename)
-        
-        # Convert lists to arrays
-        images = np.array(self.images, dtype=np.uint8)
-        ee_poses = np.array(self.ee_poses, dtype=np.float32)
-        ee_velocities = np.array(self.ee_velocities, dtype=np.float32)
-        external_wrenches = np.array(self.external_wrenches, dtype=np.float32)
-        link_poses = np.array(self.link_poses, dtype=np.float32)
-        joint_states = np.array(self.joint_states, dtype=np.float32)
-        actions = np.array(self.actions, dtype=np.float32)
-        
-        print(f"Saving episode {episode_idx} with {len(images)} steps to {filepath}...")
-        
-        with h5py.File(filepath, 'w') as f:
-            # Create groups
-            obs_group = f.create_group('obs')
-            action_group = f.create_group('action')
-            
-            # Save observations
-            obs_group.create_dataset('images', data=images, compression='gzip')
-            obs_group.create_dataset('ee_poses', data=ee_poses)
-            obs_group.create_dataset('ee_velocities', data=ee_velocities)
-            obs_group.create_dataset('external_wrenches', data=external_wrenches)
-            obs_group.create_dataset('link_poses', data=link_poses)
-            obs_group.create_dataset('joint_states', data=joint_states)
-            
-            # Save actions
-            action_group.create_dataset('desired_poses', data=actions)
-            
-            # Save metadata
-            f.attrs['num_steps'] = len(images)
-            f.attrs['joint_type'] = joint_type
-            f.attrs['demo_type'] = 'rule_based'
-            
-        print("Save complete.")
-        self.reset_buffer()
-        return filepath
+# Import AutoVelocityController from demo_base (canonical location)
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from demos.demo_base import AutoVelocityController
 
 
 class RuleBasedDataDemo:
@@ -193,7 +46,7 @@ class RuleBasedDataDemo:
         self.render_mode = render_mode
         
         print(f"Data collection enabled. Saving to {data_dir}")
-        self.collector = DataCollector(data_dir)
+        self.collector = DataCollector(data_dir, filename_prefix="rule_based", demo_type="rule_based")
 
         print(f"Creating BiArt environment with {joint_type} joint...")
         self.env = BiArtEnv(

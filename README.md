@@ -1,235 +1,159 @@
-# SWIVL - Screw-Wrench Informed Impedance Variable Learning
+# SWIVL: Screw-Wrench Informed Impedance Variable Learning
 
-Hierarchical control framework for bimanual manipulation of articulated objects with wrench-adaptive impedance modulation.
+![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
-## 🎯 Project Overview
+**A hierarchical control framework for bimanual manipulation of articulated objects with wrench-adaptive impedance modulation.**
 
-SWIVL is a four-layer hierarchical control framework that bridges high-level cognitive planning with physically grounded bimanual execution:
+Bimanual manipulation of articulated objects requires simultaneous satisfaction of kinematic constraints and regulation of inter-arm contact forces -- capabilities that current imitation-based approaches lack due to high-stiffness control without adaptive force modulation. SWIVL bridges cognitive planning with physical execution through three core contributions:
 
-1. **Layer 1 (High-Level Policy)**: VLA, behavior cloning (ACT/Diffusion/Flow Matching), or teleoperation → sparse waypoints
-2. **Layer 2 (Reference Twist Field Generator)**: Transforms waypoints into dense, stable reference twists
-3. **Layer 3 (Impedance Modulation Policy)**: RL policy that modulates impedance variables based on wrench feedback
-4. **Layer 4 (Screw-Decomposed Impedance Controller)**: Executes compliant control with independent bulk/internal motion regulation
+1. **Twist-driven impedance control** via stable imitation vector fields that bypass nonlinear pose-error Jacobians
+2. **Screw-axes decomposition** enabling independent compliance tuning for bulk (object transport) and internal (joint articulation) motions
+3. **Wrench-adaptive impedance variable learning** via RL that suppresses excessive inter-arm fighting forces
 
-## 📁 Repository Structure
+## Architecture
 
-```
-SWIVL/
-├── code_workspace/                    # Implementation code
-│   ├── src/                           # Core source code
-│   │   ├── envs/                      # Environments
-│   │   │   ├── biart.py              # Main BiArt environment
-│   │   │   ├── object_manager.py     # Articulated object management
-│   │   │   └── end_effector_manager.py
-│   │   ├── ll_controllers/            # Low-level controllers
-│   │   │   ├── se2_impedance_controller.py
-│   │   │   └── se2_screw_decomposed_impedance.py
-│   │   ├── hl_planners/               # High-level planners
-│   │   │   ├── act.py
-│   │   │   ├── diffusion_policy.py
-│   │   │   └── flow_matching.py
-│   │   ├── rl_policy/                 # RL policy (Layer 3)
-│   │   │   ├── impedance_learning_env.py
-│   │   │   └── ppo_impedance_policy.py
-│   │   ├── se2_math.py               # SE(2) Lie group operations
-│   │   ├── se2_dynamics.py           # Robot dynamics
-│   │   └── trajectory_generator.py
-│   ├── scripts/                       # Scripts
-│   │   ├── configs/                   # Configuration files
-│   │   │   ├── rl_config.yaml        # RL training config (single source of truth)
-│   │   │   └── hl_policy_config.yaml
-│   │   ├── training/                  # Training scripts
-│   │   │   ├── train_hl_policy.py
-│   │   │   └── train_ll_policy.py
-│   │   ├── evaluation/                # Evaluation scripts
-│   │   │   └── eval_hierarchical_policy.py
-│   │   ├── demos/                     # Demo scripts
-│   │   └── data_collection/           # Data collection
-│   ├── docs/                          # Technical documentation
-│   ├── checkpoints/                   # Trained model checkpoints
-│   ├── data/                          # Training data
-│   └── logs/                          # Training logs
-│
-└── paper_workspace/                   # Paper materials
-    ├── main_contents/                 # Main paper sections
-    ├── appendix/                      # Appendix sections
-    ├── figures/                       # Paper figures
-    └── neurips_2024_main.tex          # Main LaTeX file
-```
+SWIVL decomposes the bimanual manipulation problem into a four-layer hierarchy, where high-level cognitive planning at 10 Hz is translated into physically grounded impedance-controlled execution at 100 Hz.
 
-## 🚀 Quick Start
+<p align="center">
+  <img src="figures/architecture_overview.jpg" alt="SWIVL 4-Layer Architecture" width="700"/>
+</p>
+
+- **Layer 1 -- High-Level Policy** (ACT / Diffusion / Flow Matching): Generates sparse SE(3) pose action chunks from visual observations at ~10 Hz.
+- **Layer 2 -- Reference Twist Field Generator**: Smooths sparse waypoints into dense reference twist fields via trajectory interpolation and stable imitation vector fields at ~100 Hz.
+- **Layer 3 -- Impedance Modulation Policy** (PPO + FiLM): Modulates 7D impedance variables conditioned on real-time wrench feedback and object screw axes.
+- **Layer 4 -- Screw-Decomposed Impedance Controller**: Decomposes twist/wrench space into bulk and internal subspaces via G-orthogonal projectors, applying independently tuned compliance to each.
+
+### Screw-Decomposed Impedance Control
+
+The core mathematical idea: given an object's screw axis, G-orthogonal projectors partition each end-effector's twist space into **internal motion** (joint articulation) and **bulk motion** (object transport):
+
+$$P_{i,\parallel} = J_i (J_i^\top G\, J_i)^{-1} J_i^\top G, \qquad P_{i,\perp} = I - P_{i,\parallel}$$
+
+This enables independent damping for each subspace -- high compliance along internal motion to avoid fighting forces, firm tracking along bulk motion to maintain coordination:
+
+$$\mathcal{F}_{\text{cmd},i} = d_{i,\parallel}\, G\, (\mathcal{V}_{i,\parallel}^{\text{ref}} - \mathcal{V}_{i,\parallel}) + d_{i,\perp}\, G\, (\mathcal{V}_{i,\perp}^{\text{ref}} - \mathcal{V}_{i,\perp}) + \mu_{b,i} + \gamma_{b,i}$$
+
+where $d_{i,\parallel}, d_{i,\perp}$ are per-subspace damping coefficients learned by the RL policy (Layer 3), and $G = \text{diag}(\alpha^2, 1, 1)$ is a metric tensor with learnable characteristic length $\alpha$.
+
+## Reference Twist Field
+
+A key challenge in impedance-based imitation is converting sparse pose waypoints from a high-level policy into dense, stable reference twists for the impedance controller. SWIVL's Reference Twist Field Generator combines feedforward imitation terms with pose-error correction to create a stable vector field that ensures robust tracking even under large deviations.
+
+<p align="center">
+  <img src="figures/reference_twist_field.jpg" alt="Reference Twist Field Generator" width="600"/>
+</p>
+
+## Inference
+
+The full SWIVL pipeline in action: two end-effectors cooperatively manipulate an articulated object while the RL policy (Layer 3) adaptively modulates impedance parameters in real time. The overlay shows learned impedance variables (damping coefficients, stiffness gains, characteristic length) evolving throughout the task, and red arrows indicate wrench feedback from force/torque sensors.
+
+<p align="center">
+  <img src="figures/swivl_inference_snapshots.jpg" alt="SWIVL Inference Sequence" width="800"/>
+</p>
+
+## BiarT Benchmark & Results
+
+SWIVL is evaluated on **BiarT**, an SE(2) planar benchmark for bimanual articulated manipulation built on Pymunk physics. The environment features a 512x512 workspace with dual 3-DoF end-effectors controlling articulated objects with revolute (angular) or prismatic (linear) joints at 100 Hz.
+
+| Method | Revolute | Prismatic | Avg. Success | Wrench Limit Failures |
+|:-------|:--------:|:---------:|:------------:|:---------------------:|
+| Position Control | 10% | 30% | 20% | 55% |
+| Impedance Control | 10% | 60% | 35% | 10% |
+| **SWIVL (Ours)** | **40%** | **80%** | **60%** | **0%** |
+
+SWIVL achieves 3x higher average success rate over position control while **completely eliminating wrench limit violations** -- the dangerous inter-arm fighting forces that cause task failure and potential hardware damage. Classical impedance control reduces but cannot eliminate these forces; SWIVL's learned screw-decomposed compliance suppresses them entirely.
+
+## Quick Start
 
 ### Installation
 
 ```bash
 cd code_workspace
-
-# Setup conda environment
 bash setup_conda.sh
-
-# Activate environment
 conda activate swivl
 ```
-
-### Train High-Level Policy
-
-```bash
-cd code_workspace
-
-# Train Flow Matching policy
-python scripts/training/train_hl_policy.py --policy flow_matching
-
-# Train ACT policy
-python scripts/training/train_hl_policy.py --policy act
-
-# Train Diffusion policy
-python scripts/training/train_hl_policy.py --policy diffusion
-```
-
-### Train Low-Level (Impedance Modulation) Policy
-
-```bash
-cd code_workspace
-
-# Train with HL policy (recommended)
-python scripts/training/train_ll_policy.py \
-    --hl_policy act \
-    --hl_checkpoint checkpoints/act_best.pth \
-    --total_timesteps 500000
-
-# Train without HL policy (hold position mode)
-python scripts/training/train_ll_policy.py --hl_policy none
-```
-
-**SWIVL Layer 3 Action Space (7D):**
-- `d_l_∥, d_r_∥`: Per-arm damping for internal motion (parallel to screw axis)
-- `d_l_⊥, d_r_⊥`: Per-arm damping for bulk motion (perpendicular to screw axis)
-- `k_p_l, k_p_r`: Per-arm pose error correction gains
-- `α`: Characteristic length (metric tensor G = diag(α², 1, 1))
-
-### Evaluate Hierarchical Pipeline
-
-```bash
-cd code_workspace
-
-# Interactive evaluation with visualization
-python scripts/evaluation/eval_hierarchical_policy.py \
-    --hl_policy act \
-    --hl_checkpoint checkpoints/act_best.pth \
-    --ll_checkpoint checkpoints/impedance_policy.zip \
-    --no_wrench
-
-# Batch evaluation (N episodes)
-python scripts/evaluation/eval_hierarchical_policy.py \
-    --hl_policy act \
-    --hl_checkpoint checkpoints/act_best.pth \
-    --ll_checkpoint checkpoints/impedance_policy.zip \
-    --num_episodes 100 \
-    --no_wrench
-```
-
-**Evaluation Controls:**
-- `SPACE` - Pause/Resume
-- `R` - Reset episode
-- `I` - Toggle impedance info display
-- `ESC` - Exit
 
 ### Run Demos
 
 ```bash
 cd code_workspace
 
-# Screw-decomposed impedance control demo
-python scripts/demos/demo_screw_impedance.py
-
-# SE(2) impedance control demo
-python scripts/demos/demo_se2_impedance.py
-
-# Keyboard teleoperation
-python scripts/demos/demo_keyboard_teleoperation.py
+python scripts/demos/demo_screw_impedance.py        # SWIVL screw-decomposed impedance
+python scripts/demos/demo_se2_impedance.py           # Classical SE(2) impedance
+python scripts/demos/demo_keyboard_teleoperation.py  # Interactive keyboard control
 ```
 
-## 📐 SWIVL Framework
-
-### Reward Design
-
-The RL policy is trained with the following reward structure:
-
-```
-r_t = r_track + r_safety + r_reg + r_term
-```
-
-| Component | Formula | Description |
-|-----------|---------|-------------|
-| `r_track` | `-w_track * Σ\|\|V_i - V_ref_i\|\|²_G` | G-metric velocity tracking |
-| `r_safety` | `w_safety * exp(-κ * Σ\|\|F_⊥\|\|²_{G⁻¹})` | Exponential safety reward (alive bonus) |
-| `r_reg` | `-w_reg * Σ\|\|V̇_i\|\|²` | Twist acceleration regularization |
-| `r_term` | `-w_term` | Termination penalty for failures |
-
-**Key Design Choices:**
-- **Exponential safety reward** provides positive "alive bonus" when fighting forces are low
-- **Dual metric G⁻¹** for wrench norms ensures dimensional consistency
-- **Termination penalty** discourages learning to intentionally fail
-
-### Termination Conditions
-
-1. **Grasp Drift**: Geodesic distance exceeds threshold
-2. **Wrench Limit**: External wrench magnitude (G⁻¹-weighted) exceeds limit
-
-### Modern Robotics Convention
-
-This codebase follows **Modern Robotics (Lynch & Park)** conventions:
-- **Twist:** `V = [ω, vx, vy]ᵀ` (angular velocity first)
-- **Wrench:** `F = [τ, fx, fy]ᵀ` (torque first)
-- **Metric Tensor:** `G = diag(α², 1, 1)` for twists, `G⁻¹ = diag(1/α², 1, 1)` for wrenches
-
-## 📚 Documentation
-
-See `code_workspace/docs/` for detailed technical documentation:
-- [Documentation Index](code_workspace/docs/README.md)
-- [SE(2) Impedance Verification](code_workspace/docs/SE2_IMPEDANCE_VERIFICATION.md)
-- [Impedance Controller Implementation](code_workspace/docs/IMPEDANCE_CONTROLLER_IMPLEMENTATION.md)
-- [Pipeline Flow Analysis](code_workspace/docs/PIPELINE_FLOW_ANALYSIS.md)
-- [HL-RL Pipeline](code_workspace/docs/HL_RL_PIPELINE_README.md)
-
-## ⚙️ Configuration
-
-All RL training settings are in `code_workspace/scripts/configs/rl_config.yaml` (single source of truth):
-
-```yaml
-# Key configurations
-ll_controller:
-  type: "screw_decomposed"  # or "se2_impedance"
-  screw_decomposed:
-    min_d_parallel: 1.0
-    max_d_parallel: 50.0
-    min_alpha: 1.0
-    max_alpha: 20.0
-
-rl_training:
-  total_timesteps: 500000
-  reward:
-    tracking_weight: 0.0001
-    safety_reward_weight: 1.0
-    safety_exp_scale: 0.01
-    termination_penalty: 10.0
-```
-
-## 🧪 Testing
+### Train
 
 ```bash
 cd code_workspace
 
-# Core functionality tests
-python scripts/tests/test_core.py
+# High-level policy (Layer 1)
+python scripts/training/train_hl_policy.py --policy flow_matching
+python scripts/training/train_hl_policy.py --policy act
+python scripts/training/train_hl_policy.py --policy diffusion
 
-# Controller tests
-python scripts/tests/test_controllers.py
+# Low-level impedance modulation policy (Layer 3)
+python scripts/training/train_ll_policy.py \
+    --hl_policy act \
+    --hl_checkpoint checkpoints/act_best.pth \
+    --total_timesteps 500000
 ```
 
-## 📝 Citation
+### Evaluate
 
-If you use this code in your research, please cite:
+```bash
+cd code_workspace
+
+python scripts/evaluation/eval_hierarchical_policy.py \
+    --hl_policy act \
+    --hl_checkpoint checkpoints/act_best.pth \
+    --ll_checkpoint checkpoints/impedance_policy.zip \
+    --no_wrench
+```
+
+### Test
+
+```bash
+cd code_workspace
+pytest scripts/tests/ -v
+```
+
+## Repository Structure
+
+```
+code_workspace/
+  src/
+    se2_math.py                              # SE(2) Lie group operations
+    se2_dynamics.py                          # Task-space dynamics
+    envs/biart.py                            # BiarT environment (Pymunk)
+    ll_controllers/
+      se2_screw_decomposed_impedance.py      # SWIVL Layer 4 (core contribution)
+      se2_impedance_controller.py            # Classical SE(2) impedance baseline
+    hl_planners/
+      act.py | diffusion_policy.py | flow_matching.py
+    rl_policy/
+      impedance_learning_env.py              # Gym wrapper (30D obs / 7D action)
+      ppo_impedance_policy.py                # PPO with FiLM conditioning
+  scripts/
+    configs/rl_config.yaml                   # Single source of truth for RL training
+    training/   | evaluation/   | demos/   | data_collection/
+
+paper_workspace/                             # NeurIPS 2024 submission (LaTeX)
+```
+
+## Documentation
+
+See [`code_workspace/docs/`](code_workspace/docs/README.md) for detailed technical documentation:
+
+- [Documentation Index](code_workspace/docs/README.md) -- Architecture, conventions, observation/action spaces
+- [SE(2) Impedance Verification](code_workspace/docs/SE2_IMPEDANCE_VERIFICATION.md)
+- [Pipeline Flow Analysis](code_workspace/docs/PIPELINE_FLOW_ANALYSIS.md)
+- [HL-RL Pipeline](code_workspace/docs/HL_RL_PIPELINE_README.md)
+- [SE(2) Frame Conventions](code_workspace/docs/SE2_FRAME_CONVENTIONS.md)
+
+## Citation
 
 ```bibtex
 @article{swivl2024,
@@ -239,10 +163,10 @@ If you use this code in your research, please cite:
 }
 ```
 
-## 📄 License
+## License
 
 MIT License
 
-## 📧 Contact
+## Contact
 
 Kyungseo Park - erickun0125@snu.ac.kr

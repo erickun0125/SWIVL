@@ -1,3 +1,14 @@
+"""
+High-Level Policy Evaluation (without RL impedance modulation)
+
+Evaluates HL policy (ACT/Diffusion/Flow Matching) with a simple PD or SE(2) impedance
+controller. Unlike eval_hierarchical_policy.py, this does NOT use the RL-trained
+impedance modulation policy (Layer 3). Useful for isolating HL policy quality.
+
+Usage:
+    python scripts/evaluation/eval_hl_policy.py --hl_policy act --hl_checkpoint checkpoints/act_best.pth
+"""
+
 import argparse
 import numpy as np
 import torch

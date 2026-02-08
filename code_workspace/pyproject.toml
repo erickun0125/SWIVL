@@ -31,13 +31,17 @@ dependencies = [
     "opencv-python>=4.5.0",
     "shapely>=1.8.0",
     "scipy>=1.9.0",
+    "pyyaml>=6.0",
+    "h5py>=3.0.0",
 ]
 
 [project.optional-dependencies]
 rl = [
     "torch>=2.0.0",
+    "torchvision>=0.15.0",
     "stable-baselines3>=2.0.0",
     "tensorboard>=2.10.0",
+    "tqdm>=4.0.0",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -48,10 +52,10 @@ dev = [
 ]
 all = ["swivl[rl,dev]"]
 
-[project.urls]
-Homepage = "https://github.com/your-username/swivl"
-Documentation = "https://github.com/your-username/swivl/tree/main/docs"
-Repository = "https://github.com/your-username/swivl"
+# [project.urls]
+# Update with actual GitHub URL before publishing
+# Homepage = "https://github.com/<username>/swivl"
+# Repository = "https://github.com/<username>/swivl"
 
 [tool.setuptools.packages.find]
 where = ["."]
