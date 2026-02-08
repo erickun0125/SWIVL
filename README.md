@@ -140,7 +140,7 @@ code_workspace/
     configs/rl_config.yaml                   # Single source of truth for RL training
     training/   | evaluation/   | demos/   | data_collection/
 
-paper_workspace/                             # NeurIPS 2024 submission (LaTeX)
+paper_workspace/                             # NeurIPS 2025 submission (LaTeX)
 ```
 
 ## Documentation
@@ -156,10 +156,10 @@ See [`code_workspace/docs/`](code_workspace/docs/README.md) for detailed technic
 ## Citation
 
 ```bibtex
-@article{swivl2024,
+@article{swivl2025,
   title={SWIVL: Screw-Wrench Informed Impedance Variable Learning for Bimanual Manipulation},
   author={Park, Kyungseo},
-  year={2024}
+  year={2025}
 }
 ```
 
